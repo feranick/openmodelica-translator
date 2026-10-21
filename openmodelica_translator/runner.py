@@ -1,12 +1,14 @@
 """runner.py — one study end to end: validate, translate, build (or reuse), run, read, check, write the result.
-Version: 2026.10.21.3
+Version: 2026.10.21.4
 
 run_study(name, study, folder, solver, timeout, cancel) -> the result dict, also written atomically to
 <folder>/<name>.json. solver: "omc" (OpenModelica) or "ref" (the reference implementation only: linear
 networks, no OpenModelica; for tests and machines without it).
-Milestone 2: transient and steady runs (outputs read from the result file, every applied value read back) and
-linearisation (A, B, C, D, modes, Bode). Derived quantities, the energy balance, the reference comparison,
-converge and sweeps come with milestones 3 and 5.
+Every run: outputs (from the result file), derived quantities, steady values (steady analysis), and the checks:
+balance, initialisation, solver, events, every applied value read back, finite outputs, the energy balance,
+the reference implementation on the same time points (linear networks; eigenvalues for linearize), and with
+converge: true a second run at tolerance / 10. reliable is false when any check fails; expect only sets passed.
+Sweeps come with milestone 5.
 """
 from __future__ import annotations
 
@@ -75,7 +77,114 @@ def run_study(name: str, study: dict, folder, solver: str = "omc", timeout: floa
     return res
 
 
+def _level_si(units):
+    from .units import to_si
+
+    def f(d):
+        u = units.get(d["signal"], "1") or "1"
+        return to_si(d["level"], u, absolute_temperature=(u == "K"))[0]
+    return f
+
+
+def _post(out, study, tr, t, get, units, solver):
+    """Outputs, derived, steady, energy; get(path) -> series of a Modelica variable."""
+    from . import energy as E
+    from .post import derived, outputs, steady
+
+    an = study["analysis"]
+    vals = {}
+    for oname, (terms, _) in tr.outputs.items():
+        y = None
+        for c, path in terms:
+            y = c * get(path) if y is None else y + c * get(path)
+        vals[oname] = np.asarray(y, float)
+    out["outputs"] = outputs(t, vals, units)
+    fin = all(o["finite"] for o in out["outputs"].values())
+    out["checks"]["finite"] = {"ok": fin}
+    if not fin:
+        out["ok"] = False
+        out["why"] = "an output is not finite"
+        return vals
+    if study.get("derived"):
+        out["derived"] = derived(t, vals, study["derived"], float(an.get("start_time", 0.0)), _level_si(units))
+    if an["kind"] == "steady":
+        band = float(an.get("band", 1e-4))
+        out["steady"] = {k: steady(t, y, band) for k, y in vals.items()}
+        late = [k for k, v in out["steady"].items() if not v["reached"]]
+        if late:
+            out["warnings"].append(f"not steady by max_time (band {band:g}): {', '.join(late)}; raise analysis.max_time")
+    try:
+        out["checks"]["energy"] = E.balance(E.plan(tr.net), t, get)
+    except KeyError as exc:
+        out["checks"]["energy"] = {"ok": True, "covered": False, "why": f"not recorded: {exc}"}
+    return vals
+
+
+def _reference(out, study, tr, t, vals, tol):
+    """The reference implementation on the same (non-event) time points."""
+    from .post import compare, not_events
+    from .ref import RefError
+
+    r = tr.ref
+    if r is None or not r.exact:
+        out["checks"]["reference"] = {"ok": True, "covered": False,
+                                      "why": "nonlinear: " + "; ".join(r.not_exact) if r is not None else "escape hatch"}
+        return
+    m = not_events(t)
+    tarr = np.asarray(t, float)
+    for b in r.breaks(float(tarr[0]), float(tarr[-1]), ends=True):     # where sources step: either side is right
+        m &= np.abs(tarr - b) > 1e-9 * max(1.0, abs(b))
+    tt = tarr[m]
+    try:
+        rv = r.simulate(tt, t0=float(tarr[0]))
+    except (RefError, ValueError, np.linalg.LinAlgError) as exc:
+        out["checks"]["reference"] = {"ok": True, "covered": False, "why": f"reference failed: {exc}"}
+        return
+    lim = max(1e-4, 100 * tol)
+    errs = {}
+    for oname, (terms, _) in tr.outputs.items():
+        y = None
+        for c, path in terms:
+            y = c * rv[path] if y is None else y + c * rv[path]
+        errs[oname] = compare(vals[oname][m], y)
+    worst = max(errs.values()) if errs else 0.0
+    out["checks"]["reference"] = {"ok": worst <= lim, "covered": True, "max_error_rel": worst, "tol": lim,
+                                  "per_output": errs}
+
+
+def _ref_eigen(out, tr):
+    r = tr.ref
+    if r is None or not r.exact:
+        out["checks"]["reference"] = {"ok": True, "covered": False, "why": "nonlinear or escape hatch"}
+        return
+    om = [complex(*e) for e in out["linearization"]["eigenvalues"]]
+    rf = list(r.eigenvalues())
+    if len(om) != len(rf):
+        out["checks"]["reference"] = {"ok": False, "covered": True,
+                                      "why": f"{len(om)} eigenvalues from OpenModelica, {len(rf)} from the reference"}
+        return
+    scale = max([abs(x) for x in rf] + [1.0])
+    worst, left = 0.0, list(rf)
+    for lam in om:
+        j = int(np.argmin([abs(lam - x) for x in left]))
+        worst = max(worst, abs(lam - left.pop(j)) / scale)
+    out["checks"]["reference"] = {"ok": worst <= 1e-5, "covered": True, "max_eigenvalue_error_rel": worst, "tol": 1e-5}
+
+
+def _verdict(out, study):
+    from .post import check_expect
+    if study.get("expect"):
+        out["expect"] = check_expect(out, study["expect"])
+        out["passed"] = all(e["passed"] for e in out["expect"])
+    out["reliable"] = bool(out["ok"]) and all(c.get("ok", True) for c in out.get("checks", {}).values())
+    if not out["reliable"]:
+        out["unreliable_because"] = [k for k, c in out.get("checks", {}).items() if not c.get("ok", True)] or \
+                                    [out.get("why", "failed")]
+    return out
+
+
 def _run(name, study, folder, solver, timeout, cancel) -> dict:
+    from . import energy as E
     from . import modelica as M
     from .format import validate_study
 
@@ -93,10 +202,10 @@ def _run(name, study, folder, solver, timeout, cancel) -> dict:
     (folder / "model.mo").write_text(tr.text)
     files = {"model": str(folder / "model.mo")}
     out = {"ok": True, "warnings": warnings, "files": files, "seconds": seconds, "solver": solver,
-           "inputs": tr.net.inputs if tr.net is not None else {}, "fixed_initial_values": tr.fixed}
+           "inputs": tr.net.inputs if tr.net is not None else {}, "fixed_initial_values": tr.fixed, "checks": {}}
     units = {k: u for k, (_, u) in tr.outputs.items()}
     if solver == "ref":
-        return _run_ref(study, tr, out, units)
+        return _verdict(_run_ref(study, tr, out, units), study)
     from . import omc, simrun
     from .matfile import Result
 
@@ -136,17 +245,18 @@ def _run(name, study, folder, solver, timeout, cancel) -> dict:
                         f"rebuilds it): {', '.join(fixed)}")
     t0, t1, n, tol, method = _times(an)
     lin = an["kind"] == "linearize"
-    filt = None if lin else M.variable_filter(tr)
+    pl = E.plan(tr.net)
+    filt = None if lin else M.variable_filter(tr, extra=(pl or {}).get("paths", ()))
     sim = simrun.simulate(b["dir"], folder, run_overrides, start=t0, stop=t1 if not lin else max(t1, t0),
                           intervals=n, tolerance=tol, method=method, variable_filter=filt,
                           timeout=timeout, linearize_at=t1 if lin else None, cancel=cancel)
     seconds["simulate"] = sim["seconds"]
     out["files"].update(sim["files"])
     warnings += sim["warnings"]
-    out["checks"] = {"balance": {"ok": True, **(b.get("check") or {})},
-                     "initialization": {"ok": sim["ok"] or sim["init_homotopy_steps"] is not None,
-                                        "homotopy_steps": sim["init_homotopy_steps"]},
-                     "solver": {"ok": sim["ok"], **sim["stats"]}}
+    out["checks"].update({"balance": {"ok": True, **(b.get("check") or {})},
+                          "initialization": {"ok": sim["ok"] or sim["init_homotopy_steps"] is not None,
+                                             "homotopy_steps": sim["init_homotopy_steps"]},
+                          "solver": {"ok": sim["ok"], **sim["stats"]}})
     if sim["chattering"]:
         out["checks"]["events"] = {"ok": False, "chattering": sim["chattering"]}
     elif sim["stats"]:
@@ -166,36 +276,54 @@ def _run(name, study, folder, solver, timeout, cancel) -> dict:
                             [f"{n_} is not in the result file" for n_ in rb["not_recorded"]]
             return out
         if not lin:
-            from .post import combine, outputs
-            vals = {}
-            for oname, (terms, _) in tr.outputs.items():
-                try:
-                    vals[oname] = combine(r, terms)
-                except KeyError as exc:
-                    out.update({"ok": False, "why": f"output {oname}: {exc} is not in the result file"})
-                    return out
-            out["outputs"] = outputs(r.time, vals, units)
-            fin = all(o["finite"] for o in out["outputs"].values())
-            out["checks"]["finite"] = {"ok": fin}
-            if not fin:
-                out["ok"] = False
-                out["why"] = "an output is not finite"
-            if an["kind"] == "steady":
-                out["checks"]["solver"]["steady_state_time"] = sim["steady_state_time"]
+            try:
+                vals = _post(out, study, tr, r.time, r.series, units, solver)
+            except KeyError as exc:
+                out.update({"ok": False, "why": f"{exc} is not in the result file"})
+                return out
+            if not out["ok"]:
+                return out
+            if "modelica" not in study:
+                _reference(out, study, tr, r.time, vals, tol)
+            if study.get("converge"):
+                _converge(out, b, folder, run_overrides, tr, r, vals, t0, t1, n, tol, method, filt, timeout, cancel)
     if lin:
         from .linear import analyse, bode_freqs, read
         L = read(sim["linear"])
         out["linearization"] = analyse(L, bode_freqs(an.get("bode")))
-    out["reliable"] = out["ok"] and all(c.get("ok", True) for c in out["checks"].values())
-    if not out["reliable"]:
-        out["unreliable_because"] = [k for k, c in out["checks"].items() if not c.get("ok", True)]
-    return out
+        if "modelica" not in study:
+            _ref_eigen(out, tr)
+    return _verdict(out, study)
+
+
+def _converge(out, b, folder, overrides, tr, r, vals, t0, t1, n, tol, method, filt, timeout, cancel):
+    """A second run at tolerance / 10; outputs compared on the first run's non-event points."""
+    from . import simrun
+    from .matfile import Result
+    from .post import combine, not_events
+
+    sim = simrun.simulate(b["dir"], folder, overrides, start=t0, stop=t1, intervals=n, tolerance=tol / 10,
+                          method=method, variable_filter=filt, timeout=timeout, cancel=cancel, tag="_converge")
+    if not sim["ok"]:
+        out["checks"]["converge"] = {"ok": False, "why": "the run at tolerance/10 failed: " + "; ".join(sim["errors"])}
+        return
+    r2 = Result(sim["result"])
+    m1, m2 = not_events(r.time), not_events(r2.time)
+    lim = max(1e-6, 100 * tol)
+    diffs = {}
+    for oname, (terms, _) in tr.outputs.items():
+        y2 = combine(r2, terms)
+        yi = np.interp(r.time[m1], r2.time[m2], y2[m2])
+        y1 = vals[oname][m1]
+        rng = float(np.max(y1) - np.min(y1)) or max(float(np.max(np.abs(y1))), 1e-300)
+        diffs[oname] = float(np.max(np.abs(y1 - yi)) / rng) if y1.size else 0.0
+    worst = max(diffs.values()) if diffs else 0.0
+    out["checks"]["converge"] = {"ok": worst <= lim, "tolerance": tol / 10, "max_change_rel": worst, "tol": lim,
+                                 "per_output": diffs}
 
 
 def _run_ref(study, tr, out, units) -> dict:
     """The reference implementation alone (no OpenModelica)."""
-    from .post import outputs
-
     r = tr.ref
     if r is None:
         out.update({"ok": False, "why": "the escape hatch needs OpenModelica (no reference)"})
@@ -205,11 +333,27 @@ def _run_ref(study, tr, out, units) -> dict:
         return out
     an = study["analysis"]
     t0, t1, n, tol, method = _times(an)
+    out["checks"]["reference_only"] = {"ok": True, "note": "solver ref: no OpenModelica run"}
     if an["kind"] == "linearize":
-        from .linear import bode_freqs
+        from .linear import bode_freqs, modes
         ev = r.eigenvalues()
+        _, md = modes(np.diag(ev) if len(ev) else np.zeros((0, 0)), [f"mode{i}" for i in range(len(ev))])
+        osc = sorted((m_ for m_ in md if m_["kind"] == "oscillatory"), key=lambda m_: m_["f_n_Hz"])
         lin = {"eigenvalues": [[float(x.real), float(x.imag)] for x in ev], "outputs": list(tr.outputs),
-               "inputs": sorted(tr.net.free_inputs)}
+               "inputs": sorted(tr.net.free_inputs), "modes": [{k: v for k, v in m_.items() if k != "dominant_states"}
+                                                                for m_ in md],
+               "natural_frequencies_Hz": [m_["f_n_Hz"] for m_ in osc], "damping_ratios": [m_["zeta"] for m_ in osc],
+               "time_constants_s": sorted(m_["tau_s"] for m_ in md if m_["kind"] == "real")}
+        dc = {}
+        for o, (terms, _) in tr.outputs.items():
+            dc[o] = {}
+            for i in lin["inputs"]:
+                try:
+                    g0 = r.freq_response(i, {p: c for c, p in terms}, [0.0])[0]
+                    dc[o][i] = float(g0.real) if np.isfinite(g0) and abs(g0) < 1e300 else None
+                except (np.linalg.LinAlgError, KeyError):
+                    dc[o][i] = None
+        lin["dc_gain"] = dc
         fr = bode_freqs(an.get("bode"))
         if fr:
             bode = {}
@@ -221,15 +365,7 @@ def _run_ref(study, tr, out, units) -> dict:
             lin["bode"] = bode
         out["linearization"] = lin
     else:
-        t = np.linspace(t0, t1, n + 1)
-        vals = r.simulate(t)
-        series = {}
-        for oname, (terms, _) in tr.outputs.items():
-            y = np.zeros_like(t)
-            for c, p in terms:
-                y = y + c * vals[p]
-            series[oname] = y
-        out["outputs"] = outputs(t, series, units)
-    out["reliable"] = True
-    out["checks"] = {"reference_only": {"ok": True, "note": "solver ref: no OpenModelica run"}}
+        tt = np.linspace(t0, t1, n + 1)
+        vals = r.simulate(tt)
+        _post(out, study, tr, tt, vals.__getitem__, units, "ref")
     return out

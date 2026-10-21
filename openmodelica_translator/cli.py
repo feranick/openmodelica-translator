@@ -1,12 +1,14 @@
 """cli.py — the command line. Every command prints JSON; '-' reads the studies from stdin.
-Version: 2026.10.21.2
+Version: 2026.10.21.4
 
     omct status                              versions; omc and MSL found or not; the cache; the executor
     omct format                              the study format
     omct validate studies.json               static checks of {name: study}
     omct model studies.json NAME             the generated Modelica, the omc script and the override file
     omct run studies.json [NAMES...] [--solver auto|omc|ref]
-                                             runs the studies now (milestone 2: one after the other)
+                                             runs the studies now (one after the other)
+    omct bench [NAMES...] [--solver auto|omc|ref]
+                                             the benchmarks with closed-form answers
 """
 from __future__ import annotations
 
@@ -53,6 +55,9 @@ def main(argv=None) -> int:
     p.add_argument("names", nargs="*")
     p.add_argument("--solver", default=None)
     p.add_argument("--full", action="store_true", help="print the series too")
+    p = sub.add_parser("bench")
+    p.add_argument("names", nargs="*")
+    p.add_argument("--solver", default=None)
     a = ap.parse_args(argv)
     from . import api
     if a.cmd == "status":
@@ -61,6 +66,8 @@ def main(argv=None) -> int:
         out = api.study_format()
     elif a.cmd == "validate":
         out = api.validate(_load(a.studies))
+    elif a.cmd == "bench":
+        out = api.bench(a.names or None, a.solver)
     elif a.cmd == "model":
         studies = _load(a.studies)
         out = api.model(studies[a.name], a.name) if a.name in studies else \

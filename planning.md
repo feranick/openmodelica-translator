@@ -2,7 +2,7 @@
 
 Session context for Claude (the project documentation will be README.md). Start a chat with: "Read planning.md and start."
 
-Version: 2026.10.21.3 (milestone 2: the OpenModelica driver; first runs on mochi).
+Version: 2026.10.21.4 (milestone 3: checks and benchmarks; to run on mochi).
 
 ## What this is
 
@@ -350,7 +350,7 @@ tools/  m0_probe.sh (M0 probe), check_catalog_msl.py (catalog vs the MSL 4.0.0 s
 - **M0 Research and plan** (this file; `tools/m0_probe.sh`). Done; the probe report from mochi is still to come.
 - **M1 Format and translation, offline:** `catalog.py`, `units.py`, `format.py` (study_format ~10–12 kB, validate), `modelica.py`, `.mos` generation, `ref.py`, tests. Done (2026.10.21.1).
 - **M2 Backend driver:** `omc.py`, cache, `simrun.py`, `matfile.py`, log and result parsing, override verification; fixtures from mochi; tests that skip without omc.
-- **M3 Checks and benchmarks:** energy balance, `converge`, reliability, `bench.py`.
+- **M3 Checks and benchmarks:** energy balance, `converge`, reliability, `bench.py`. Done in the sandbox (2026.10.21.4); benchmarks to run on mochi.
 - **M4 Interfaces:** `api.py`, `cli.py`, `mcp_server.py`, images.
 - **M5 Analyses:** sweeps, linearisation, steady.
 - **M6 SLURM:** `executor.py` from cfdt with sizing, caps, fake-SLURM tests; on mochi two sweeps from two conversations queue.
@@ -373,6 +373,16 @@ Made while building M1 (tell me if any is wrong):
 - Composites are flattened into elements `X__part` (no nested models, so every value is a direct override and no bound parameter has to be recomputed by OpenModelica).
 
 ## State
+
+**2026.10.21.4 (M3, sandbox)**: on mochi with 2026.10.21.3 every example ran (the sweep refused as intended); OpenModelica compiled in M__rotor.w, J1.w, m.v (aliases) and LimPID's yMax/yMin. New: `post.py` derived quantities (step: rise 10-90 %, overshoot, peak, settling 2 %; crossing; window; steady), steady analysis (`steady.<output>`: value, t_steady, reached in the last 10 %), `expect` (passed); `energy.py` (boundaries, storage, dissipation from element values and recorded series; Stieltjes integral for force/torque work; tolerance max(1 %, 3 x Richardson)); the reference comparison on the run's time points (events and source steps masked; max(1e-4, 100 tol)); eigenvalues for linearize (1e-5); `converge` (tol/10, max(1e-6, 100 tol)); `bench.py`: 11 cases with closed forms, all pass with the reference solver; `linear.analyse` adds natural_frequencies_Hz, damping_ratios, time_constants_s, rigid-body modes counted. The energy balance found two reference bugs: Pulse edges computed two ways (floor vs sums) disagreed at 0.0035 s, and a source step exactly at the stop time; both fixed. Tests: 204 pass (+2 with omc).
+Next on mochi (about 1-2 min):
+```bash
+cd ~/Software/openmodelica-translator && git pull
+PY=~/Software/llm-translators/.venv/bin/python
+$PY -m pytest -q tests/ 2>&1 | tail -3
+$PY -m openmodelica_translator.cli bench > tools/m3_bench_mochi.json
+$PY -c "import json; d=json.load(open('tools/m3_bench_mochi.json')); print('passed', d['passed']); print('failed', d['failed']); [print(n, c.get('why',''), [(k['quantity'], k['expected'], k['got'], k.get('error')) for k in c['checks'] if not k['passed']], c.get('checks_run')) for n, c in d['cases'].items() if not c.get('passed')]"
+```
 
 **2026.10.21.3 (mochi, first real runs, 2026-10-21)**: with 2026.10.21.2, 186 tests passed on mochi in 24 s, including the RC against its closed form at 1e-4 through OpenModelica; `omct status` found omc 1.27.1~2-g6db4671 and MSL 4.0.0. `omct run examples/studies.json` (only the tail was seen): two_mass_torque_step ran (w2 = 19.61 rad/s at 0.5 s, reliable); bracket_on_spring_from_feat failed: "m.v is fixed in the compiled model". OpenModelica made the mass's `v` (fixed=true) an alias of the spring-damper's `v_rel` (stateSelect prefer), and an alias is not changeable at run time. Fix: values with isValueChangeable false are left out of the override file when the build has the same value compiled in (meta.json `compiled_values`); a different value builds a variant whose key adds those values (`omc.build(variant=...)`); read-back still checks them. The pi_gain_sweep is refused until M5, as intended.
 

@@ -1,5 +1,5 @@
 """linear.py — OpenModelica's linearized_model.mo, and what follows from A, B, C, D.
-Version: 2026.10.21.2
+Version: 2026.10.21.4
 
 read(path) -> {states, inputs, outputs, x0, u0, A, B, C, D} (names without the x_ / u_ / y_ prefixes; our
 top-level names omct_u_<name> / omct_y_<name> become <name>). Format measured on mochi (1.27.1): Modelica
@@ -55,28 +55,36 @@ def read(path) -> dict:
 
 
 def modes(A: np.ndarray, states: list[str]) -> tuple[np.ndarray, list[dict]]:
+    """Eigenvalues, and one mode per real eigenvalue or conjugate pair: oscillatory (f_n_Hz, f_d_Hz, zeta), real
+    (tau_s) or rigid/integrator (|lambda| below 1e-7 of the largest: zero up to rounding; zeros counted)."""
     if A.size == 0:
         return np.zeros(0, complex), []
     w, V = np.linalg.eig(A)
     order = np.lexsort((w.imag, np.abs(w)))
     w, V = w[order], V[:, order]
-    out = []
+    big = max([abs(x) for x in w] + [0.0])
+    out, zeros = [], 0
     for k, lam in enumerate(w):
         mag = abs(lam)
-        if lam.imag < -1e-9 * max(1.0, mag):          # one mode per conjugate pair
-            continue
         v = np.abs(V[:, k])
         v = v / v.max() if v.max() > 0 else v
         dom = [states[i] for i in np.argsort(-v)[:3] if v[i] > 0.1]
+        if mag <= 1e-7 * big or mag == 0:
+            zeros += 1
+            if zeros == 1:
+                out.append({"kind": "rigid body / integrator (zero eigenvalue)", "eigenvalue": [0.0, 0.0],
+                            "count": 1, "dominant_states": dom})
+            else:
+                next(m for m in out if m["kind"].startswith("rigid"))["count"] = zeros
+            continue
+        if lam.imag < -1e-9 * mag:                      # one mode per conjugate pair
+            continue
         mode = {"eigenvalue": [float(lam.real), float(lam.imag)], "dominant_states": dom}
-        if mag < 1e-12:
-            mode.update({"kind": "integrator (zero eigenvalue)"})
-        elif abs(lam.imag) > 1e-9 * mag:
-            mode.update({"kind": "oscillatory", "f_n_Hz": mag / (2 * math.pi), "f_d_Hz": abs(lam.imag) / (2 * math.pi),
-                         "zeta": -lam.real / mag})
+        if abs(lam.imag) > 1e-9 * mag:
+            mode.update({"kind": "oscillatory", "f_n_Hz": float(mag / (2 * math.pi)),
+                         "f_d_Hz": float(abs(lam.imag) / (2 * math.pi)), "zeta": float(-lam.real / mag)})
         else:
-            mode.update({"kind": "real", "tau_s": -1 / lam.real if lam.real != 0 else None,
-                         "stable": bool(lam.real < 0)})
+            mode.update({"kind": "real", "tau_s": float(-1 / lam.real), "stable": bool(lam.real < 0)})
         out.append(mode)
     return w, out
 
@@ -101,6 +109,10 @@ def analyse(lin: dict, freqs=None) -> dict:
     res = {"states": lin["states"], "inputs": lin["inputs"], "outputs": lin["outputs"],
            "A": lin["A"].tolist(), "B": lin["B"].tolist(), "C": lin["C"].tolist(), "D": lin["D"].tolist(),
            "eigenvalues": [[float(x.real), float(x.imag)] for x in w], "modes": md,
+           "natural_frequencies_Hz": sorted(m_["f_n_Hz"] for m_ in md if m_["kind"] == "oscillatory"),
+           "damping_ratios": [m_["zeta"] for m_ in sorted((m_ for m_ in md if m_["kind"] == "oscillatory"),
+                                                          key=lambda m_: m_["f_n_Hz"])],
+           "time_constants_s": sorted(m_["tau_s"] for m_ in md if m_["kind"] == "real"),
            "stable": bool(np.all(w.real < 0)) if w.size else True}
     A, B, C, D = lin["A"], lin["B"], lin["C"], lin["D"]
     try:

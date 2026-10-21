@@ -1,5 +1,5 @@
 """api.py — what the CLI (and, from milestone 4, the MCP server) calls. JSON in, JSON out.
-Version: 2026.10.21.2
+Version: 2026.10.21.4
 
     tool_status()            versions; omc, MSL, the C compiler, the build cache; the executor and its caps
     study_format()           the study format, with status
@@ -7,6 +7,7 @@ Version: 2026.10.21.2
     run(studies, solver)     runs every study now, one after the other, into a request folder under OMCT_OUT
                              (milestone 2; the worker pool, SLURM and pending results come with milestones 4 and 6)
     model(study, name)       the generated model, build script and override file, without running
+    bench(names, solver)     the benchmark studies with closed-form answers (milestone 3: run now, one by one)
 """
 from __future__ import annotations
 
@@ -119,3 +120,16 @@ def read_file(path: str, max_mb: float = 20) -> dict:
     if p.stat().st_size > max_mb * 1e6:
         return {"error": f"{p.stat().st_size / 1e6:.1f} MB is more than max_mb"}
     return {"name": p.name, "bytes": p.stat().st_size, "base64": base64.b64encode(p.read_bytes()).decode()}
+
+
+def bench(names=None, solver: str | None = None) -> dict:
+    from . import bench as B
+    s = _solver(solver)
+    folder = _request_dir("bench")
+    r = B.run(s, names, folder)
+    out = {"bench": str(folder), "solver": s, "translator": __version__,
+           "passed": [k for k, v in r.items() if v.get("passed")],
+           "failed": [k for k, v in r.items() if "skipped" not in v and not v.get("passed")],
+           "skipped": [k for k, v in r.items() if "skipped" in v], "cases": r}
+    (folder / "bench.json").write_text(json.dumps(out, indent=1, default=float))
+    return out

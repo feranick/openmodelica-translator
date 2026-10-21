@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """fake_omc.py — a stand-in for omc and the executables it builds, for tests without OpenModelica.
-Version: 2026.10.21.3
+Version: 2026.10.21.4
 
     fake_omc.py --version            prints like omc 1.27.1
     fake_omc.py [-n=N] script.mos    the msl status script, or a build (modelica.build_mos): prints the 11 values

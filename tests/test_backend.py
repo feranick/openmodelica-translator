@@ -1,6 +1,6 @@
 """test_backend.py — the omc driver, the runner and the result reading: on outputs recorded on mochi
 (tests/fixtures), with a fake omc (tests/fake_omc.py), and with the real OpenModelica when it is installed.
-Version: 2026.10.21.3
+Version: 2026.10.21.4
 """
 import json
 import math
@@ -109,6 +109,8 @@ def test_fake_run_end_to_end(fake, monkeypatch):
     assert r["checks"]["overrides"]["ok"] and r["checks"]["overrides"]["checked"] >= 7
     assert r["outputs"]["v_C"]["final"] == pytest.approx(12.0, rel=1e-3) and r["outputs"]["v_C"]["unit"] == "V"
     assert len(r["outputs"]["v_C"]["series"]["t"]) <= 400
+    assert r["checks"]["energy"]["ok"] and r["checks"]["energy"]["covered"] and r["checks"]["energy"]["error_rel"] < 1e-3
+    assert r["checks"]["reference"]["ok"] and r["checks"]["reference"]["max_error_rel"] < 1e-8
     assert json.loads((fake / "req" / "rlc" / "rlc.json").read_text())["ok"]
     cache = Path(os.environ["OMCT_OUT"]) / ".cache" / r["model_info"]["hash"]
     assert (cache / "omct_model").is_file() and not (cache / "omct_model.c").exists()
@@ -213,3 +215,12 @@ def test_real_examples_build_and_run(tmp_path, monkeypatch):
             bad[name] = (r.get("why"), r.get("errors"))
         print(name, "ok" if r["ok"] else "FAILED", r.get("why", ""), r.get("errors", ""), r.get("warnings", ""))
     assert not bad, bad
+
+
+def test_fake_converge_and_expect(fake, monkeypatch):
+    st = study(RC, converge=True, expect=[{"quantity": "outputs.v.final", "value": 0.99, "tol": 0.001}])
+    _with_study(monkeypatch, fake, st)
+    r = run_study("rc", st, fake / "g" / "rc", "omc", 60)
+    assert r["ok"] and r["checks"]["converge"]["ok"] and r["checks"]["converge"]["tolerance"] == 1e-7
+    assert r["passed"] is False and r["expect"][0]["got"] == pytest.approx(1 - math.exp(-5), rel=1e-6)
+    assert r["reliable"]          # expect sets passed, not reliable

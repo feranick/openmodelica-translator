@@ -1,5 +1,5 @@
 """ref.py — an independent implementation of the study's equations, without OpenModelica.
-Version: 2026.10.21.1
+Version: 2026.10.21.4
 
 Built from the study (network.Net), never from the generated Modelica text, so a translation mistake shows up as
 a mismatch. Each catalog kind writes its equations (the MSL 4.0.0 ones, read from the library's sources) into a
@@ -103,19 +103,26 @@ class Sine(Fn):
 
 
 class Pulse(Fn):
+    """Blocks.Sources.Pulse: on (amplitude) from s + k*T for width % of T, k = 0, 1, ... (nperiod < 0: forever).
+    The edges are computed one way (_edges) for both breaks() and val(), so they agree to the last bit."""
+
     def __init__(self, amplitude, width, period, nperiod=-1, offset=0.0, start=0.0):
         self.a, self.w, self.T = float(amplitude), float(width), float(period)
         self.n, self.o, self.s = int(nperiod), float(offset), float(start)
+
+    def _edges(self, k):
+        b0 = self.s + k * self.T
+        return b0, b0 + self.T * self.w / 100
 
     def breaks(self, t0, t1):
         if self.n == 0:
             return []
         out, k = [], max(0, int((t0 - self.s) // self.T) - 1)
         while True:
-            b0 = self.s + k * self.T
+            b0, b1 = self._edges(k)
             if b0 >= t1 or (0 < self.n <= k):
                 break
-            for b in (b0, b0 + self.T * self.w / 100):
+            for b in (b0, b1):
                 if t0 < b < t1:
                     out.append(b)
             k += 1
@@ -126,12 +133,17 @@ class Pulse(Fn):
             return 0.0
         if not self.after(t, self.s, side) or self.n == 0:
             return self.o
-        x = (t - self.s) / self.T
-        c = math.floor(x) if side > 0 else math.ceil(x) - 1
+        c = int(math.floor((t - self.s) / self.T))
+        for _ in range(3):                                  # settle the period index against the edges
+            if c > 0 and not self.after(t, self._edges(c)[0], side):
+                c -= 1
+            elif self.after(t, self._edges(c + 1)[0], side):
+                c += 1
+            else:
+                break
         if self.n > 0 and c >= self.n:
             return self.o
-        tin = t - (self.s + c * self.T)
-        on = tin < self.T * self.w / 100 if side > 0 else tin <= self.T * self.w / 100
+        on = not self.after(t, self._edges(c)[1], side)
         return self.o + (self.a if on else 0.0)
 
 
@@ -796,10 +808,13 @@ class Ref:
                 out[j * K + o] = f.val(t, o + shift, side)
         return out
 
-    def breaks(self, t0, t1):
+    def breaks(self, t0, t1, ends=False):
+        """The sources' breakpoints inside (t0, t1); with ends, also those at t0 and t1."""
         b = set()
+        lo, hi = (t0 - 1e-300, t1 + abs(t1) * 1e-15 + 1e-300) if ends else (t0, t1)
         for f in self.sys.fns:
-            b.update(f.breaks(t0, t1))
+            b.update(x for x in f.breaks(lo - abs(lo) * 1e-12 - 1e-12, hi + abs(hi) * 1e-12 + 1e-12) if
+                     (t0 <= x <= t1 if ends else t0 < x < t1))
         return sorted(b)
 
     # ---- initial values ---------------------------------------------------------------------------------
@@ -903,6 +918,11 @@ class Ref:
                 w_end = w
                 for i in idx:
                     Z[i] = P @ self.F(t_eval[i], 1)
+            if last and self.d and not np.array_equal(self.F(b, -1), self.F(b, 1)) and idx.size and t_eval[idx[-1]] == b:
+                # a source steps exactly at the end: the storage values carry over, the rest takes the new value
+                z_left = P @ self.F(b, -1) + V @ w_end
+                w_b = self._w_from(b, list(Ls @ z_left) if len(Ls) else [], side=1)
+                Z[idx[-1]] = P @ self.F(b, 1) + V @ w_b
             if not last:
                 # carry the storage values across the breakpoint
                 z_left = P @ self.F(b, -1) + (V @ w_end if self.d else 0)
