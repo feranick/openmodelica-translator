@@ -1,6 +1,6 @@
 """test_slurm.py — SLURM execution (llm-translators docs/EXECUTION.md) against a fake SLURM (tests/fake_slurm.py),
 with the reference solver (no OpenModelica needed).
-Version: 2026.10.21.7
+Version: 2026.10.21.8
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ def slurm(tmp_path, monkeypatch):
     monkeypatch.setenv("OMCT_OUT", str(tmp_path / "out"))
     monkeypatch.setenv("OMCT_TIMEOUT", "600")
     monkeypatch.setenv("OMCT_SOLVER", "ref")
-    monkeypatch.setenv("PYTHONPATH", f"{REPO}{os.pathsep}{os.environ.get('PYTHONPATH', '')}")
+    monkeypatch.delenv("PYTHONPATH", raising=False)     # as on mochi: job.sh must find the package itself
     for k in ("FAKE_PENDING", "FAKE_SACCT_FAIL", "FAKE_SBATCH_FAIL", "FAKE_SBATCH_DELAY", "SLURM_JOB_ID",
               "SLURM_CPUS_PER_TASK", "OMCT_EXECUTION", "OMCT_PROCS_REQUESTED"):
         monkeypatch.delenv(k, raising=False)
@@ -77,6 +77,7 @@ def test_submit_then_collected_by_a_new_process(slurm):
     sh = (req / "rc" / "job.sh").read_text()
     assert f"#SBATCH --job-name=omct:{req.name}:rc" in sh and "#SBATCH --ntasks=1" in sh
     assert "#SBATCH --cpus-per-task=1" in sh and "#SBATCH --export=ALL" in sh and f"run-study {req} rc" in sh
+    assert f"export PYTHONPATH={REPO}" in sh          # found without being installed (mochi, before llmt install)
     out = _wait_done(req)
     s = out["studies"]["rc"]
     assert out["done"] and s["ok"] and s["reliable"], s

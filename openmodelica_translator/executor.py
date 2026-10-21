@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study (kind: threads).
-Version: 2026.10.21.7
+Version: 2026.10.21.8
 
 Implements llm-translators' docs/EXECUTION.md (from cfd-translator's executor). Settings (environment):
     OMCT_EXECUTOR          local | slurm (local)
@@ -42,6 +42,7 @@ from pathlib import Path
 from .format import caps, run_errors  # noqa: F401  (run_errors: validation, re-exported)
 
 CLI = "omct"
+PKG_ROOT = str(Path(__file__).resolve().parents[1])
 FINAL = ("timed_out", "out_of_memory", "cancelled", "failed")
 S_PER_INTERVAL = 2e-5
 
@@ -215,6 +216,8 @@ def job_script(request: Path, name: str, cpus: int, tmin: int) -> str:
         f"#SBATCH --cpus-per-task={cpus}",
         f"#SBATCH --time={tmin}",
         "#SBATCH --export=ALL",
+        # the package's folder first: the job finds this translator even when it is not installed in the venv
+        f"export PYTHONPATH={shlex.quote(PKG_ROOT)}${{PYTHONPATH:+:$PYTHONPATH}}",
         f"exec {shlex.quote(sys.executable)} -m openmodelica_translator.cli run-study {shlex.quote(str(request))} "
         f"{shlex.quote(name)}",
         ""])

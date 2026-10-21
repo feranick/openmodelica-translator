@@ -2,7 +2,7 @@
 
 Session context for Claude (the project documentation will be README.md). Start a chat with: "Read planning.md and start."
 
-Version: 2026.10.21.7 (milestone 6: SLURM).
+Version: 2026.10.21.8 (milestone 6: SLURM).
 
 ## What this is
 
@@ -373,6 +373,8 @@ Made while building M1 (tell me if any is wrong):
 - Composites are flattened into elements `X__part` (no nested models, so every value is a direct override and no bound parameter has to be recomputed by OpenModelica).
 
 ## State
+
+**2026.10.21.8 (mochi, first SLURM jobs)**: with 2026.10.21.7, 225 tests pass on mochi (91 s); `tools/m6_slurm_test.py` submitted both sweeps (jobs 2603, 2604; 30 CPUs each, estimate 0.06 min; 2604 queued behind 2603 with "Priority", ahead 1) but both jobs failed at once: `No module named 'openmodelica_translator'`. The job runs the venv's python in the study folder, and the translator is not installed in the venv yet (it will be with `llmt install omct`); the fake-SLURM tests passed because their fixture put the repository on PYTHONPATH. Fix: job.sh exports the package's folder on PYTHONPATH; the fake-SLURM fixture now clears PYTHONPATH, so the tests see what a real job sees. The failure states were right: "the job ended without a result (no accounting)" with the end of job.log.
 
 **2026.10.21.7 (M6, sandbox)**: on mochi with 2026.10.21.6: 212 tests pass; `bench sweep_rc` passes (one build, three reliable points, tau = RC to 1e-4); `pi_gain_sweep`: 12 points, 1 build, 5.3 s, every point reliable (overshoot 5.5598 % at k 0.5, T 0.1 against the reference's 5.5595 %). New: `executor.py` from cfdt (kind threads: --ntasks=1 --cpus-per-task = min(points, run.procs/OMCT_PROCS), at least OMCT_COMPILE_PROCS on a cache miss, the reference solver never compiles; --mem auto 1 GB + 256 MB/CPU; time limit timeout + 10 or the estimate; estimates from the cache's runs.json, written after each run, else 2e-5 s/interval; job.sh/job.json; states from squeue/sacct/job.log; jobs with the queue summary; cancel with scancel; run-study sets the sweep threads from SLURM_CPUS_PER_TASK; execution record with procs_requested/used and limits); api start() submits, _collect and status read SLURM states (status returns SLURM-only waits after 15 s), bench through SLURM; MCP instructions with the SLURM paragraph (27 lines). Tests: 225 pass, 13 against `tests/fake_slurm.py` (submit and collection by a new process, routing, sizing, queued then cancelled, every final state from sacct and from job.log, sbatch failure, run-study by hand, status, bench).
 Next on mochi (1-3 min): the queueing test, two 120-point sweeps from two processes, 30 CPUs each on the 40-CPU node:

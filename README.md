@@ -16,7 +16,7 @@ It is part of [llm-translators](https://github.com/feranick/llm-translators), wi
 | Settings prefix | `OMCT_` |
 | Output folder | `~/omct_runs` (`OMCT_OUT`) |
 
-**Status (2026.10.21.7, milestone 6 of 8):** format, validation, Modelica generation, reference implementation (M1); the OpenModelica driver (M2); checks and benchmarks (M3); API, worker pool, MCP server, pictures (M4); sweeps on one build (M5), all checked on mochi; SLURM execution per llm-translators' docs/EXECUTION.md (M6, tested against a fake SLURM). 225 tests pass without OpenModelica. Next: chains (M7), joining llm-translators (M8); see `planning.md`.
+**Status (2026.10.21.8, milestone 6 of 8):** format, validation, Modelica generation, reference implementation (M1); the OpenModelica driver (M2); checks and benchmarks (M3); API, worker pool, MCP server, pictures (M4); sweeps on one build (M5), all checked on mochi; SLURM execution per llm-translators' docs/EXECUTION.md (M6, tested against a fake SLURM). 225 tests pass without OpenModelica. Next: chains (M7), joining llm-translators (M8); see `planning.md`.
 
 ## Install
 
@@ -150,6 +150,7 @@ Pictures: `"images": true` in a study writes `images/outputs.png` (one panel per
 
 | Version | Changes |
 |---|---|
+| 2026.10.21.8 | job.sh puts the package's folder on PYTHONPATH (mochi: the first SLURM jobs could not import the translator, not yet installed in the venv) |
 | 2026.10.21.7 | M6: SLURM (`executor.py` from cfdt, kind threads: CPUs from sweep points and cache misses, memory, time estimates from measured runs, states, jobs, cancel, run-study, bench through SLURM), fake-SLURM tests (13), `tools/m6_slurm_test.py`; on mochi the 12-point PI sweep ran on one build in 5.3 s, every point reliable |
 | 2026.10.21.6 | M5: sweeps (grid/zip on one build, threads, table, plot, progress), `get_path` with dotted keys, benchmark `sweep_rc`; on mochi the MCP smoke test passed with OpenModelica (DC motor + LimPID: reliable, 5.9 % overshoot) |
 | 2026.10.21.5 | M4: worker pool and request folders (`run` with `wait`, `start`, `status`, `jobs`, `cancel`), the MCP server (12 tools, SDK 1.x and 2.x), pictures (`render.py`), CLI `status REQUEST`, `jobs`, `cancel`, `images`, `run-study`; on mochi all 11 benchmarks pass with OpenModelica |
