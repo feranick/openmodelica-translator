@@ -1,6 +1,6 @@
 """mcp_server.py — MCP server: lets LLM-based tools simulate systems (circuits, drives, heat paths, controllers)
 with OpenModelica and the Modelica Standard Library.
-Version: 2026.10.21.17
+Version: 2026.10.21.20
 
 Tools (all JSON):
   study_format      the study format: component kinds, ports, parameters, analyses, conventions. Read it first.
@@ -36,9 +36,9 @@ except ImportError:  # 1.x
 
 INSTRUCTIONS = """openmodelica-translator simulates whole systems over time with OpenModelica and the Modelica
 Standard Library 4.0.0: circuits (R, L, C, sources, op-amps, transformers), translational and rotational
-mechanics (masses, inertias, springs, dampers, gears, force/torque sources), DC motors and the MSL DC machine
-(losses, heat ports), heat transfer (capacitors, conductors, convection, radiation, boundaries), coolant loops
-(pumps, pipes, valves, ambients; Thermal.FluidHeatFlow) and control blocks (PI, PID, LimPID, limiters, tables). A study lists components (catalog kinds with parameters), connections between their ports,
+mechanics (masses, inertias, springs, dampers, gears, force/torque sources), DC and AC machines (induction,
+PMSM; losses, heat ports) with three-phase grids and drives, heat transfer, coolant loops (pumps, pipes, valves;
+Thermal.FluidHeatFlow) and control blocks (PI, PID, LimPID, limiters, tables). A study lists components (catalog kinds with parameters), connections between their ports,
 outputs, and an analysis: transient, steady or linearize (eigenvalues, modes, Bode); derived quantities (step
 metrics, crossing times, window statistics) and expect checks. It takes other translators' results as values
 (a build123d-translator part result + density gives a mass or a moment of inertia: see study_format).

@@ -1,6 +1,6 @@
 """network.py — a study's components, values and connections, resolved: the common ground of validation, the
 Modelica generator and the reference implementation.
-Version: 2026.10.21.14
+Version: 2026.10.21.20
 
 build(study) -> Net, with net.errors (each says the fix) and net.warnings. It
   - resolves kinds (or "msl" class paths) and parameter values to SI (units.to_si), with defaults;
@@ -53,12 +53,24 @@ class Net:
 
     def port_type(self, eport: str) -> str:
         e, p = eport.split(".", 1)
+        if ".pin[" in p:                      # a phase of a plug
+            return "pin"
+        if p.endswith("]") and "[" in p:      # an element of a vector signal
+            return {"vin": "in", "vout": "out"}[C.KINDS[self.elems[e]["kind"]]["ports"][p.split("[")[0]]]
         return C.KINDS[self.elems[e]["kind"]]["ports"][p]
 
     def mpath(self, eport: str) -> str:
-        """Element port -> Modelica path (table.y -> table.y[1])."""
+        """Element port -> Modelica path (table.y -> table.y[1]; a plug's phase: plug_p.pin[k])."""
         e, p = eport.split(".", 1)
+        if ".pin[" in p:
+            q, k = p.split(".", 1)
+            return f"{e}." + C.PORT_PATHS.get((self.elems[e]["kind"], q), q) + "." + k
         return f"{e}." + C.PORT_PATHS.get((self.elems[e]["kind"], p), p)
+
+    def pins(self, eport: str) -> list:
+        """The electrical pins of an element port: a plug's three phases, else the port itself."""
+        n = C.phases(self.port_type(eport))
+        return [f"{eport}.pin[{k}]" for k in range(1, n + 1)] if n > 1 else [eport]
 
     def var_expr(self, ref: str):
         """'X.var', 'X.port' (signal) or 'X.port.v' -> (list of (coef, Modelica path), unit), or raises KeyError
@@ -85,6 +97,10 @@ class Net:
                 ep = self.elem_port(comp, v)
                 e, p = ep.split(".", 1)
                 return [(1.0, self.mpath(ep))], C.OUT_UNITS.get((self.elems[e]["kind"], p), "1")
+        if len(parts) == 4 and parts[1] in pts and pts[parts[1]] == "plug" and re.fullmatch(r"pin\[[123]\]", parts[2]) \
+                and parts[3] in ("v", "i"):
+            ep = self.elem_port(comp, parts[1])
+            return [(1.0, self.mpath(ep) + "." + parts[2] + "." + parts[3])], C.PORT_TYPES["pin"]["units"][parts[3]]
         if len(parts) == 3 and parts[1] in pts and pts[parts[1]] not in ("in", "out"):
             pt = C.PORT_TYPES[pts[parts[1]]]
             if parts[2] in (pt["potential"], pt["flow"], *pt.get("extra", ())):
@@ -93,7 +109,8 @@ class Net:
         raise KeyError(f"'{ref}': {kname} has variables {sorted(k['vars'])}, signal ports "
                        f"{sorted(p for p, t in pts.items() if t in ('in', 'out'))} and physical ports "
                        f"{sorted(p for p, t in pts.items() if t not in ('in', 'out'))} (port.v / port.i, "
-                       f"port.s / port.f, port.phi / port.tau, port.T / port.Q_flow, port.p / port.m_flow / port.h / port.H_flow)")
+                       f"port.s / port.f, port.phi / port.tau, port.T / port.Q_flow, port.p / port.m_flow / port.h / port.H_flow, "
+                       f"plug.pin[k].v / .i)")
 
     def var_expr_elem(self, elem: str, v: str):
         k = C.KINDS[self.elems[elem]["kind"]]
@@ -199,8 +216,15 @@ def resolve_inits(kname: str, given: dict, params: dict, where: str, net: Net, r
     for name, spec in k["inits"].items():
         if name in given:
             try:
-                si, rec = to_si(given[name], spec["unit"], absolute_temperature=spec["abs_T"], where=f"{where}.{name}")
-                if rec is not None and not isinstance(given[name], (int, float)):
+                gv = given[name]
+                if spec.get("phases") and isinstance(gv, list):
+                    if len(gv) != spec["phases"]:
+                        raise UnitError(f"{where}.{name}: one value or a list of {spec['phases']} (one per phase)")
+                    si = [to_si(x, spec["unit"], where=f"{where}.{name}[{j + 1}]")[0] for j, x in enumerate(gv)]
+                    out[name] = (si, True)
+                    continue
+                si, rec = to_si(gv, spec["unit"], absolute_temperature=spec["abs_T"], where=f"{where}.{name}")
+                if rec is not None and not isinstance(gv, (int, float)):
                     net.inputs[f"{rec_prefix}.{name}"] = rec
                 out[name] = (si, True)
             except UnitError as exc:
@@ -283,9 +307,17 @@ def build(study: dict) -> Net:
                                "enabled": set()}
     _kind_checks(net)
     _connections(study, net)
+    for name, d in net.comps.items():
+        if d["kind"] in ("induction_machine", "pmsm", "pmsm_damper") and d["params"].get("terminal") == "D":
+            for a_, b_ in study_conns_of(net, name, "starpoint"):
+                net.errors.append(f"components.{name}: a delta-connected machine has no starpoint ({a_} - {b_})")
     if not net.errors:
         _topology(study, net)
     return net
+
+
+def study_conns_of(net, comp, port):
+    return [(a, b) for a, b in net.study_conns if f"{comp}.{port}" in (a, b)]
 
 
 def dcpm_vi_nominal(p) -> float:
@@ -303,6 +335,11 @@ def _kind_checks(net):
     """Parameter combinations the MSL classes assert on (at initialisation): caught here with the fix."""
     for name, d in net.comps.items():
         p = d["params"]
+        if d["kind"] in ("induction_machine", "pmsm", "pmsm_damper"):
+            for pref, ref_ in (("PRef_statorCore", "VRef_statorCore"), ("PRef_strayLoad", "IRef_strayLoad"),
+                               ("PRef_pm", "IRef_pm")):
+                if (p.get(pref) or 0) > 0 and p.get(ref_) is None:
+                    net.errors.append(f"components.{name}: {pref} needs {ref_} (the RMS value it refers to)")
         if d["kind"] == "dc_machine" and None not in (p.get("VaNominal"), p.get("IaNominal"), p.get("Ra")):
             vi = dcpm_vi_nominal(p)
             if vi <= 0:
@@ -377,7 +414,9 @@ def _connections(study, net):
                               + (" (two outputs cannot be connected)" if ta == tb == "out" else ""))
             continue
         elif ta != tb:
-            net.errors.append(f"{w}: {ca}.{pa} is a {C.domain_of(ta)} port ({ta}), {cb}.{pb} a {C.domain_of(tb)} port ({tb})")
+            net.errors.append(f"{w}: {ca}.{pa} is a {C.domain_of(ta)} port ({ta}), {cb}.{pb} a {C.domain_of(tb)} port ({tb})"
+                              + (": a plug (three phases) connects to plugs; for one phase use plug_to_pin, for a star "
+                                 "point a star" if "plug" in (ta, tb) else ""))
             continue
         if (ca, pa) == (cb, pb):
             net.errors.append(f"{w}: a port connected to itself")
@@ -438,11 +477,22 @@ def _topology(study, net):
             if p in k["cond_ports"] and p not in d["enabled"]:
                 continue
             ep = f"{e}.{p}"
-            (sig_in if t == "in" else sig_out if t == "out" else phys).append(ep)
-            uf.find(ep)
+            if t == "in":
+                sig_in.append(ep)
+            elif t == "out":
+                sig_out.append(ep)
+            elif t in ("vin", "vout"):              # vector signals: one net per element
+                (sig_in if t == "vin" else sig_out).extend(f"{ep}[{j}]" for j in (1, 2, 3))
+            else:
+                phys += net.pins(ep)
+    for x in phys:
+        uf.find(x)
     drivers = {}
     for a, b in net.conns:
-        uf.union(a, b)
+        if net.port_type(a) in ("in", "out", "vin", "vout"):
+            continue
+        for x, y in zip(net.pins(a), net.pins(b)):
+            uf.union(x, y)
     roots = sorted({uf.find(x) for x in phys})
     rid = {r: i for i, r in enumerate(roots)}
     net.node_of = {x: rid[uf.find(x)] for x in phys}
@@ -460,6 +510,10 @@ def _topology(study, net):
             drivers.setdefault(b, []).append(a)
         elif ta == "in" and tb == "out":
             drivers.setdefault(a, []).append(b)
+        elif {ta, tb} == {"vin", "vout"}:
+            o, i_ = (a, b) if ta == "vout" else (b, a)
+            for j in (1, 2, 3):
+                drivers.setdefault(f"{i_}[{j}]", []).append(f"{o}[{j}]")
     sig = _UF()
     for x in sig_in + sig_out:
         sig.find(x)
@@ -495,10 +549,11 @@ def _topology(study, net):
                 if t not in ("in", "out"):
                     by_dom.setdefault(C.domain_of(t), []).append(p)
             groups = list(by_dom.values())
-        groups = [[p for p in g if f"{e}.{p}" in net.node_of] for g in groups]
+        groups = [[x for q in g for x in (net.pins(f"{e}.{q}") if (q not in k["cond_ports"] or q in d["enabled"]) else [])
+                   if x in net.node_of] for g in groups]
         for g in groups:
-            for p in g[1:]:
-                isl.union(net.node_of[f"{e}.{g[0]}"], net.node_of[f"{e}.{p}"])
+            for x in g[1:]:
+                isl.union(net.node_of[g[0]], net.node_of[x])
     members = {}
     for x in phys:
         members.setdefault(isl.find(net.node_of[x]), set()).add(x)
@@ -513,7 +568,8 @@ def _topology(study, net):
         if dom == "translational" and not kinds & {"fixed", "mass"}:
             net.errors.append(f"the translational system of {label} has neither a mass nor a fixed point: its position "
                               f"is undetermined; add a fixed (or a mass)")
-        if dom == "rotational" and not kinds & {"rot_fixed", "inertia", "dc_machine"}:
+        if dom == "rotational" and not kinds & {"rot_fixed", "inertia", "dc_machine", "im_core", "pmsm_core",
+                                                "pmsm_damper_core"}:
             net.errors.append(f"the rotational system of {label} has neither an inertia nor a rot_fixed: its angle is "
                               f"undetermined; add a rot_fixed (or an inertia)")
         if dom == "thermal" and not kinds & {"fixed_temperature", "prescribed_temperature", "heat_capacitor", "pipe"}:
@@ -533,14 +589,24 @@ def _topology(study, net):
                 net.errors.append(f"the coolant loop of {label} mixes media ({desc}): give every component of a loop "
                                   f"the same medium")
     # unconnected physical ports
-    connected = {x for c in net.conns for x in c}
+    connected = {y for c in net.conns for x in c for y in (net.pins(x) if net.port_type(x) not in ("in", "out") else [x])}
+    reported = set()
     for x in phys:
+        if ".pin[" in x:
+            x = x.rsplit(".pin[", 1)[0]
+            if x in reported:
+                continue
+            reported.add(x)
+            if all(y in connected for y in net.pins(x)):
+                continue
         if x not in connected and not _rigid_partner_connected(net, x, connected):
             e = x.split(".")[0]
             kname = net.elems[e]["kind"]
             t = net.port_type(x)
             ref = _study_port(net, x)
-            if t == "pin":
+            if t == "pin" and (kname == "star" or (kname == "terminal_box" and x.endswith(".starpoint"))):
+                pass                    # a floating star point: the phase currents sum to zero
+            elif t in ("pin", "plug"):
                 net.errors.append(f"{ref} is not connected (an open terminal carries no current): connect it")
             elif t == "fluid":
                 net.errors.append(f"{ref} is not connected (an open fluid port is a closed end: no flow): connect it, "

@@ -77,7 +77,7 @@ def check(root) -> list[str]:
                 names.add((spec.get("msl") or p).split(".")[0])
         names |= {(v["params"][m]["msl"] if m in v["params"] and isinstance(v["params"][m].get("msl"), str) else m).split(".")[0]
                   for m in v["mods"]} | set(v["text"])
-        names |= {C.var_path(k, x).split(".")[0] for x in v["vars"]}
+        names |= {C.var_path(k, x).split(".")[0].split("[")[0] for x in v["vars"]}
         names |= {i["var"] for i in v["inits"].values()}
         names |= {s_.split(".")[0] for s_ in v.get("block_states", {})}
         names |= set(v.get("cond_ports", {}).values())

@@ -1,5 +1,5 @@
 """ref.py — an independent implementation of the study's equations, without OpenModelica.
-Version: 2026.10.21.17
+Version: 2026.10.21.20
 
 Built from the study (network.Net), never from the generated Modelica text, so a translation mistake shows up as
 a mismatch. Each catalog kind writes its equations (the MSL 4.0.0 ones, read from the library's sources) into a
@@ -33,6 +33,7 @@ import numpy as np
 from . import catalog as C
 
 EPS = 2.220446049250313e-16
+SQ2 = math.sqrt(2.0)
 
 
 # ------------------------------------------------------------------------------------------- time functions
@@ -228,6 +229,7 @@ class System:
         self.paths: dict[str, dict] = {}                # Modelica path -> linear functional {var: coef}
         self.products: dict = {}                        # path -> (f1, f2) or [(coef, f1, f2), ...]: sums of products
         self.cascades: list = []                        # Cascade sources (losses heating a thermal network)
+        self.funcs: dict = {}                           # path -> ("rms", [functionals]): outputs computed afterwards
         self.modes = None                               # None: neutral stand-ins (validation); else {elem: mode}
         self.pwl: dict = {}                             # piecewise-linear elements: {elem: initial mode}
         self.guards: list = []                          # [{elem, f, c, dir, to}]: leave the mode when f z + c crosses 0
@@ -324,6 +326,13 @@ def _ports_paths(c: _Ctx):
         mp = c.net.mpath(f"{c.e}.{p}")
         if t in ("in", "out"):
             c.s.paths[mp] = {c.sig(p): 1.0}
+        elif t in ("vin", "vout"):
+            for k in range(1, 4):
+                c.s.paths[f"{mp}[{k}]"] = {c.sig(f"{p}[{k}]"): 1.0}
+        elif t == "plug":
+            for k in range(1, 4):
+                c.s.paths[f"{mp}.pin[{k}].v"] = {c.pot(f"{p}.pin[{k}]"): 1.0}
+                c.s.paths[f"{mp}.pin[{k}].i"] = {c.flow(f"{p}.pin[{k}]"): 1.0}
         else:
             pt = C.PORT_TYPES[t]
             c.s.paths[f"{mp}.{pt['potential']}"] = {c.pot(p): 1.0}
@@ -400,6 +409,12 @@ def _stamp(c: _Ctx):
         return
     if kn == "dc_machine":
         _stamp_dc_machine(c)
+        return
+    if kn in POLY:
+        _stamp_poly(c)
+        return
+    if kn in AC_PARTS:
+        _stamp_ac(c)
         return
     # ---- electrical
     if kn == "resistor":
@@ -813,6 +828,209 @@ def _stamp_dc_machine(c: _Ctx):
         for h in C.DCPM_HEAT:
             _heat_out(c, heat[h], h)
     _init(c, "ia0", {ia: 1.0})
+    _init(c, "w0", {w: 1.0})
+    _init(c, "phi0", {phi: 1.0})
+
+
+# ------------------------------------------------------------------------------------------- three-phase parts
+POLY = {"ac_voltage", "star", "delta", "plug_to_pin", "ac_resistor", "ac_inductor", "ac_capacitor", "ac_current_rms",
+        "ac_voltage_rms", "ac_power"}
+
+
+def _ph(port, k):
+    return f"{port}.pin[{k}]"
+
+
+def _sig_used(c, port):
+    """Whether a signal output drives any input (then a post-computed output cannot stand in for it)."""
+    net = c.net
+    tid = net.signal_of.get(f"{c.e}.{port}")
+    return any(v == tid and ep != f"{c.e}.{port}" and net.port_type(ep) == "in" for ep, v in net.signal_of.items())
+
+
+def _clarke(f3):
+    """Space phasor (alpha, beta) of three phase functionals: 2/3 (x1 - x2/2 - x3/2), 2/3 sqrt(3)/2 (x2 - x3)."""
+    a, b = {}, {}
+    for cf, f in zip((2 / 3, -1 / 3, -1 / 3), f3):
+        for x, v in f.items():
+            a[x] = a.get(x, 0.0) + cf * v
+    for cf, f in zip((0.0, 3 ** 0.5 / 3, -3 ** 0.5 / 3), f3):
+        for x, v in f.items():
+            b[x] = b.get(x, 0.0) + cf * v
+    return a, b
+
+
+def _stamp_poly(c: _Ctx):
+    kn, p = c.d["kind"], c.p
+    if kn in ("ac_voltage", "ac_resistor", "ac_inductor", "ac_capacitor"):
+        mods = C.KINDS[kn]["mods"]
+        for k in range(1, 4):
+            v, i = c.var(f"v[{k}]"), c.var(f"i[{k}]")
+            a, b = _ph("plug_p", k), _ph("plug_n", k)
+            c.eq({v: 1, c.pot(a): -1, c.pot(b): 1})
+            c.eq({i: 1, c.flow(a): -1})
+            c.eq({c.flow(a): 1, c.flow(b): 1})
+            c.path(f"v[{k}]", {v: 1.0})
+            c.path(f"i[{k}]", {i: 1.0})
+            if kn == "ac_voltage":
+                c.eq({v: 1}, None, [(-1.0, Sine(mods["V"](p)[k - 1], p["f"], mods["phase"](p)[k - 1]))])
+            elif kn == "ac_resistor":
+                c.eq({v: 1, i: -p["R"]})
+            elif kn == "ac_inductor":
+                c.eq({v: 1}, {i: -p["L"]})
+                _init_phase(c, "i0", k, {i: 1.0})
+            else:
+                c.eq({i: 1}, {v: -p["C"]})
+                _init_phase(c, "v0", k, {v: 1.0})
+    elif kn == "star":
+        for k in range(1, 4):
+            c.eq({c.pot(_ph("plug_p", k)): 1, c.pot("pin_n"): -1})
+        c.eq({c.flow("pin_n"): 1, **{c.flow(_ph("plug_p", k)): 1 for k in range(1, 4)}})
+    elif kn == "delta":
+        for j in range(1, 4):
+            nxt = j % 3 + 1
+            c.eq({c.pot(_ph("plug_n", j)): 1, c.pot(_ph("plug_p", nxt)): -1})
+            c.eq({c.flow(_ph("plug_n", j)): 1, c.flow(_ph("plug_p", nxt)): 1})
+    elif kn == "plug_to_pin":
+        k = int(p["k"])
+        c.eq({c.pot(_ph("plug_p", k)): 1, c.pot("pin_p"): -1})
+        c.eq({c.flow(_ph("plug_p", k)): 1, c.flow("pin_p"): 1})
+        for j in range(1, 4):
+            if j != k:
+                c.eq({c.flow(_ph("plug_p", j)): 1})
+    elif kn in ("ac_current_rms", "ac_voltage_rms"):
+        out = "I" if kn == "ac_current_rms" else "V"
+        fs = []
+        for k in range(1, 4):
+            a, b = _ph("plug_p", k), _ph("plug_n", k)
+            if kn == "ac_current_rms":
+                c.eq({c.pot(a): 1, c.pot(b): -1})
+                c.eq({c.flow(a): 1, c.flow(b): 1})
+                fs.append({c.flow(a): 1.0})
+            else:
+                c.eq({c.flow(a): 1})
+                c.eq({c.flow(b): 1})
+                fs.append({c.pot(a): 1.0, c.pot(b): -1.0})
+        c.eq({c.sig(out): 1})                        # stand-in: the output is computed afterwards
+        c.s.funcs[c.net.mpath(f"{c.e}.{out}")] = ("rms", fs)
+        if _sig_used(c, out):
+            c.approx("a quasi-RMS value driving other blocks (nonlinear)")
+    elif kn == "ac_power":
+        vs, is_ = [], []
+        for k in range(1, 4):
+            a, ni, nv = _ph("plug_p", k), _ph("plug_ni", k), _ph("plug_nv", k)
+            c.eq({c.pot(a): 1, c.pot(ni): -1})
+            c.eq({c.flow(a): 1, c.flow(ni): 1})
+            c.eq({c.flow(nv): 1})
+            vs.append({c.pot(a): 1.0, c.pot(nv): -1.0})
+            is_.append({c.flow(a): 1.0})
+        va, vb = _clarke(vs)
+        ia, ib = _clarke(is_)
+        c.eq({c.sig("P"): 1})
+        c.eq({c.sig("Q"): 1})
+        c.s.products[c.net.mpath(f"{c.e}.P")] = [(1.5, va, ia), (1.5, vb, ib)]
+        c.s.products[c.net.mpath(f"{c.e}.Q")] = [(-1.5, va, ib), (1.5, vb, ia)]
+        if _sig_used(c, "P") or _sig_used(c, "Q"):
+            c.approx("electrical power driving other blocks (nonlinear)")
+
+
+def _init_phase(c: _Ctx, name, k, functional):
+    value, given = c.d["inits"][name]
+    v = value[k - 1] if isinstance(value, list) else value
+    c.init(f"{name}[{k}]", functional, v, c.k["inits"][name]["priority"], given)
+
+
+# ------------------------------------------------------------------------------------------- AC machines and drives
+AC_PARTS = {"im_core", "pmsm_core", "pmsm_damper_core", "terminal_box", "vf_controller", "signal_ac_voltage",
+            "signal_ac_current", "dq_to_three_phase"}
+
+
+def _stamp_ac(c: _Ctx):
+    """Until the nonlinear reference (V3.3): the machines and the drives' blocks get stand-ins with their states
+    (three stator currents, two rotor currents, speed and angle; the V/f integrator), enough for the choice of
+    fixed initial values and the singularity check, never for numbers."""
+    kn, p = c.d["kind"], c.p
+    if kn == "terminal_box":
+        for k in range(1, 4):
+            sp, su, sn = _ph("plug_sp", k), _ph("plugSupply", k), _ph("plug_sn", k)
+            c.eq({c.pot(sp): 1, c.pot(su): -1})
+            if p["terminal"] == "Y":
+                c.eq({c.flow(sp): 1, c.flow(su): 1})
+            else:
+                prev = _ph("plug_sn", (k - 2) % 3 + 1)        # delta: plug_sn[j] joins plug_sp[j + 1]
+                c.eq({c.pot(prev): 1, c.pot(sp): -1})
+                c.eq({c.flow(sp): 1, c.flow(su): 1, c.flow(prev): 1})
+        if p["terminal"] == "Y":
+            c.eq({c.pot(_ph("plug_sn", 1)): 1, c.pot(_ph("plug_sn", 2)): -1})
+            c.eq({c.pot(_ph("plug_sn", 2)): 1, c.pot(_ph("plug_sn", 3)): -1})
+            c.eq({c.pot(_ph("plug_sn", 1)): 1, c.pot("starpoint"): -1})
+            c.eq({c.flow("starpoint"): 1, **{c.flow(_ph("plug_sn", k)): 1 for k in range(1, 4)}})
+        else:
+            c.eq({c.flow("starpoint"): 1})
+        return
+    if kn in ("signal_ac_voltage", "signal_ac_current"):
+        x = "v" if kn == "signal_ac_voltage" else "i"
+        for k in range(1, 4):
+            v, i = c.var(f"v[{k}]"), c.var(f"i[{k}]")
+            a, b = _ph("plug_p", k), _ph("plug_n", k)
+            c.eq({v: 1, c.pot(a): -1, c.pot(b): 1})
+            c.eq({i: 1, c.flow(a): -1})
+            c.eq({c.flow(a): 1, c.flow(b): 1})
+            c.eq({v if x == "v" else i: 1, c.sig(f"{x}[{k}]"): -1})
+            c.path(f"v[{k}]", {v: 1.0})
+            c.path(f"i[{k}]", {i: 1.0})
+        return
+    c.approx("AC machines and drives: the reference covers them from version 3.3 (nonlinear)")
+    if kn == "vf_controller":
+        x, am = c.var("x"), c.var("amplitude")
+        c.eq({c.sig("u"): 2 * math.pi}, {x: -1})
+        c.eq({am: 1, c.sig("u"): -SQ2 * p["VNominal"] / p["fNominal"]})
+        for k in range(1, 4):
+            c.eq({c.sig(f"y[{k}]"): 1, am: -1.0})
+        c.path("x", {x: 1.0})
+        c.path("amplitude", {am: 1.0})
+        c.init("x", {x: 1.0}, 0.0, 0, True, forced=True)
+        return
+    if kn == "dq_to_three_phase":
+        for k in range(1, 4):
+            th = -(k - 1) * 2 * math.pi / 3
+            c.eq({c.sig(f"y[{k}]"): 1, c.sig("d"): -SQ2 * math.cos(th), c.sig("q"): SQ2 * math.sin(th), c.sig("phi"): 0.0})
+        return
+    # machines (stand-in): per phase Rs + Ls, rotor currents in RL loops, rotor inertia, no torque
+    Ls = p["Lssigma"] + (p.get("Lm") or p.get("Lmd"))
+    for k in range(1, 4):
+        vs, is_ = c.var(f"vs[{k}]"), c.var(f"is[{k}]")
+        a, b = _ph("plug_sp", k), _ph("plug_sn", k)
+        c.eq({vs: 1, c.pot(a): -1, c.pot(b): 1})
+        c.eq({is_: 1, c.flow(a): -1})
+        c.eq({c.flow(a): 1, c.flow(b): 1})
+        c.eq({vs: 1, is_: -p["Rs"]}, {is_: -Ls})
+        c.path(f"vs[{k}]", {vs: 1.0})
+        c.path(f"is[{k}]", {is_: 1.0})
+        _init_phase(c, "is0", k, {is_: 1.0})
+    if "ir0" in c.k["inits"]:
+        Rr = p.get("Rr") or p.get("Rrd")
+        Lr = p.get("Lrsigma") or p.get("Lrsigmad")
+        for k in (1, 2):
+            ir = c.var(f"ir[{k}]")
+            c.eq({ir: Rr}, {ir: Lr})
+            c.path(f"ir[{k}]", {ir: 1.0})
+            _init_phase(c, "ir0", k, {ir: 1.0})
+    phi, w, tau = c.var("phiMechanical"), c.var("wMechanical"), c.var("tauElectrical")
+    c.eq({phi: 1, c.pot("flange"): -1})
+    c.eq({w: 1}, {phi: -1})
+    c.eq({tau: 1})
+    c.eq({tau: 1, c.flow("flange"): 1}, {w: -p["Jr"]})
+    c.path("phiMechanical", {phi: 1.0})
+    c.path("wMechanical", {w: 1.0})
+    c.path("tauElectrical", {tau: 1.0})
+    c.path("tauShaft", {c.flow("flange"): -1.0})
+    for v in C.KINDS[kn]["vars"]:
+        if v.startswith(("power", "loss")):
+            c.s.products[f"{c.e}.{C.var_path(kn, v)}"] = [(0.0, {w: 1.0}, {w: 1.0})]
+    for h in c.k["cond_ports"]:
+        if c.enabled(h):
+            c.eq({c.flow(h): 1})
     _init(c, "w0", {w: 1.0})
     _init(c, "phi0", {phi: 1.0})
 
@@ -1770,6 +1988,9 @@ class Ref:
         for path, pr in self.sys.products.items():
             terms = pr if isinstance(pr, list) else [(1.0, pr[0], pr[1])]
             out[path] = sum(cf * (Z @ self._functional(f1)) * (Z @ self._functional(f2)) for cf, f1, f2 in terms)
+        for path, (kind_, fs) in self.sys.funcs.items():
+            if kind_ == "rms":
+                out[path] = np.sqrt(sum((Z @ self._functional(f)) ** 2 for f in fs) / len(fs))
         return out
 
     def eigenvalues(self):

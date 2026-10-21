@@ -1,5 +1,5 @@
 """catalog.py — the curated MSL 4.0.0 components: kinds, ports, parameters (SI), variables, initial values.
-Version: 2026.10.21.18
+Version: 2026.10.21.20
 
 Every name below was checked against the MSL 4.0.0 sources (tag v4.0.0): class paths, port names, parameter
 names and defaults. A kind is either elementary (one MSL class) or composite (parts that are elementary kinds,
@@ -26,9 +26,12 @@ PORT_TYPES = {
     "flange_t": {"domain": "translational", "potential": "s", "flow": "f", "units": {"s": "m", "f": "N"}},
     "flange_r": {"domain": "rotational", "potential": "phi", "flow": "tau", "units": {"phi": "rad", "tau": "N.m"}},
     "heat": {"domain": "thermal", "potential": "T", "flow": "Q_flow", "units": {"T": "K", "Q_flow": "W"}},
+    "plug": {"domain": "electrical", "potential": "v", "flow": "i", "units": {"v": "V", "i": "A"}, "phases": 3},
     "fluid": {"domain": "fluid", "potential": "p", "flow": "m_flow", "extra": ("h", "H_flow"),
               "units": {"p": "Pa", "m_flow": "kg/s", "h": "J/kg", "H_flow": "W"}},
     "in": {"domain": "signal"},
+    "vin": {"domain": "signal", "width": 3},          # a three-element signal input (inside drives)
+    "vout": {"domain": "signal", "width": 3},
     "out": {"domain": "signal"},
 }
 
@@ -41,8 +44,9 @@ def P(unit, default=REQ, *, min=None, max=None, gt=None, structural=False, doc="
             "doc": doc, "type": type, "choices": choices, "abs_T": abs_T, "msl": msl}
 
 
-def I(var, unit, default, priority=1, abs_T=False):
-    return {"var": var, "unit": unit, "default": default, "priority": priority, "abs_T": abs_T}
+def I(var, unit, default, priority=1, abs_T=False, phases=None):
+    """An initial value; phases=3: one per phase of an array variable (var[1..3]), given as a number or a list."""
+    return {"var": var, "unit": unit, "default": default, "priority": priority, "abs_T": abs_T, "phases": phases}
 
 
 INIT_STATE = "Modelica.Blocks.Types.Init.InitialState"
@@ -80,6 +84,7 @@ EA = "Modelica.Electrical.Analog."
 MT = "Modelica.Mechanics.Translational."
 MR = "Modelica.Mechanics.Rotational."
 TH = "Modelica.Thermal.HeatTransfer."
+MACH_ = "Modelica.Electrical.Machines."
 FHF = "Modelica.Thermal.FluidHeatFlow."
 BL = "Modelica.Blocks."
 PN = {"p": "pin", "n": "pin"}
@@ -410,6 +415,57 @@ kind("slew_rate_limiter", BL + "Nonlinear.SlewRateLimiter", {"u": "in", "y": "ou
      mods={"Falling": lambda p: -p["Rising"] if p.get("Falling") is None else p["Falling"]},
      doc="dy/dt = clip((u - y)/Td, Falling, Rising) (Falling default -Rising)")
 
+# ------------------------------------------------------------------------------------------- three-phase (Polyphase, m = 3)
+# A plug is three pins (pin[1..3]); connecting two plugs connects phase k to phase k. Values are given once and
+# applied to every phase. Phase k of a source lags by (k - 1) 2 pi/3 (MSL symmetricOrientation).
+PP = "Modelica.Electrical.Polyphase."
+TWO_PLUG = {"plug_p": "plug", "plug_n": "plug"}
+M3 = {"m": "3"}
+SQ2 = 2 ** 0.5
+
+
+VI3 = {**{f"v[{k}]": "V" for k in (1, 2, 3)}, **{f"i[{k}]": "A" for k in (1, 2, 3)}}
+
+
+def _phases(x):
+    return [float(x)] * 3
+
+
+def _sym(phase):
+    import math
+    return [float(phase) - k * 2 * math.pi / 3 for k in range(3)]
+
+
+kind("ac_voltage", PP + "Sources.SineVoltage", TWO_PLUG,
+     {"V_rms": P("V", gt=0, msl=False, doc="RMS voltage per phase (plug_p to plug_n)"), "f": P("Hz", gt=0),
+      "phase": P("rad", 0.0, doc="phase of phase 1 at t = 0 (sine)")},
+     VI3, text=M3,
+     mods={"V": lambda p: _phases(SQ2 * p["V_rms"]), "f": lambda p: _phases(p["f"]), "phase": lambda p: _sym(p["phase"])},
+     doc="symmetric three-phase sine voltages v_k = sqrt(2) V_rms sin(2 pi f t + phase - (k-1) 2 pi/3); vars v[k], i[k] "
+         "per phase")
+kind("star", PP + "Basic.Star", {"plug_p": "plug", "pin_n": "pin"}, text=M3,
+     islands=[["plug_p", "pin_n"]], doc="joins the three phases at pin_n (star point)")
+kind("delta", PP + "Basic.Delta", TWO_PLUG, text=M3, islands=[["plug_p", "plug_n"]],
+     doc="plug_n phase k to plug_p phase k+1 (delta connection)")
+kind("plug_to_pin", PP + "Basic.PlugToPin_p", {"plug_p": "plug", "pin_p": "pin"},
+     {"k": P("1", 1, type="int", structural=True, min=1, max=3, doc="the phase")}, text=M3, islands=[["plug_p", "pin_p"]],
+     doc="phase k of the plug as a single pin (the other phases carry no current)")
+kind("ac_resistor", PP + "Basic.Resistor", TWO_PLUG, {"R": P("Ohm", min=0, doc="per phase")}, VI3,
+     text=M3, mods={"R": lambda p: _phases(p["R"])}, doc="v[k] = R i[k]")
+kind("ac_inductor", PP + "Basic.Inductor", TWO_PLUG, {"L": P("H", gt=0, doc="per phase")}, VI3,
+     {"i0": I("i", "A", 0.0, phases=3)}, text=M3, mods={"L": lambda p: _phases(p["L"])}, doc="v[k] = L di[k]/dt")
+kind("ac_capacitor", PP + "Basic.Capacitor", TWO_PLUG, {"C": P("F", gt=0, doc="per phase")}, VI3,
+     {"v0": I("v", "V", 0.0, phases=3)}, text=M3, mods={"C": lambda p: _phases(p["C"])}, doc="i[k] = C dv[k]/dt")
+kind("ac_current_rms", PP + "Sensors.CurrentQuasiRMSSensor", {**TWO_PLUG, "I": "out"}, text=M3,
+     linear=False, doc="I = sqrt(sum i[k]^2 / 3) (quasi RMS; the RMS current for a symmetric sine)")
+kind("ac_voltage_rms", PP + "Sensors.VoltageQuasiRMSSensor", {**TWO_PLUG, "V": "out"}, text=M3,
+     linear=False, doc="V = sqrt(sum v[k]^2 / 3), v = plug_p - plug_n (no current)")
+kind("ac_power", MACH_ + "Sensors.ElectricalPowerSensor", {"plug_p": "plug", "plug_ni": "plug", "plug_nv": "plug",
+                                                          "P": "out", "Q": "out"},
+     linear=False, islands=[["plug_p", "plug_ni", "plug_nv"]],
+     doc="current from plug_p to plug_ni, voltage to plug_nv (e.g. a star point): P = 3/2 (v_a i_a + v_b i_b), "
+         "Q = 3/2 (v_b i_a - v_a i_b) (space phasors)")
+
 # ------------------------------------------------------------------------------------------- machines
 def _ref_or(p, name, pref, default):
     """A loss record's reference: the given one, else (when the loss is on) the MSL default as a literal."""
@@ -464,6 +520,170 @@ kind("dc_machine", MACH + "BasicMachines.DCMachines.DC_PermanentMagnet",
      doc="MSL DC_PermanentMagnet: k = (VaNominal - Ra IaNominal)/wNominal; losses 0 unless given; heatPort (all "
          "losses at one node) or all six heatPort* when connected (Ra then at the armature port's T), else Ta = TaOperational")
 
+# ------------------------------------------------------------------------------------------- AC machines (m = 3)
+# Electrical.Machines.BasicMachines: IM_SquirrelCage and SM_PermanentMagnet (space-phasor models, transient), each with
+# a TerminalBox (Y or D) in a composite: ports plug (the supply), flange (the shaft) and heat ports when connected.
+# Loss records are structural (their final parameters are compiled in: B18); references default to MSL's bindings
+# and become literals when a loss is on.
+def _w_sync(p):
+    import math
+    return 2 * math.pi * p["fsNominal"] / p["p"]
+
+
+def _w_el(p):
+    import math
+    return 2 * math.pi * p["fsNominal"]
+
+
+def _need(p, name, pref):
+    """A reference that has no MSL default (only a start value): required when the loss is on (validated)."""
+    return p.get(name) if (p.get(pref) or 0) > 0 else None
+
+
+AC_STATOR = {
+    "p": P("1", type="int", structural=True, min=1, doc="pole pairs"),
+    "fsNominal": P("Hz", gt=0, doc="nominal frequency"),
+    "Rs": P("Ohm", min=0, doc="stator resistance per phase at TsRef"), "TsRef": P("K", 293.15, gt=0, abs_T=True),
+    "alpha20s": P("1/K", 0.0, doc="temperature coefficient of Rs at 20 degC"),
+    "Lssigma": P("H", gt=0, doc="stator stray inductance per phase"),
+    "Lszero": P("H", None, gt=0, doc="stator zero-sequence inductance (default Lssigma)"),
+    "Jr": P("kg.m2", gt=0, doc="rotor inertia"),
+    "TsOperational": P("K", 293.15, gt=0, abs_T=True, doc="stator winding temperature without heat ports"),
+    "PRef_friction": P("W", 0.0, min=0, structural=True, msl="frictionParameters.PRef"),
+    "wRef_friction": P("rad/s", None, gt=0, structural=True, msl="frictionParameters.wRef", doc="default 2 pi fsNominal/p"),
+    "power_w_friction": P("1", 2.0, gt=0, structural=True, msl="frictionParameters.power_w"),
+    "PRef_statorCore": P("W", 0.0, min=0, structural=True, msl="statorCoreParameters.PRef"),
+    "VRef_statorCore": P("V", None, gt=0, structural=True, msl="statorCoreParameters.VRef",
+                         doc="RMS phase voltage of PRef_statorCore (required with it)"),
+    "wRef_statorCore": P("rad/s", None, gt=0, structural=True, msl="statorCoreParameters.wRef", doc="default 2 pi fsNominal"),
+    "PRef_strayLoad": P("W", 0.0, min=0, structural=True, msl="strayLoadParameters.PRef"),
+    "IRef_strayLoad": P("A", None, gt=0, structural=True, msl="strayLoadParameters.IRef",
+                        doc="RMS current of PRef_strayLoad (required with it)"),
+    "wRef_strayLoad": P("rad/s", None, gt=0, structural=True, msl="strayLoadParameters.wRef", doc="default 2 pi fsNominal/p"),
+    "power_w_strayLoad": P("1", 1.0, gt=0, structural=True, msl="strayLoadParameters.power_w"),
+}
+AC_STATOR_MODS = {
+    "wRef_friction": lambda p: _ref_or(p, "wRef_friction", "PRef_friction", _w_sync(p)),
+    "wRef_statorCore": lambda p: _ref_or(p, "wRef_statorCore", "PRef_statorCore", _w_el(p)),
+    "VRef_statorCore": lambda p: _need(p, "VRef_statorCore", "PRef_statorCore"),
+    "IRef_strayLoad": lambda p: _need(p, "IRef_strayLoad", "PRef_strayLoad"),
+    "wRef_strayLoad": lambda p: _ref_or(p, "wRef_strayLoad", "PRef_strayLoad", _w_sync(p)),
+}
+AC_VARS = {"wMechanical": "rad/s", "phiMechanical": "rad", "tauElectrical": "N.m", "tauShaft": "N.m",
+           **{f"is[{k}]": "A" for k in (1, 2, 3)}, **{f"vs[{k}]": "V" for k in (1, 2, 3)},
+           "powerStator": "W", "powerMechanical": "W", "lossPowerTotal": "W", "lossPowerStatorWinding": "W",
+           "lossPowerStatorCore": "W", "lossPowerRotorCore": "W", "lossPowerStrayLoad": "W", "lossPowerFriction": "W"}
+PB = ("powerStator", "powerMechanical", "lossPowerTotal", "lossPowerStatorWinding", "lossPowerStatorCore",
+      "lossPowerRotorCore", "lossPowerStrayLoad", "lossPowerFriction", "lossPowerRotorWinding", "lossPowerPermanentMagnet")
+AC_INITS = {"w0": I("wMechanical", "rad/s", 0.0), "phi0": I("phiMechanical", "rad", 0.0),
+            "is0": I("is", "A", 0.0, phases=3)}
+IM_HEAT = ["heatPortStatorWinding1", "heatPortStatorWinding2", "heatPortStatorWinding3", "heatPortStatorCore",
+           "heatPortRotorCore", "heatPortStrayLoad", "heatPortFriction", "heatPortRotorWinding"]
+PM_HEAT = [h for h in IM_HEAT if h != "heatPortRotorWinding"] + ["heatPortPermanentMagnet"]
+PMD_HEAT = PM_HEAT + ["heatPortRotorWinding"]
+MB = MACH_ + "BasicMachines."
+
+
+def _heat_path(h):
+    return "thermalPort." + (f"heatPortStatorWinding[{h[-1]}]" if h.startswith("heatPortStatorWinding") else h)
+
+
+kind("im_core", MB + "InductionMachines.IM_SquirrelCage",
+     {"plug_sp": "plug", "plug_sn": "plug", "flange": "flange_r", **{h: "heat" for h in IM_HEAT}},
+     {**AC_STATOR, "Lm": P("H", gt=0, doc="main field inductance per phase"),
+      "Lrsigma": P("H", gt=0, doc="rotor stray inductance per phase (stator side)"),
+      "Rr": P("Ohm", min=0, doc="rotor resistance per phase (stator side) at TrRef"),
+      "TrRef": P("K", 293.15, gt=0, abs_T=True), "alpha20r": P("1/K", 0.0),
+      "TrOperational": P("K", 293.15, gt=0, abs_T=True)},
+     {**AC_VARS, "lossPowerRotorWinding": "W", "ir[1]": "A", "ir[2]": "A"},
+     {**AC_INITS, "ir0": I("ir", "A", 0.0, phases=2)},
+     mods=AC_STATOR_MODS, cond_ports={h: "useThermalPort" for h in IM_HEAT}, hidden=True, linear=False,
+     var_paths={v: "powerBalance." + v for v in PB}, islands=[["plug_sp", "plug_sn"], ["flange"], IM_HEAT])
+for _n, _h, _dc in (("pmsm_core", PM_HEAT, False), ("pmsm_damper_core", PMD_HEAT, True)):
+    kind(_n, MB + "SynchronousMachines.SM_PermanentMagnet",
+         {"plug_sp": "plug", "plug_sn": "plug", "flange": "flange_r", **{h: "heat" for h in _h}},
+         {**AC_STATOR, "VsOpenCircuit": P("V", gt=0, doc="open-circuit RMS voltage per phase at fsNominal"),
+          "Lmd": P("H", gt=0, doc="main field inductance, d axis"), "Lmq": P("H", gt=0, doc="main field inductance, q axis"),
+          "PRef_pm": P("W", 0.0, min=0, structural=True, msl="permanentMagnetLossParameters.PRef"),
+          "IRef_pm": P("A", None, gt=0, structural=True, msl="permanentMagnetLossParameters.IRef"),
+          "wRef_pm": P("rad/s", None, gt=0, structural=True, msl="permanentMagnetLossParameters.wRef"),
+          **({"Lrsigmad": P("H", gt=0, doc="damper stray inductance, d axis"),
+              "Lrsigmaq": P("H", None, gt=0, doc="q axis (default Lrsigmad)"),
+              "Rrd": P("Ohm", gt=0, doc="damper resistance, d axis"), "Rrq": P("Ohm", None, gt=0, doc="default Rrd"),
+              "TrRef": P("K", 293.15, gt=0, abs_T=True), "alpha20r": P("1/K", 0.0),
+              "TrOperational": P("K", 293.15, gt=0, abs_T=True)} if _dc else {})},
+         {**AC_VARS, "lossPowerPermanentMagnet": "W", **({"lossPowerRotorWinding": "W", "ir[1]": "A", "ir[2]": "A"} if _dc else {})},
+         {**AC_INITS, **({"ir0": I("ir", "A", 0.0, phases=2)} if _dc else {})},
+         text={"useDamperCage": "true" if _dc else "false"},
+         mods={**AC_STATOR_MODS, "IRef_pm": lambda p: _need(p, "IRef_pm", "PRef_pm"),
+               "wRef_pm": lambda p: _ref_or(p, "wRef_pm", "PRef_pm", _w_sync(p))},
+         cond_ports={h: "useThermalPort" for h in _h}, hidden=True, linear=False,
+         var_paths={v: "powerBalance." + v for v in PB}, islands=[["plug_sp", "plug_sn"], ["flange"], _h])
+kind("terminal_box", MACH_ + "Utilities.TerminalBox", {"plug_sp": "plug", "plug_sn": "plug", "plugSupply": "plug",
+                                                      "starpoint": "pin"},
+     {"terminal": P("1", "Y", structural=True, type="enum", choices=["Y", "D"], msl=False)},
+     mods={"terminalConnection": lambda p: '"' + p["terminal"] + '"'}, hidden=True,
+     islands=[["plug_sp", "plug_sn", "plugSupply", "starpoint"]])
+kind("vf_controller", MACH_ + "Utilities.VfController", {"u": "in", "y": "vout"},
+     {"VNominal": P("V", gt=0), "fNominal": P("Hz", gt=0)}, {"x": "rad", "amplitude": "V"}, text={"m": "3"},
+     hidden=True, linear=False)
+kind("signal_ac_voltage", PP + "Sources.SignalVoltage", {**TWO_PLUG, "v": "vin"}, vars=VI3, text=M3, hidden=True)
+kind("signal_ac_current", PP + "Sources.SignalCurrent", {**TWO_PLUG, "i": "vin"}, vars=VI3, text=M3, hidden=True)
+kind("dq_to_three_phase", MACH_ + "Utilities.DQToThreePhase", {"d": "in", "q": "in", "phi": "in", "y": "vout"},
+     {"p": P("1", type="int", structural=True, min=1)}, hidden=True, linear=False)
+
+
+def _machine(name, core, heat, extra_doc):
+    k = KINDS[core]
+    params = {**{n: s for n, s in k["params"].items()}, "terminal": KINDS["terminal_box"]["params"]["terminal"]}
+    hp = {h: f"m.{h}" for h in heat}
+    composite(name, {"m": (core, {n: n for n in k["params"]}), "tb": ("terminal_box", {"terminal": "terminal"})},
+              {"plug": "tb.plugSupply", "flange": "m.flange", "starpoint": "tb.starpoint", **hp}, params,
+              {v: (f"m.{v}", u) for v, u in k["vars"].items()},
+              {i: f"m.{i}" for i in k["inits"]},
+              conns=[("m.plug_sp", "tb.plug_sp"), ("m.plug_sn", "tb.plug_sn")], port_groups={"heatPort": list(hp)},
+              linear=False, domain="electrical",
+              doc=f"{extra_doc}; plug = the supply (terminal Y or D), flange = shaft, starpoint (Y; may stay open; "
+                  f"ground it with a current drive); heatPort (all losses) or the "
+                  f"{len(heat)} heat ports when connected; currents start at 0 (is0, ir0 where free), w0, phi0")
+
+
+_machine("induction_machine", "im_core", IM_HEAT,
+         "MSL IM_SquirrelCage (space phasors): Rs, Lssigma, Lm, Lrsigma, Rr per phase (equivalent circuit), p pole pairs")
+_machine("pmsm", "pmsm_core", PM_HEAT,
+         "MSL SM_PermanentMagnet without damper cage (needs a drive): VsOpenCircuit, Lmd, Lmq; psiM = sqrt(2) "
+         "VsOpenCircuit / (2 pi fsNominal)")
+_machine("pmsm_damper", "pmsm_damper_core", PMD_HEAT,
+         "MSL SM_PermanentMagnet with damper cage (line start): also Lrsigmad, Rrd (Lrsigmaq, Rrq)")
+composite("three_phase_grid",
+          {"src": ("ac_voltage", {"V_rms": "V_rms", "f": "f", "phase": "phase"}), "st": ("star", {}), "g": ("ground", {})},
+          {"plug": "src.plug_p"}, {"V_rms": P("V", gt=0, doc="RMS phase voltage"), "f": P("Hz", gt=0),
+                                   "phase": P("rad", 0.0)},
+          {**{f"i[{k}]": (f"src.i[{k}]", "A") for k in (1, 2, 3)}, **{f"v[{k}]": (f"src.v[{k}]", "V") for k in (1, 2, 3)}},
+          conns=[("src.plug_n", "st.plug_p"), ("st.pin_n", "g.p")], domain="electrical",
+          doc="a symmetric grid: star point grounded; plug = the three phases")
+composite("vf_inverter",
+          {"vf": ("vf_controller", {"VNominal": "VNominal", "fNominal": "fNominal"}), "sv": ("signal_ac_voltage", {}),
+           "st": ("star", {}), "g": ("ground", {})},
+          {"plug": "sv.plug_p", "f": "vf.u"},
+          {"VNominal": P("V", gt=0, doc="RMS phase voltage at fNominal"), "fNominal": P("Hz", gt=0)},
+          {**{f"i[{k}]": (f"sv.i[{k}]", "A") for k in (1, 2, 3)}, **{f"v[{k}]": (f"sv.v[{k}]", "V") for k in (1, 2, 3)},
+           "amplitude": ("vf.amplitude", "V")},
+          conns=[("vf.y", "sv.v"), ("sv.plug_n", "st.plug_p"), ("st.pin_n", "g.p")], linear=False, domain="electrical",
+          doc="an ideal V/f inverter: input f [Hz]; phase voltages sqrt(2) VNominal min(|f|/fNominal, 1) sin(2 pi "
+              "integral f + orientation)")
+composite("pmsm_current_drive",
+          {"dq": ("dq_to_three_phase", {"p": "p"}), "sc": ("signal_ac_current", {}), "st": ("star", {}),
+           "g": ("ground", {}), "ang": ("angle_sensor", {})},
+          {"plug": "sc.plug_n", "id": "dq.d", "iq": "dq.q", "flange": "ang.flange"},
+          {"p": P("1", type="int", structural=True, min=1, doc="pole pairs of the motor")},
+          {**{f"i[{k}]": (f"sc.i[{k}]", "A") for k in (1, 2, 3)}, **{f"v[{k}]": (f"sc.v[{k}]", "V") for k in (1, 2, 3)}},
+          conns=[("dq.y", "sc.i"), ("ang.phi", "dq.phi"), ("sc.plug_p", "st.plug_p"), ("st.pin_n", "g.p")],
+          linear=False, domain="electrical",
+          doc="ideal field-oriented current control (MSL SMPM_CurrentSource): inputs id, iq [A RMS, rotor frame]; "
+              "flange = the motor shaft (angle); ground the motor's starpoint (current sources leave it floating); "
+              "torque = 3/2 p psiM sqrt(2) iq (+ (Ld - Lq) id iq)")
+
 # ------------------------------------------------------------------------------------------- composites
 composite("dc_motor",
           {"Ra": ("resistor", {"R": "R"}), "La": ("inductor", {"L": "L"}), "emf": ("emf", {"k": "k"}),
@@ -496,8 +716,11 @@ OUT_UNITS = {("voltage_sensor", "v"): "V", ("current_sensor", "i"): "A", ("poten
              ("force_sensor", "f"): "N", ("angle_sensor", "phi"): "rad", ("rot_speed_sensor", "w"): "rad/s",
              ("rot_acc_sensor", "a"): "rad/s2", ("torque_sensor", "tau"): "N.m", ("temperature_sensor", "T"): "K",
              ("heat_flow_sensor", "Q_flow"): "W", ("fluid_temperature_sensor", "y"): "K",
-             ("fluid_pressure_sensor", "y"): "Pa", ("volume_flow_sensor", "y"): "m3/s"}
-PORT_PATHS = {("table", "y"): "y[1]", **{("dc_machine", h): "thermalPort." + h for h in DCPM_HEAT}}
+             ("fluid_pressure_sensor", "y"): "Pa", ("volume_flow_sensor", "y"): "m3/s",
+             ("ac_current_rms", "I"): "A", ("ac_voltage_rms", "V"): "V", ("ac_power", "P"): "W", ("ac_power", "Q"): "var"}
+PORT_PATHS = {("table", "y"): "y[1]", **{("dc_machine", h): "thermalPort." + h for h in DCPM_HEAT},
+              **{(k_, h): _heat_path(h) for k_, hs in (("im_core", IM_HEAT), ("pmsm_core", PM_HEAT),
+                                                       ("pmsm_damper_core", PMD_HEAT)) for h in hs}}
 
 
 # ------------------------------------------------------------------------------------------- helpers
@@ -521,6 +744,11 @@ def domain_of(port_type: str) -> str:
 def var_path(kind_name: str, v: str) -> str:
     """The Modelica path of a variable inside a component (most are the name itself)."""
     return KINDS[kind_name].get("var_paths", {}).get(v, v)
+
+
+def phases(port_type: str) -> int:
+    """Pins per port: 3 for a plug, else 1."""
+    return PORT_TYPES.get(port_type, {}).get("phases", 1)
 
 
 def port_types(kind_name: str) -> dict:

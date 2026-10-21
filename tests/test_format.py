@@ -16,7 +16,7 @@ def errors(st):
 
 def test_format_is_compact_and_lists_every_kind():
     sf = study_format()
-    assert len(json.dumps(sf)) < 22000
+    assert len(json.dumps(sf)) < 32000
     listed = {k for d in sf["kinds"].values() for k in d}
     assert listed == set(C.public_kinds())
 

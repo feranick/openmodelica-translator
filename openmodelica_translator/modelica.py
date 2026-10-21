@@ -1,5 +1,5 @@
 """modelica.py — a study -> the Modelica model, the omc build script, and the values applied at run time.
-Version: 2026.10.21.18
+Version: 2026.10.21.19
 
 translate(study, name) -> Translation with
   text        model.mo: `model omct_model` with one declaration per element (sorted), every value in SI with
@@ -93,6 +93,8 @@ def element_values(net, e: str, selected: set):
             structural[mname] = fmt(float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else v)
         elif isinstance(v, str):
             structural[mname] = v
+        elif isinstance(v, list):
+            values[mname] = [float(x) for x in v]    # one value per phase: name[1], name[2], ... at run time
         else:
             values[mname] = float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else v
     for mname, text in k["text"].items():
@@ -104,10 +106,21 @@ def element_values(net, e: str, selected: set):
             structural[flag] = "true"
     starts = {}
     for iname, spec in k["inits"].items():
-        if (e, iname) in selected:
-            value, _ = d["inits"][iname]
+        value, _ = d["inits"][iname]
+        if spec.get("phases"):
+            vals = value if isinstance(value, list) else [value] * spec["phases"]
+            fixed = [(e, f"{iname}[{j + 1}]") in selected for j in range(spec["phases"])]
+            if any(fixed):
+                starts[spec["var"]] = ([float(x) for x in vals], fixed)
+        elif (e, iname) in selected:
             starts[spec["var"]] = float(value)
     return structural, values, starts
+
+
+def _vtext(v, placeholder):
+    if isinstance(v, list):
+        return "{" + ", ".join(PLACEHOLDER if placeholder else fmt(float(x)) for x in v) + "}"
+    return PLACEHOLDER if placeholder else fmt(v)
 
 
 def _decl(net, e, selected, placeholder: bool):
@@ -116,7 +129,7 @@ def _decl(net, e, selected, placeholder: bool):
     structural, values, starts = element_values(net, e, selected)
     mods, nested = [], {}
     for name in sorted(set(structural) | set(values)):
-        text = structural[name] if name in structural else (PLACEHOLDER if placeholder else fmt(values[name]))
+        text = structural[name] if name in structural else _vtext(values[name], placeholder)
         if "." in name:                        # a record's field: frictionParameters(PRef=...)
             rec, field = name.split(".", 1)
             nested.setdefault(rec, []).append(f"{field}={text}")
@@ -126,7 +139,12 @@ def _decl(net, e, selected, placeholder: bool):
         mods.append(f"{rec}({', '.join(nested[rec])})")
     mods.sort(key=lambda m: m.split("(")[0].split("=")[0])
     for var in sorted(starts):
-        mods.append(f"{var}(start={PLACEHOLDER if placeholder else fmt(starts[var])}, fixed=true)")
+        st = starts[var]
+        if isinstance(st, tuple):              # per phase: start for all, fixed where free
+            vals, fixed = st
+            mods.append(f"{var}(start={_vtext(vals, placeholder)}, fixed={{{', '.join('true' if f else 'false' for f in fixed)}}})")
+        else:
+            mods.append(f"{var}(start={_vtext(st, placeholder)}, fixed=true)")
     m = "(" + ", ".join(mods) + ")" if mods else ""
     comment = f' "{d["comp"]}: {d["kind"]}' + (f' ({d["part"]})' if d["part"] else "") + '"'
     return f"  {k['msl']} {e}{m}{comment};"
@@ -193,11 +211,21 @@ def translate(study: dict, name: str = "study", ref=None) -> Translation:
     for e in sorted(net.elems):
         _, values, starts = element_values(net, e, selected)
         for mname, v in values.items():
-            ov[f"{e}.{mname}"] = v
+            if isinstance(v, list):
+                for j, x in enumerate(v):
+                    ov[f"{e}.{mname}[{j + 1}]"] = x
+            else:
+                ov[f"{e}.{mname}"] = v
         for var, v in starts.items():
-            ov[f"{e}.{var}"] = v
+            if isinstance(v, tuple):
+                for j, (x, f) in enumerate(zip(*v)):
+                    if f:
+                        ov[f"{e}.{var}[{j + 1}]"] = x
+            else:
+                ov[f"{e}.{var}"] = v
     tr.overrides = ov
     tr.fixed = sorted(f"{net.elems[e]['comp']}.{i}" if net.elems[e]["part"] is None else f"{e}.{i}" for e, i in selected)
+    # (per-phase initial values appear as name[k])
     tr.dependent = dep
     tr.missing = missing
     return tr

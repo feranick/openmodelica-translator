@@ -12,6 +12,9 @@ def test_case_valid_and_passes_with_ref(name, tmp_path):
     c = bench.cases()[name]
     assert validate_study(c["study"])["ok"]
     r = bench.run("ref", [name], tmp_path)[name]
+    if name in bench.OMC_ONLY:
+        assert "needs OpenModelica" in r["skipped"]
+        return
     assert r["passed"], r
 
 

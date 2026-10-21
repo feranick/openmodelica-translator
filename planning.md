@@ -374,6 +374,10 @@ Made while building M1 (tell me if any is wrong):
 
 ## State
 
+**2026.10.21.20 (V3.2, sandbox, 2026-10-21)**: AC machines. Hidden elementary kinds im_core (IM_SquirrelCage), pmsm_core and pmsm_damper_core (SM_PermanentMagnet, useDamperCage false/true: the damper's heat port exists only with it, so two kinds), terminal_box (terminalConnection "Y"/"D"; starpoint may stay open), vf_controller, signal_ac_voltage/current, dq_to_three_phase; port types vin/vout (3-element signals, one signal net per element). Public composites induction_machine, pmsm, pmsm_damper (machine + terminal box; plug, flange, starpoint, 8 heat ports + group heatPort; the stator winding's heat ports are thermalPort.heatPortStatorWinding[k]), three_phase_grid, vf_inverter, pmsm_current_drive (as MSL's SMPM_CurrentSource: current into the machine from SignalCurrent.plug_n; the machine's starpoint must be grounded, as there, or the star potential is undetermined: found when the reference called the first version singular). Inits: is0 (3 phases), ir0 (2), w0, phi0 -> is(start, fixed={true, true, false}) with a floating star point. Reference: stand-ins with the same states (structure only, covered = False); benchmarks im_grid_slip, pmsm_current_torque, im_vf_start are OpenModelica-only (bench.OMC_ONLY) until V3.3. Energy: kinetic + 3/4 Lssigma |i_ss|^2 + 1/2 Lszero i_0_s^2 + 3/4 psi . i_m (airgap) + 3/4 Lr |ir|^2 - 3/2 Ie psi_md (the magnet, a current source on the rotor side), losses lossPowerTotal: derived from the MSL equations, unverified. 295 tests.
+
+**2026.10.21.19 (V3.1, sandbox, 2026-10-21)**: Nicola chose for v3: induction machine + PMSM, plugs + ready drives, a nonlinear reference, quasi-static versions too. Three-phase plugs: PORT_TYPES['plug'] (phases 3); network keeps plug-level connections (the model text connects plugs) and joins phases pin by pin for nodes, islands and the unconnected check (`net.pins`, ports 'E.plug_p.pin[k]'; a star's pin_n may stay open). Kinds ac_voltage (SineVoltage, V = sqrt(2) V_rms per phase, phase - (k-1) 2pi/3), star, delta, plug_to_pin, ac_resistor/inductor/capacitor (vectors {x, x, x}; overrides name[k]), ac_current_rms, ac_voltage_rms (Polyphase quasi-RMS), ac_power (Machines.Sensors.ElectricalPowerSensor, P and Q from space phasors; m is a constant there, so no m=3 modifier). Per-phase initial values (I(..., phases=3)): candidates name[k], the model gets `i(start={...}, fixed={true, true, false})` (a floating star point makes one current dependent). Reference: per-pin stamps; quasi-RMS outputs as post-computed functions (`System.funcs`), P/Q as quadratic forms; covered only when those outputs drive no block. Benchmarks three_phase_rl and three_phase_delta pass with the reference (2e-13). 282 tests. Not run with OpenModelica: array overrides (R[1], i[1] start) and the per-phase fixed arrays are new.
+
 **2026.10.21.18 on mochi (2026-10-21)**: rerun of the three: coolant_open_step (tau 8e-7, T 3.7e-9), dc_machine_losses (1.5e-13), resistor_self_heating (3e-7) pass: **all 13 v2 benchmarks and the chain pass with OpenModelica.** The probe report (tools/v2_report_mochi.txt) answers B1-B17 (table above): every value omct overrides is changeable; the media's values too (could become overridable); an open heat port or a partly connected machine thermal port does not build (omct prevents both); the IdealPump curve is exact. **Version 2 done.** Open: the probe's power-balance residual (B9, transient only), media at run time, a constant-speed source so the reference covers ideal_pump.
 
 **2026.10.21.18 (mochi results of v2, 2026-10-21)**: `llmt test`: omct 270 passed, b3dt 107. `omct bench` of the 13 new cases with OpenModelica: 11 pass (coolant_loop_steady 2e-13, coolant_hydraulics exact, dc_machine_nominal, resistor_self_heating, damper_heating, dc_machine_heating 7e-9, limiter_loop, rectifier_mean, slew_rate_ramp, dc_machine_brush 1e-13, chain_b3dt_inertia 2.5e-10). Failed: (1) dc_machine_losses: OpenModelica ran it without losses on the build of dc_machine_nominal (same structure): the loss records' final parameters were compiled in (B18); the reference check caught it. Fix: PRef_*, wRef_*, VRef_core, power_w_friction structural, the default references written as literals when the loss is on. (2) coolant_open_step: tau 3.4e-4 off and the reference check failed: dassl at tolerance 1e-6 controls the absolute temperature (~300 K), 3e-4 K on a 4.8 K rise. Fixes: the reference and converge checks allow 10 x tol x max|y| (relative to the range) besides max(1e-4, 100 tol); the two temperature benchmarks run at tolerance 1e-8. Also: a fluid component's m is structural (it switches der(T) on). The probe report (tools/v2_report_mochi.txt) is still to come.
@@ -566,6 +570,71 @@ nonlinear element is piecewise linear; chattering (more than OMCT_REF_MAX_EVENTS
 | B16 | Limiter in a loop: saturation and recovery at the closed-form time | **M ✓** final 8.3333332 (50/6); limiter_loop with omct 2.9e-7 | LimLoop |
 | B18 | Parameters set at run time reach every equation that uses them | **M ✗ for final parameters of records**: dc_machine_losses reused the lossless build (values only) and ran without losses (P_loss 500 W, not 666): FrictionParameters.tauRef, CoreParameters.GcRef etc. (`final parameter ... = f(PRef, wRef)`) were folded at compile time although PRef read back as set; the brush (BrushParameters.V used directly, an if-equation on it) did follow. Fix 2026.10.21.18: the loss records' inputs are structural and their references literals | mochi bench |
 | B17 | build123d matrix_of_inertia: about the centre of mass, unit density mm^5; the sign of the products | **sandbox ✓, M ✓** (build123d 0.13.0 on mochi: the same matrices) | inertia.py; b3dt test_mass_properties_exact |
+
+## Version 3: AC machines (proposal, 2026-10-21)
+
+Nicola's choices: the squirrel-cage induction machine and the permanent-magnet synchronous machine; 3-phase plugs
+and polyphase parts **and** ready-made drives; a **nonlinear reference** for the machines; the **quasi-static**
+(phasor) versions as well. Order: V3.1 plugs and polyphase parts (linear: the reference covers them per pin);
+V3.2 the transient machines (Electrical.Machines.BasicMachines, m = 3) and the drives, with closed-form benchmarks;
+V3.3 the nonlinear reference; V3.4 the quasi-static machines (Magnetic.QuasiStatic.FundamentalWave). OpenModelica
+behaviour: `tools/v3_probe.sh` (C1-C6), unverified until it runs.
+
+MSL facts (sources, tag v4.0.0):
+- Plugs: `Polyphase.Interfaces.Plug` = `pin[m]`; PositivePlug/NegativePlug; Star (plug_p, pin_n), Delta; sources
+  SineVoltage (V[m] amplitudes, phase[m] = -symmetricOrientation, f[m], offset, startTime), SignalVoltage/SignalCurrent
+  (v[m]/i[m] inputs); sensors Polyphase.Sensors.CurrentQuasiRMSSensor (I), Machines.Sensors.ElectricalPowerSensor
+  (plug_p, plug_ni, plug_nv; P, Q from space phasors), VoltageQuasiRMSSensor, RotorDisplacementAngle.
+- IM_SquirrelCage (extends PartialBasicInductionMachine): plug_sp, plug_sn, flange; p (Integer), fsNominal, Rs,
+  TsRef, alpha20s, Lszero = Lssigma, Lssigma, Lm, Lrsigma, Rr, TrRef, alpha20r, TsOperational, TrOperational, Jr, Js,
+  frictionParameters (wRef = 2 pi fsNominal/p), statorCoreParameters (m = 3, VRef, wRef = 2 pi fsNominal),
+  strayLoadParameters (IRef, wRef); stator: rs (Polyphase.Basic.Resistor with heat port) -> spacePhasorS (2/3 Clarke
+  + zero) -> lssigma, lszero -> AirGapS (psi_ms = Lm (i_ss + i_rs), rotation by gamma = p phi, tau = m/2 p (i x psi))
+  -> SquirrelCage (Rr, Lrsigma in the rotor frame). Outputs is[3], ir[2], powerBalance (powerStator, powerMechanical,
+  lossPowerStatorWinding, ...Core, StrayLoad, Friction, RotorWinding). Data record IM_SquirrelCageData: p 2, 50 Hz,
+  Rs 0.03, Rr 0.04, Lm = 3 sqrt(1 - 0.0667)/(2 pi 50), Lssigma = Lrsigma = 3 (1 - sqrt(1 - 0.0667))/(2 pi 50), Jr 0.29.
+- SM_PermanentMagnet (same partial): VsOpenCircuit (RMS per phase at fsNominal), Lmd, Lmq, useDamperCage, Lrsigmad,
+  Lrsigmaq, Rrd, Rrq, TrRef, alpha20r, permanentMagnetLossParameters; AirGapR (rotor frame, L = diag(Lmd, Lmq)),
+  PermanentMagnet i_ = {-Ie, 0} with Ie = sqrt(2) VsOpenCircuit / (Lmd 2 pi fsNominal) (final). Data: VsOpenCircuit
+  112.3 V, Lmd = Lmq = 0.3/(2 pi 50), Lssigma 0.1/(2 pi 50).
+- Thermal ports (useThermalPort): IMC: heatPortStatorWinding, StatorCore, RotorCore, StrayLoad, Friction,
+  RotorWinding; SMPM adds PermanentMagnet (RotorWinding only with the damper cage).
+- TerminalBox (terminalConnection "Y" | "D"; plug_sp, plug_sn, plugSupply, starpoint if Y). VfController (u = f [Hz],
+  VNominal RMS, fNominal; y[m] = sqrt(2) VNominal min(|f|/fNominal, 1) sin(x + orientation), der(x) = 2 pi f).
+  DQToThreePhase (d, q RMS inputs, phi = mechanical angle; p). DQCurrentController (FOC voltages, PI on Rs, Ld, Lq).
+
+Design:
+- Port type `plug` (3 pins). Network: a plug node is three pin nodes (phase k of every plug at the node joins);
+  Modelica `connect` on plugs; the reference stamps per phase. Ground rule per phase island (a star to a ground).
+- Kinds (V3.1): `ac_voltage` (SineVoltage: V_rms phase voltage, f, phase), `signal_ac_voltage`/`signal_ac_current`
+  (inside drives only: vector signals), `star`, `delta`, `ac_resistor`, `ac_inductor`, `ac_capacitor` (Polyphase.Basic,
+  equal per phase), `ac_current_rms`, `ac_voltage_rms` and `ac_power` sensors (outputs I, V, P, Q).
+- Machines (V3.2): `induction_machine` and `pmsm` = composites of the MSL machine and a TerminalBox (`terminal`: Y|D,
+  structural): ports `plug` (supply), `flange`, heat ports (group `heatPort` or the six/seven) as for dc_machine; loss
+  records structural (B18); outputs wMechanical, tauElectrical, tauShaft, is_rms, the power balance; init w0, phi0
+  (stator and rotor currents start at zero: initial equations as in the MSL examples).
+- Drives: `three_phase_grid` (SineVoltage + Star + Ground: port plug; V_rms, f), `vf_inverter` (VfController +
+  SignalVoltage + Star + Ground: input f [Hz], VNominal, fNominal: port plug), `pmsm_current_drive` (SignalCurrent +
+  Star + Ground + DQToThreePhase + AngleSensor: inputs id, iq [A RMS], port plug and `angle` flange to the motor
+  shaft; ideal FOC as MSL's SMPM_CurrentSource).
+- Checks: energy balance from the machines' storage (stator/rotor inductances, inertia) and powerBalance; the
+  reference: V3.3 adds a nonlinear integrator (implicit, BDF on the residual) with the machines written
+  independently in dq / alpha-beta (not MSL's structure); until then 'not covered'. Benchmarks: IM slip and current
+  from the equivalent circuit (C3); PMSM torque 3/2 p psiM sqrt(2) Iq and the stator voltage (C4); a V/f start (C5).
+- V3.4: QS machines (complex phasor plugs, reference angles: Connections.root in the QS sources): `qs_*` kinds with
+  their own plug type `qs_plug`, QS grid/current sources, the same benchmarks (no ripple), the reference as complex
+  algebra plus the mechanics.
+
+### Assumptions for version 3 (tools/v3_probe.sh on mochi)
+
+| # | Assumption | Status | Probe |
+|---|---|---|---|
+| C1 | The MSL examples (IMC_DOL, IMC_Inverter, SMPM_CurrentSource, SMPM_VoltageSource, QS IMC_DOL, QS SMPM_CurrentSource) build and run in OpenModelica 1.27.1 | ? | build, runs |
+| C2 | The machine parameters omct sets are changeable at run time (Rs, Rr, Lm, ...; Lm enters a protected matrix L) | ? | isValueChangeable |
+| C3 | IM on a 100 V 50 Hz grid at 100 N.m: slip 0.0234983, 153.3885 rad/s, Is 66.006 A RMS (equivalent circuit) | ? | ImGrid |
+| C4 | Current-fed PMSM (Id -53.5, Iq 84.6 A RMS): torque 3/2 p psiM sqrt(2) Iq; the stator RMS voltage from dq | ? | PmsmCurrent |
+| C5 | V/f start, then 100 N.m: the C3 speed | ? | ImVf |
+| C6 | Run time per simulated second at 50 Hz (steps per period) | ? | runs |
 
 ## Open ideas
 

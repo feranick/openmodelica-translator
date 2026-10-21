@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with closed-form answers: is the toolchain right?
-Version: 2026.10.21.18
+Version: 2026.10.21.20
 
 Each case is a study plus checks [(result path, expected, tolerance, why)]; tolerances are relative unless
 written {"abs": x}. Chains (chain_feat_modal, chain_b3dt_mass, chain_b3dt_inertia) run the other translator first and only when named; they are skipped
@@ -368,6 +368,116 @@ def _dcpm_brush():
                                                                "w = (Va - V_brush - Ra ia) / k")]
 
 
+def _three_phase(load):
+    """A symmetric 230 V 50 Hz source (star, grounded): star R-L load (10 ohm, 20 mH, star point floating) or a
+    delta of 10 ohm resistors. Steady state over the last period: the quasi-RMS line current and P, Q from the
+    phasors (star: I = V/|Z|; delta: line current sqrt(3) times the phase current)."""
+    V, f, R, L = 230.0, 50.0, 10.0, 0.02
+    comps = {"src": {"kind": "ac_voltage", "V_rms": V, "f": f}, "s1": {"kind": "star"}, "g": {"kind": "ground"},
+             "irms": {"kind": "ac_current_rms"}, "pw": {"kind": "ac_power"}, "R": {"kind": "ac_resistor", "R": R}}
+    conns = [["src.plug_n", "s1.plug_p"], ["s1.pin_n", "g"], ["src.plug_p", "pw.plug_p"], ["pw.plug_ni", "irms.plug_p"],
+             ["pw.plug_nv", "s1.plug_p"], ["irms.plug_n", "R.plug_p"]]
+    if load == "star":
+        comps.update({"L": {"kind": "ac_inductor", "L": L}, "s2": {"kind": "star"}})
+        conns += [["R.plug_n", "L.plug_p"], ["L.plug_n", "s2.plug_p"]]
+        Z = complex(R, 2 * math.pi * f * L)
+        I = V / abs(Z)
+        P, Q = 3 * I * I * R, 3 * I * I * Z.imag
+    else:
+        comps["d"] = {"kind": "delta"}
+        conns += [["R.plug_n", "d.plug_n"], ["d.plug_p", "R.plug_p"]]
+        I, P, Q = 3 * V / R, 9 * V * V / R, 0.0
+    st = {"components": comps, "connect": conns, "outputs": {"I": "irms.I", "P": "pw.P", "Q": "pw.Q"},
+          "analysis": {"kind": "transient", "stop_time": 0.2, "intervals": 4000},
+          "derived": [{"kind": "window", "signal": s_, "t0": 0.18, "t1": 0.2} for s_ in ("I", "P", "Q")]}
+    checks = [("derived.I.mean", I, 1e-5, "the line current (quasi RMS)"), ("derived.P.mean", P, 1e-5, "3 I^2 R")]
+    checks.append(("derived.Q.mean", Q, 1e-5, "3 I^2 X") if Q else ("derived.Q.mean", 0.0, {"abs": 1e-3 * P}, "no reactance"))
+    return st, checks
+
+
+W50 = 2 * math.pi * 50
+IM_DATA = {"kind": "induction_machine", "p": 2, "fsNominal": 50, "Rs": 0.03, "Rr": 0.04, "Jr": 0.29,
+           "Lssigma": 3 * (1 - math.sqrt(1 - 0.0667)) / W50, "Lrsigma": 3 * (1 - math.sqrt(1 - 0.0667)) / W50,
+           "Lm": 3 * math.sqrt(1 - 0.0667) / W50}                      # MSL IM_SquirrelCageData
+PM_DATA = {"kind": "pmsm", "p": 2, "fsNominal": 50, "Rs": 0.03, "Jr": 0.29, "Lssigma": 0.1 / W50,
+           "Lmd": 0.3 / W50, "Lmq": 0.3 / W50, "VsOpenCircuit": 112.3}  # MSL SM_PermanentMagnetData
+
+
+def im_steady(V, f, T, d=IM_DATA):
+    """Slip, speed and RMS stator current of the induction machine at load torque T (equivalent circuit, per phase)."""
+    w = 2 * math.pi * f
+
+    def tq(s):
+        Zs = d["Rs"] + 1j * w * d["Lssigma"]
+        Zm = 1j * w * d["Lm"]
+        Zr = d["Rr"] / s + 1j * w * d["Lrsigma"]
+        Is = V / (Zs + Zm * Zr / (Zm + Zr))
+        Ir = Is * Zm / (Zm + Zr)
+        return 3 * d["p"] / w * abs(Ir) ** 2 * d["Rr"] / s, abs(Is)
+    lo, hi = 1e-9, 0.15
+    for _ in range(200):
+        m_ = (lo + hi) / 2
+        lo, hi = (m_, hi) if tq(m_)[0] < T else (lo, m_)
+    s_ = (lo + hi) / 2
+    return s_, w / d["p"] * (1 - s_), tq(s_)[1]
+
+
+def _im_grid():
+    """The MSL induction machine (IM_SquirrelCageData, Y) direct on a 100 V 50 Hz grid, 0.29 kg m2 load, 100 N.m from
+    0.5 s: the steady speed and current from the equivalent circuit (Rs, Lssigma, Lm, Lrsigma, Rr/s per phase)."""
+    s_, w, I = im_steady(100.0, 50.0, 100.0)
+    st = {"components": {"grid": {"kind": "three_phase_grid", "V_rms": 100, "f": 50}, "M": dict(IM_DATA),
+                         "irms": {"kind": "ac_current_rms"}, "load": {"kind": "inertia", "J": 0.29},
+                         "tl": {"kind": "torque_step", "stepTorque": -100, "startTime": 0.5}},
+          "connect": [["grid.plug", "irms.plug_p"], ["irms.plug_n", "M.plug"], ["M.flange", "load.flange_a"],
+                      ["load.flange_b", "tl.flange"]],
+          "outputs": {"w": "M.wMechanical", "I": "irms.I", "T": "M.tauElectrical"},
+          "analysis": {"kind": "transient", "stop_time": 2.5, "intervals": 5000},
+          "derived": [{"kind": "window", "signal": x, "t0": 2.3, "t1": 2.5} for x in ("w", "I", "T")]}
+    return st, [("derived.w.mean", w, 1e-4, f"equivalent circuit: slip {s_:.5f}"),
+                ("derived.I.mean", I, 1e-3, "RMS stator current of the equivalent circuit"),
+                ("derived.T.mean", 100.0, 1e-4, "electrical torque = the load")]
+
+
+def _pmsm_current():
+    """The MSL PMSM (SM_PermanentMagnetData, no damper cage) fed by the ideal current drive, Id = -53.5, Iq = 84.6 A
+    RMS: torque 3/2 p psiM sqrt(2) Iq (Ld = Lq), psiM = sqrt(2) VsOpenCircuit/(2 pi fsNominal); against a quadratic
+    load (181.4 N.m at 157.08 rad/s) the speed settles where the torques meet."""
+    psi = math.sqrt(2) * 112.3 / W50
+    T = 1.5 * 2 * psi * math.sqrt(2) * 84.6
+    wN = 157.07963267949
+    st = {"components": {"drv": {"kind": "pmsm_current_drive", "p": 2}, "M": dict(PM_DATA),
+                         "id": {"kind": "constant", "k": -53.5}, "iq": {"kind": "constant", "k": 84.6}, "gm": {"kind": "ground"},
+                         "load": {"kind": "inertia", "J": 0.29},
+                         "tl": {"kind": "quadratic_speed_load", "tau_nominal": -181.4, "w_nominal": wN,
+                                "TorqueDirection": False}},
+          "connect": [["drv.plug", "M.plug"], ["drv.flange", "M.flange"], ["id.y", "drv.id"], ["iq.y", "drv.iq"],
+                      ["M.starpoint", "gm"],
+                      ["M.flange", "load.flange_a"], ["load.flange_b", "tl.flange"]],
+          "outputs": {"w": "M.wMechanical", "T": "M.tauElectrical"},
+          "analysis": {"kind": "transient", "stop_time": 3, "intervals": 6000},
+          "derived": [{"kind": "window", "signal": x, "t0": 2.8, "t1": 3} for x in ("w", "T")]}
+    return st, [("derived.T.mean", T, 1e-4, "3/2 p psiM sqrt(2) Iq"),
+                ("derived.w.mean", wN * math.sqrt(T / 181.4), 1e-4, "where the quadratic load equals it")]
+
+
+def _im_vf():
+    """The same induction machine started by a V/f inverter (0 -> 50 Hz in 1 s, 100 V at 50 Hz), 100 N.m from
+    1.2 s: at 50 Hz the grid's steady speed."""
+    s_, w, I = im_steady(100.0, 50.0, 100.0)
+    st = {"components": {"inv": {"kind": "vf_inverter", "VNominal": 100, "fNominal": 50},
+                         "f": {"kind": "ramp", "height": 50, "duration": 1}, "M": dict(IM_DATA),
+                         "load": {"kind": "inertia", "J": 0.29},
+                         "tl": {"kind": "torque_step", "stepTorque": -100, "startTime": 1.2}},
+          "connect": [["f.y", "inv.f"], ["inv.plug", "M.plug"], ["M.flange", "load.flange_a"], ["load.flange_b", "tl.flange"]],
+          "outputs": {"w": "M.wMechanical"}, "analysis": {"kind": "transient", "stop_time": 3, "intervals": 6000},
+          "derived": [{"kind": "window", "signal": "w", "t0": 2.8, "t1": 3}]}
+    return st, [("derived.w.mean", w, 1e-4, "the equivalent circuit at 50 Hz, 100 V, 100 N.m")]
+
+
+OMC_ONLY = {"im_grid_slip", "pmsm_current_torque", "im_vf_start"}      # the reference covers them from V3.3
+
+
 def cases() -> dict:
     out = {}
     for name, fn in (("rc_step", _rc), ("rlc_step", lambda: _rlc("step")), ("rlc_poles_bode", lambda: _rlc("lin")),
@@ -380,7 +490,9 @@ def cases() -> dict:
                      ("dc_machine_losses", lambda: _dcpm(True)), ("resistor_self_heating", _self_heating),
                      ("damper_heating", _damper_heating), ("dc_machine_heating", _dcpm_heating),
                      ("limiter_loop", _limiter_loop), ("rectifier_mean", _rectifier), ("slew_rate_ramp", _slew),
-                     ("dc_machine_brush", _dcpm_brush)):
+                     ("dc_machine_brush", _dcpm_brush), ("three_phase_rl", lambda: _three_phase("star")),
+                     ("three_phase_delta", lambda: _three_phase("delta")), ("im_grid_slip", _im_grid),
+                     ("pmsm_current_torque", _pmsm_current), ("im_vf_start", _im_vf)):
         st, checks = fn()
         out[name] = {"study": st, "checks": checks}
     return out
@@ -514,6 +626,10 @@ def run(solver: str, names=None, folder=None) -> dict:
     from .runner import run_study
     names = list(names) if names else list(cases())
     studies, checks, skipped = prepare(names)
+    if solver == "ref":
+        for n in [n for n in studies if n in OMC_ONLY]:
+            studies.pop(n)
+            skipped[n] = "needs OpenModelica (not covered by the reference yet)"
     out = {n: {"skipped": why} for n, why in skipped.items()}
     for n, st in studies.items():
         r = run_study(n, st, Path(folder) / n, solver, 600)

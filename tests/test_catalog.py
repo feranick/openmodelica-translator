@@ -55,9 +55,18 @@ class _FakeNet:
             d = s["default"]
             self.elems[e]["inits"][i] = (params.get(d, 0.0) if isinstance(d, str) else d, False)
         self.node_of, self.signal_of = {}, {}
-        for n, (p, t) in enumerate(k["ports"].items()):
-            (self.signal_of if t in ("in", "out") else self.node_of)[f"{e}.{p}"] = n
+        n = 0
+        for p, t in k["ports"].items():
+            keys = [f"{e}.{p}.pin[{j}]" for j in (1, 2, 3)] if t == "plug" else \
+                [f"{e}.{p}[{j}]" for j in (1, 2, 3)] if t in ("vin", "vout") else [f"{e}.{p}"]
+            for key in keys:
+                (self.signal_of if t in ("in", "out", "vin", "vout") else self.node_of)[key] = n
+                n += 1
         self.free_inputs = {}
+
+    def port_type(self, ep):
+        e, p = ep.split(".", 1)
+        return "pin" if ".pin[" in p else C.KINDS[self.elems[e]["kind"]]["ports"][p]
 
     def mpath(self, ep):
         e, p = ep.split(".", 1)
@@ -85,7 +94,8 @@ def test_reference_covers_every_variable(kname):
     for v in k["vars"]:
         assert f"X.{C.var_path(kname, v)}" in have, f"{kname}.{v} has no reference value"
     for i, s in k["inits"].items():
-        assert any(c["name"] == i for c in sys_.inits), f"{kname}.{i} is not a reference initial value"
+        assert any(c["name"] == i or c["name"].startswith(i + "[") for c in sys_.inits), \
+            f"{kname}.{i} is not a reference initial value"
 
 
 def _msl_root():

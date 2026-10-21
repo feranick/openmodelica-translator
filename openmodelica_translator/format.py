@@ -1,5 +1,5 @@
 """format.py — the study format (study_format) and the static checks (validate, validate_study).
-Version: 2026.10.21.16
+Version: 2026.10.21.20
 
 validate_study(study) -> {ok, errors, warnings}: nothing runs (no omc). It resolves the network (network.build),
 checks outputs, analysis, derived quantities, sweep, expect, run (against the OMCT_MAX_* caps) and images, then
@@ -72,6 +72,14 @@ CONVENTIONS = [
     "V_flowNominal and dpNominal (the operating point), m (kg of medium inside) for temperature dynamics, and "
     "connect heatPort to a thermal network for heat exchange (at the outlet temperature T; connecting it switches "
     "it on). T of a component is its outlet temperature; at junctions streams mix.",
+    "Three-phase: a plug (plug_p, plug_n, ...) is three pins; plugs connect to plugs phase by phase. Sources are "
+    "symmetric (ac_voltage: V_rms per phase, f); star joins the phases (its pin_n to a ground, or left open: a "
+    "floating star point), delta connects them in a ring; plug_to_pin takes one phase. Per-phase variables are "
+    "v[1..3], i[1..3]; ac_current_rms, ac_voltage_rms, ac_power give I, V, P, Q.",
+    "AC machines: induction_machine, pmsm (needs a drive), pmsm_damper (line start): plug = the supply (terminal "
+    "Y or D), flange = shaft, starpoint (Y: open, or to a ground, which pmsm_current_drive needs). Supplies: "
+    "three_phase_grid (V_rms per phase, f), vf_inverter (input f [Hz]), pmsm_current_drive (inputs id, iq [A RMS]; "
+    "its flange on the motor shaft). Stator and rotor currents start at 0, the rotor at w0, phi0.",
     "Heat ports: resistors, ideal diodes, dampers, dc_motor (heatPort = both losses) and dc_machine (heatPort = all "
     "six) put their losses into a thermal network when their heatPort is connected (a resistor's R then follows the "
     "port's temperature with alpha); unconnected, the losses leave the model.",

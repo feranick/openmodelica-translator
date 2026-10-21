@@ -1,5 +1,5 @@
 """energy.py — the energy balance of a run, from the elements' values and the recorded series.
-Version: 2026.10.21.16
+Version: 2026.10.21.20
 
     work in (boundaries) = change of stored energy + dissipated energy
 
@@ -61,6 +61,28 @@ def plan(net) -> dict | None:
             continue
         if C.KINDS[k].get("domain") == "fluid":
             _fluid_terms(terms, e, k, p)
+            continue
+        if k in ("star", "delta", "plug_to_pin", "ac_current_rms", "ac_voltage_rms", "ac_power"):
+            continue
+        if k in ("ac_voltage", "ac_resistor", "ac_inductor", "ac_capacitor"):
+            vv, ii = [f"{e}.v[{j}]" for j in (1, 2, 3)], [f"{e}.i[{j}]" for j in (1, 2, 3)]
+            if k == "ac_voltage":
+                terms.append(("power", e, vv + ii, lambda g, vv=vv, ii=ii: -sum(g(a) * g(b) for a, b in zip(vv, ii))))
+            elif k == "ac_resistor":
+                terms.append(("loss", e, vv + ii, lambda g, vv=vv, ii=ii: sum(g(a) * g(b) for a, b in zip(vv, ii))))
+            elif k == "ac_inductor":
+                terms.append(("store", e, ii, lambda g, ii=ii, L=p["L"]: 0.5 * L * sum(g(b) ** 2 for b in ii)))
+            else:
+                terms.append(("store", e, vv, lambda g, vv=vv, C_=p["C"]: 0.5 * C_ * sum(g(a) ** 2 for a in vv)))
+            continue
+        if k in ("terminal_box", "vf_controller", "dq_to_three_phase"):
+            continue
+        if k in ("signal_ac_voltage", "signal_ac_current"):
+            vv, ii = [f"{e}.v[{j}]" for j in (1, 2, 3)], [f"{e}.i[{j}]" for j in (1, 2, 3)]
+            terms.append(("power", e, vv + ii, lambda g, vv=vv, ii=ii: -sum(g(a) * g(b) for a, b in zip(vv, ii))))
+            continue
+        if k in ("im_core", "pmsm_core", "pmsm_damper_core"):
+            _ac_terms(terms, e, k, p, d)
             continue
         if k == "dc_machine":
             terms.append(("store", e, [f"{e}.la.i", f"{e}.wMechanical"],
@@ -136,6 +158,40 @@ def _fluid_terms(terms, e, k, p):
     elif k == "valve":
         terms.append(("loss", e, [f"{e}.dp", f"{e}.V_flow"],
                       lambda g, e=e, fl=p["frictionLoss"]: (1 - fl) * g(f"{e}.dp") * g(f"{e}.V_flow")))
+
+
+def _ac_terms(terms, e, k, p, d):
+    """An AC machine (MSL space phasors, power factor 3/2): kinetic 1/2 Jr w^2, stator stray 3/4 Lssigma |i_ss|^2,
+    zero sequence 1/2 Lszero i_0_s^2, the airgap 3/4 psi . i_m (IM: stator frame; PMSM: rotor frame, and the magnet,
+    a current source {-Ie, 0} on the rotor side, absorbs -3/2 Ie d psi_md/dt), the cage or damper 3/4 Lr |ir|^2;
+    losses: powerBalance.lossPowerTotal (internal when the heat ports are connected)."""
+    import math
+    Ls0 = p.get("Lszero") or p["Lssigma"]
+    names = [f"{e}.wMechanical", f"{e}.i_0_s"] + [f"{e}.airGap.i_ss[{j}]" for j in (1, 2)]
+    if k == "im_core":
+        frame, im = "ms", "i_ms"
+        Lr = (p["Lrsigma"], p["Lrsigma"])
+    else:
+        frame, im = "mr", "i_mr"
+        Lr = (p["Lrsigmad"], p.get("Lrsigmaq") or p["Lrsigmad"]) if k == "pmsm_damper_core" else None
+    names += [f"{e}.airGap.psi_{frame}[{j}]" for j in (1, 2)] + [f"{e}.airGap.{im}[{j}]" for j in (1, 2)]
+    if Lr:
+        names += [f"{e}.ir[{j}]" for j in (1, 2)]
+    Ie = math.sqrt(2) * p["VsOpenCircuit"] / (p["Lmd"] * 2 * math.pi * p["fsNominal"]) if k != "im_core" else 0.0
+
+    def store(g, e=e, frame=frame, im=im, Lr=Lr, Ie=Ie, Ls0=Ls0, p=p):
+        E = 0.5 * p["Jr"] * g(f"{e}.wMechanical") ** 2 + 0.5 * Ls0 * g(f"{e}.i_0_s") ** 2
+        E = E + 0.75 * p["Lssigma"] * (g(f"{e}.airGap.i_ss[1]") ** 2 + g(f"{e}.airGap.i_ss[2]") ** 2)
+        E = E + 0.75 * (g(f"{e}.airGap.psi_{frame}[1]") * g(f"{e}.airGap.{im}[1]")
+                        + g(f"{e}.airGap.psi_{frame}[2]") * g(f"{e}.airGap.{im}[2]"))
+        if Lr:
+            E = E + 0.75 * (Lr[0] * g(f"{e}.ir[1]") ** 2 + Lr[1] * g(f"{e}.ir[2]") ** 2)
+        if Ie:
+            E = E - 1.5 * Ie * g(f"{e}.airGap.psi_mr[1]")
+        return E
+    terms.append(("store", e, names, store))
+    if not d.get("enabled"):
+        terms.append(("loss", e, [f"{e}.powerBalance.lossPowerTotal"], lambda g, e=e: g(f"{e}.powerBalance.lossPowerTotal")))
 
 
 def balance(pl, t, get) -> dict:
