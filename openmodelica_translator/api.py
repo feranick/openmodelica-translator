@@ -1,17 +1,31 @@
-"""api.py — what the CLI (and, from milestone 4, the MCP server) calls. JSON in, JSON out.
-Version: 2026.10.21.4
+"""api.py — what the CLI and the MCP server call. JSON in, JSON out.
+Version: 2026.10.21.5
 
-    tool_status()            versions; omc, MSL, the C compiler, the build cache; the executor and its caps
-    study_format()           the study format, with status
-    validate(studies)        static checks
-    run(studies, solver)     runs every study now, one after the other, into a request folder under OMCT_OUT
-                             (milestone 2; the worker pool, SLURM and pending results come with milestones 4 and 6)
-    model(study, name)       the generated model, build script and override file, without running
-    bench(names, solver)     the benchmark studies with closed-form answers (milestone 3: run now, one by one)
+    tool_status()                  versions; omc, MSL, the C compiler, the build cache; the executor and its caps
+    study_format()                 the study format, with status
+    validate(studies)              static checks
+    run(studies, solver, wait)     runs the studies in a request folder under OMCT_OUT: with wait (seconds),
+                                   returns then with the rest pending; without, waits for all
+    start(studies, solver)         the same in the background: the request folder
+    status(request, wait)          finished studies with results, the others pending (state, stage, elapsed)
+    jobs(limit, active)            recent requests and their studies' states
+    cancel(request, names)         a cancel flag for the request's studies (the running one stops within a second)
+    model(study, name)             the generated model, build script and override file, without running
+    bench(names, solver, wait_s)   the benchmarks; with wait_s they run in the pool and bench_status collects
+    bench_status(bench, wait_s)    the verdicts of the benchmarks finished since
+    render_images(folder, images)  new pictures of a finished study; image_path(path) a checked PNG path
+    read_file(path, max_mb)        a written file as base64 (only under OMCT_OUT)
+
+Studies run in worker processes (OMCT_WORKERS, default 2) that live across calls of one server process. Every
+state is read from the files (request.json, <name>/<name>.json, model.mo, sim.log), so another server process
+sees the same results; a study still running in a process that ended is reported failed. SLURM comes with
+milestone 6.
 """
 from __future__ import annotations
 
+import base64
 import json
+import multiprocessing as mp
 import os
 import shutil
 import time
@@ -22,6 +36,7 @@ from . import __version__
 from .format import caps
 from .format import study_format as _format
 from .format import validate as _validate
+from .format import validate_study
 
 
 def out_root() -> Path:
@@ -72,32 +87,205 @@ def validate(studies: dict) -> dict:
     return _validate(studies)
 
 
+# ---- the worker pool ---------------------------------------------------------------------------------
+def _run_one(job: dict) -> dict:
+    from .runner import run_study
+    r = run_study(job["name"], job["study"], Path(job["folder"]) / job["name"], job["solver"], job["timeout"])
+    r.pop("trace", None)
+    return {"ok": r.get("ok")}
+
+
+class _Pool:
+    def __init__(self):
+        self.pool = None
+        self.jobs: dict[str, dict] = {}
+
+    def submit(self, folder: Path, jobs: list[dict]) -> None:
+        if self.pool is None:
+            self.pool = mp.get_context("spawn").Pool(int(os.environ.get("OMCT_WORKERS", "2")), maxtasksperchild=20)
+        self.jobs.setdefault(str(folder), {}).update(
+            {j["name"]: self.pool.apply_async(_run_one, (j,)) for j in jobs})
+
+
+_POOL = _Pool()
+
+
 def _request_dir(prefix: str) -> Path:
     d = out_root() / f"{prefix}_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
-def run(studies: dict, solver: str | None = None) -> dict:
-    """Runs every study now (synchronously) into <OMCT_OUT>/run_<date>_<time>_<id>/<name>/<name>.json."""
-    from .runner import run_study
-    folder = _request_dir("run")
+def start(studies: dict, solver: str | None = None, prefix: str = "run", inline: bool = False) -> Path:
+    """The request folder; the valid studies go to the pool (inline: run here, one after the other)."""
+    folder = _request_dir(prefix)
     s = _solver(solver)
     (folder / "studies.json").write_text(json.dumps(studies, indent=1))
-    (folder / "request.json").write_text(json.dumps({"names": list(studies), "solver": s, "started": time.time(),
-                                                     "studies": studies, "executor": "local"}))
-    out = {}
-    for name, st in studies.items():
-        out[name] = run_study(name, st, folder / name, s, timeout_s(st))
-        out[name].pop("trace", None)
-    res = {"request": str(folder), "translator": __version__, "solver": s, "done": True, "pending": [],
-           "studies": out}
-    (folder / "results.json").write_text(json.dumps(res, indent=1, default=str))
+    invalid, jobs = {}, []
+    for n, st in studies.items():
+        v = validate_study(st)
+        if not v["ok"]:
+            invalid[n] = {"ok": False, "why": "invalid study", "errors": v["errors"], "warnings": v["warnings"],
+                          "reliable": False, "unreliable_because": ["invalid study"]}
+        else:
+            jobs.append({"name": n, "study": st, "folder": str(folder), "solver": s, "timeout": timeout_s(st)})
+    (folder / "request.json").write_text(json.dumps({
+        "names": [j["name"] for j in jobs], "invalid": invalid, "solver": s, "started": time.time(),
+        "executor": "local", "pid": os.getpid(), "studies": {j["name"]: j["study"] for j in jobs}}, default=float))
+    if inline:
+        for j in jobs:
+            _run_one(j)
+    elif jobs:
+        _POOL.submit(folder, jobs)
+    return folder
+
+
+def _progress(d: Path, timeout: float) -> dict:
+    if not d.exists():
+        return {"state": "queued", "stage": "waiting for a worker (OMCT_WORKERS)"}
+    t0 = min((p.stat().st_mtime for p in d.iterdir()), default=time.time())
+    el = max(time.time() - t0, 0.0)
+    if (d / "sim_converge.log").exists():
+        stage = "second run at tolerance/10 (converge)"
+    elif (d / "sim.log").exists():
+        stage = "simulating" if not (d / "result.mat").exists() and not (d / "linearized_model.mo").exists() else "checking results"
+    elif (d / "model.mo").exists():
+        stage = "building (omc) or reusing the cached build"
+    else:
+        stage = "validating and translating"
+    return {"state": "running", "stage": stage, "elapsed_min": round(el / 60, 2),
+            "eta_min_max": round(max(timeout - el, 0) / 60, 1),
+            "note": "eta_min_max is the time limit left; most studies take seconds"}
+
+
+def _collect(folder: Path) -> dict:
+    meta = json.loads((folder / "request.json").read_text())
+    handles = _POOL.jobs.get(str(folder), {})
+    out, pending, progress = dict(meta.get("invalid", {})), [], {}
+    for name in meta["names"]:
+        f = folder / name / f"{name}.json"
+        h = handles.get(name)
+        if f.is_file() and (h is None or h.ready()):
+            try:
+                out[name] = json.loads(f.read_text())
+                out[name].pop("trace", None)
+                continue
+            except json.JSONDecodeError:
+                pass
+        if h is not None and h.ready():
+            try:
+                h.get()
+                out[name] = {"ok": False, "why": "the worker ended without a result"}
+            except Exception as exc:  # noqa: BLE001
+                out[name] = {"ok": False, "why": "worker failed", "error": str(exc)[:500]}
+        elif h is None and meta.get("pid") == os.getpid() and not f.is_file():
+            pending.append(name)
+            progress[name] = _progress(folder / name, timeout_s(meta["studies"].get(name)))
+        elif h is None:
+            if _alive(meta.get("pid")) and not (folder / name / "cancel").exists():
+                pending.append(name)
+                progress[name] = {**_progress(folder / name, timeout_s(meta["studies"].get(name))),
+                                  "note": f"run by another server process (pid {meta.get('pid')})"}
+            else:
+                out[name] = {"ok": False, "state": "failed",
+                             "why": "not finished and no longer running (the server that ran it stopped?); run it again"}
+        else:
+            pending.append(name)
+            progress[name] = _progress(folder / name, timeout_s(meta["studies"].get(name)))
+    res = {"request": str(folder), "translator": __version__, "solver": meta["solver"], "done": not pending,
+           "pending": pending, "elapsed_s": round(time.time() - meta.get("started", time.time()), 1), "studies": out}
+    if pending:
+        res["progress"] = progress
+        res["next"] = (f"call study_status(request='{folder}') to collect the rest. Polling costs tokens: if eta_min_max "
+                       f"is more than about 5 min, tell the user when to come back and stop polling")
+    else:
+        (folder / "results.json").write_text(json.dumps(res, indent=1, default=str))
     return res
 
 
+def _alive(pid) -> bool:
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def status(request: str, wait: float = 0.0) -> dict:
+    folder = Path(request).expanduser()
+    if not (folder / "request.json").is_file():
+        return {"error": f"no request {folder}"}
+    t_end = time.time() + max(0.0, float(wait))
+    while True:
+        res = _collect(folder)
+        if res["done"] or time.time() >= t_end:
+            return res
+        time.sleep(0.5)
+
+
+def run(studies: dict, solver: str | None = None, wait: float | None = None) -> dict:
+    """wait None: run here, one after the other, and return everything (the CLI); otherwise in the pool."""
+    if wait is None:
+        folder = start(studies, solver, inline=True)
+        return status(str(folder), 0)
+    folder = start(studies, solver)
+    return status(str(folder), wait)
+
+
+def _requests(limit: int, prefix: str = "run"):
+    root = out_root()
+    if not root.is_dir():
+        return []
+    reqs = [p for p in root.iterdir() if p.is_dir() and p.name.startswith(prefix + "_") and (p / "request.json").is_file()]
+    return sorted(reqs, key=lambda p: p.stat().st_mtime, reverse=True)[:limit]
+
+
+def jobs(limit: int = 20, active: bool = False) -> dict:
+    out = []
+    for req in _requests(max(limit * 3, limit)):
+        try:
+            res = _collect(req)
+        except (OSError, json.JSONDecodeError, KeyError):
+            continue
+        studies = {n: {"state": "done" if s.get("ok") else s.get("state", "failed"), "ok": s.get("ok"),
+                       "reliable": s.get("reliable")} for n, s in res["studies"].items()}
+        for n in res["pending"]:
+            studies[n] = {"state": res["progress"][n]["state"], "stage": res["progress"][n].get("stage")}
+        live = bool(res["pending"])
+        if active and not live:
+            continue
+        out.append({"request": str(req), "started": json.loads((req / "request.json").read_text()).get("started"),
+                    "active": live, "studies": studies})
+        if len(out) >= limit:
+            break
+    return {"translator": __version__, "executor": executor_status(), "requests": out,
+            "note": "local worker pool only; SLURM jobs come with milestone 6"}
+
+
+def cancel(request: str, names: list[str] | None = None) -> dict:
+    folder = Path(request).expanduser()
+    if not (folder / "request.json").is_file():
+        return {"error": f"no request {folder}"}
+    meta = json.loads((folder / "request.json").read_text())
+    names = names or meta["names"]
+    unknown = [n for n in names if n not in meta["names"]]
+    if unknown:
+        return {"error": f"no studies {unknown} in this request ({meta['names']})"}
+    todo = [n for n in names if not (folder / n / f"{n}.json").is_file()]
+    for n in todo:
+        (folder / n).mkdir(parents=True, exist_ok=True)
+        (folder / n / "cancel").write_text(str(time.time()))
+    res = status(str(folder), 3.0 if todo else 0.0)
+    return {"request": str(folder), "cancelled": todo, "already_finished": [n for n in names if n not in todo],
+            "states": {n: ("done" if n in res["studies"] and res["studies"][n].get("ok") else
+                           res["studies"].get(n, {}).get("state") or res["studies"].get(n, {}).get("why") or
+                           res.get("progress", {}).get(n, {}).get("state")) for n in names},
+            "note": "a queued study is skipped when a worker reaches it; a running one stops within a second"}
+
+
 def model(study: dict, name: str = "study") -> dict:
-    from .format import validate_study
     from .modelica import build_mos, escape_translation, override_file, translate
     v = validate_study(study)
     if not v["ok"]:
@@ -110,7 +298,6 @@ def model(study: dict, name: str = "study") -> dict:
 
 
 def read_file(path: str, max_mb: float = 20) -> dict:
-    import base64
     p = Path(path).expanduser().resolve()
     root = out_root().resolve()
     if root not in p.parents:
@@ -122,14 +309,62 @@ def read_file(path: str, max_mb: float = 20) -> dict:
     return {"name": p.name, "bytes": p.stat().st_size, "base64": base64.b64encode(p.read_bytes()).decode()}
 
 
-def bench(names=None, solver: str | None = None) -> dict:
+def render_images(study_folder: str, images=True) -> dict:
+    from .render import render, spec_errors
+    d = Path(study_folder).expanduser().resolve()
+    root = out_root().resolve()
+    if root not in d.parents:
+        return {"error": f"only study folders under {root}"}
+    res_f = d / f"{d.name}.json"
+    if not res_f.is_file():
+        return {"error": f"no finished study in {d} (a study's folder: <request>/<name>)"}
+    res = json.loads(res_f.read_text())
+    errs = spec_errors(images, list(res.get("outputs") or {}))
+    if errs:
+        return {"error": "invalid images", "errors": errs}
+    return {"images": render(d, res, images)}
+
+
+def image_path(path: str) -> Path:
+    p = Path(path).expanduser().resolve()
+    root = out_root().resolve()
+    if root not in p.parents or p.suffix.lower() != ".png" or not p.is_file():
+        raise ValueError(f"no image {p} under {root}")
+    return p
+
+
+# ---- benchmarks ---------------------------------------------------------------------------------------
+def bench(names=None, solver: str | None = None, wait_s: float | None = None) -> dict:
+    """wait_s None: run here and return the verdicts; otherwise in the pool, returning after wait_s."""
     from . import bench as B
-    s = _solver(solver)
-    folder = _request_dir("bench")
-    r = B.run(s, names, folder)
-    out = {"bench": str(folder), "solver": s, "translator": __version__,
-           "passed": [k for k, v in r.items() if v.get("passed")],
-           "failed": [k for k, v in r.items() if "skipped" not in v and not v.get("passed")],
-           "skipped": [k for k, v in r.items() if "skipped" in v], "cases": r}
-    (folder / "bench.json").write_text(json.dumps(out, indent=1, default=float))
+    cs = B.cases()
+    names = list(names) if names else list(cs)
+    unknown = [n for n in names if n not in cs]
+    studies = {n: cs[n]["study"] for n in names if n in cs}
+    folder = start(studies, solver, prefix="bench", inline=wait_s is None)
+    (folder / "bench_request.json").write_text(json.dumps({"names": list(studies), "skipped": unknown,
+                                                           "translator": __version__}))
+    return bench_status(str(folder), 0 if wait_s is None else wait_s)
+
+
+def bench_status(bench_folder: str, wait_s: float = 0) -> dict:
+    from . import bench as B
+    folder = Path(bench_folder).expanduser()
+    if not (folder / "bench_request.json").is_file():
+        return {"error": f"no benchmark request {folder}"}
+    meta = json.loads((folder / "bench_request.json").read_text())
+    st = status(str(folder), wait_s)
+    cs = B.cases()
+    res = {n: B.evaluate(n, r, cs) for n, r in st["studies"].items()}
+    for n, r in st["studies"].items():
+        res[n]["checks_run"] = {k: v.get("ok") for k, v in (r.get("checks") or {}).items()}
+    out = {"bench": str(folder), "solver": st["solver"], "translator": __version__, "done": st["done"],
+           "passed": [n for n, v in res.items() if v.get("passed")],
+           "failed": [n for n, v in res.items() if not v.get("passed")], "pending": st.get("pending", []),
+           "skipped": meta.get("skipped", []), "cases": res}
+    if not st["done"]:
+        out["progress"] = st.get("progress")
+        out["next"] = f"call bench_status(bench='{folder}') in a little while"
+    else:
+        (folder / "bench.json").write_text(json.dumps(out, indent=1, default=float))
     return out

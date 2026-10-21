@@ -2,7 +2,7 @@
 
 Session context for Claude (the project documentation will be README.md). Start a chat with: "Read planning.md and start."
 
-Version: 2026.10.21.4 (milestone 3: checks and benchmarks; to run on mochi).
+Version: 2026.10.21.5 (milestone 4: API, MCP server, pictures).
 
 ## What this is
 
@@ -351,7 +351,7 @@ tools/  m0_probe.sh (M0 probe), check_catalog_msl.py (catalog vs the MSL 4.0.0 s
 - **M1 Format and translation, offline:** `catalog.py`, `units.py`, `format.py` (study_format ~10–12 kB, validate), `modelica.py`, `.mos` generation, `ref.py`, tests. Done (2026.10.21.1).
 - **M2 Backend driver:** `omc.py`, cache, `simrun.py`, `matfile.py`, log and result parsing, override verification; fixtures from mochi; tests that skip without omc.
 - **M3 Checks and benchmarks:** energy balance, `converge`, reliability, `bench.py`. Done in the sandbox (2026.10.21.4); benchmarks to run on mochi.
-- **M4 Interfaces:** `api.py`, `cli.py`, `mcp_server.py`, images.
+- **M4 Interfaces:** `api.py`, `cli.py`, `mcp_server.py`, images. Done in the sandbox (2026.10.21.5).
 - **M5 Analyses:** sweeps, linearisation, steady.
 - **M6 SLURM:** `executor.py` from cfdt with sizing, caps, fake-SLURM tests; on mochi two sweeps from two conversations queue.
 - **M7 Chains:** `chain_feat_modal`, b3dt mass, cfdt tables.
@@ -373,6 +373,15 @@ Made while building M1 (tell me if any is wrong):
 - Composites are flattened into elements `X__part` (no nested models, so every value is a direct override and no bound parameter has to be recomputed by OpenModelica).
 
 ## State
+
+**2026.10.21.5 (M4, sandbox)**: on mochi with 2026.10.21.4: 204 tests pass (65 s) and **all 11 benchmarks pass with OpenModelica 1.27.1** (rc_step, rlc_step, rlc_poles_bode, msd_modes, msd_free, inertia_torque_step, dc_motor_steady, thermal_rc, thermal_steady, two_mass, pi_first_order), each reliable (energy balance and reference comparison included). New: `api.py` with the cfdt-style worker pool (spawn, lives across calls), `start`/`status`/`run(wait)` from request folders (states from files: model.mo -> building, sim.log -> simulating; a study whose server process died is reported failed), `jobs`, `cancel` (flag files; a queued study is skipped), `bench(wait_s)` + `bench_status`; `render.py` (time plots per unit, Bode; `series.npz` saved with every run; `render_images`); `mcp_server.py` (12 tools, 22-line instructions; checked over stdio with the SDK 2.3 client: handshake, run_studies, get_image); CLI `status REQUEST`, `jobs`, `cancel`, `images`, `run-study`; `tools/mcp_smoke.py`. Tests: 209 pass. Not yet: the SLURM paragraph in the instructions and `executor` (M6), sweeps (M5).
+Next on mochi (about 1-2 min):
+```bash
+cd ~/Software/openmodelica-translator && git pull
+PY=~/Software/llm-translators/.venv/bin/python
+$PY -m pytest -q tests/ 2>&1 | tail -2
+$PY tools/mcp_smoke.py --solver omc
+```
 
 **2026.10.21.4 (M3, sandbox)**: on mochi with 2026.10.21.3 every example ran (the sweep refused as intended); OpenModelica compiled in M__rotor.w, J1.w, m.v (aliases) and LimPID's yMax/yMin. New: `post.py` derived quantities (step: rise 10-90 %, overshoot, peak, settling 2 %; crossing; window; steady), steady analysis (`steady.<output>`: value, t_steady, reached in the last 10 %), `expect` (passed); `energy.py` (boundaries, storage, dissipation from element values and recorded series; Stieltjes integral for force/torque work; tolerance max(1 %, 3 x Richardson)); the reference comparison on the run's time points (events and source steps masked; max(1e-4, 100 tol)); eigenvalues for linearize (1e-5); `converge` (tol/10, max(1e-6, 100 tol)); `bench.py`: 11 cases with closed forms, all pass with the reference solver; `linear.analyse` adds natural_frequencies_Hz, damping_ratios, time_constants_s, rigid-body modes counted. The energy balance found two reference bugs: Pulse edges computed two ways (floor vs sums) disagreed at 0.0035 s, and a source step exactly at the stop time; both fixed. Tests: 204 pass (+2 with omc).
 Next on mochi (about 1-2 min):

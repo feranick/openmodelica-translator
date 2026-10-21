@@ -1,5 +1,5 @@
 """runner.py — one study end to end: validate, translate, build (or reuse), run, read, check, write the result.
-Version: 2026.10.21.4
+Version: 2026.10.21.5
 
 run_study(name, study, folder, solver, timeout, cancel) -> the result dict, also written atomically to
 <folder>/<name>.json. solver: "omc" (OpenModelica) or "ref" (the reference implementation only: linear
@@ -60,7 +60,10 @@ def run_study(name: str, study: dict, folder, solver: str = "omc", timeout: floa
     cancel = Path(cancel) if cancel else folder / "cancel"
     t_start = time.perf_counter()
     try:
-        res = _run(name, study, folder, solver, timeout, cancel)
+        if cancel.exists():
+            res = {"ok": False, "state": "cancelled", "why": "cancelled before it started"}
+        else:
+            res = _run(name, study, folder, solver, timeout, cancel)
     except Exception as exc:  # noqa: BLE001
         res = {"ok": False, "why": f"internal error: {type(exc).__name__}: {exc}",
                "trace": traceback.format_exc()[-3000:]}
@@ -73,6 +76,12 @@ def run_study(name: str, study: dict, folder, solver: str = "omc", timeout: floa
     if res.get("ok") is False:
         res.setdefault("reliable", False)
         res.setdefault("unreliable_because", [res.get("why", "failed")])
+    elif study.get("images"):
+        try:
+            from .render import render
+            res["images"] = render(folder, res, True)
+        except Exception as exc:  # noqa: BLE001
+            res.setdefault("warnings", []).append(f"pictures failed: {type(exc).__name__}: {exc}")
     _atomic(folder / f"{name}.json", res)
     return res
 
@@ -86,8 +95,9 @@ def _level_si(units):
     return f
 
 
-def _post(out, study, tr, t, get, units, solver):
-    """Outputs, derived, steady, energy; get(path) -> series of a Modelica variable."""
+def _post(out, study, tr, t, get, units, solver, folder=None):
+    """Outputs, derived, steady, energy; get(path) -> series of a Modelica variable. The full output series go to
+    <folder>/series.npz (for pictures made later)."""
     from . import energy as E
     from .post import derived, outputs, steady
 
@@ -99,6 +109,10 @@ def _post(out, study, tr, t, get, units, solver):
             y = c * get(path) if y is None else y + c * get(path)
         vals[oname] = np.asarray(y, float)
     out["outputs"] = outputs(t, vals, units)
+    if folder is not None:
+        from .render import save_state
+        save_state(Path(folder), t, vals, units)
+        out["files"]["series"] = str(Path(folder) / "series.npz")
     fin = all(o["finite"] for o in out["outputs"].values())
     out["checks"]["finite"] = {"ok": fin}
     if not fin:
@@ -205,7 +219,10 @@ def _run(name, study, folder, solver, timeout, cancel) -> dict:
            "inputs": tr.net.inputs if tr.net is not None else {}, "fixed_initial_values": tr.fixed, "checks": {}}
     units = {k: u for k, (_, u) in tr.outputs.items()}
     if solver == "ref":
-        return _verdict(_run_ref(study, tr, out, units), study)
+        out["_folder"] = str(folder)
+        res = _run_ref(study, tr, out, units)
+        res.pop("_folder", None)
+        return _verdict(res, study)
     from . import omc, simrun
     from .matfile import Result
 
@@ -277,7 +294,7 @@ def _run(name, study, folder, solver, timeout, cancel) -> dict:
             return out
         if not lin:
             try:
-                vals = _post(out, study, tr, r.time, r.series, units, solver)
+                vals = _post(out, study, tr, r.time, r.series, units, solver, folder)
             except KeyError as exc:
                 out.update({"ok": False, "why": f"{exc} is not in the result file"})
                 return out
@@ -367,5 +384,5 @@ def _run_ref(study, tr, out, units) -> dict:
     else:
         tt = np.linspace(t0, t1, n + 1)
         vals = r.simulate(tt)
-        _post(out, study, tr, tt, vals.__getitem__, units, "ref")
+        _post(out, study, tr, tt, vals.__getitem__, units, "ref", out.get("_folder"))
     return out

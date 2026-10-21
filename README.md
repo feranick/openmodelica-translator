@@ -16,7 +16,7 @@ It is part of [llm-translators](https://github.com/feranick/llm-translators), wi
 | Settings prefix | `OMCT_` |
 | Output folder | `~/omct_runs` (`OMCT_OUT`) |
 
-**Status (2026.10.21.4, milestone 3 of 8):** format, validation, Modelica generation, the reference implementation (M1); the OpenModelica driver (M2, every example runs on mochi); derived quantities, steady values, the energy balance, the reference comparison, `converge`, `expect` and 11 benchmarks with closed forms (M3). 204 tests pass without OpenModelica (all benchmarks pass with the reference solver). Next: the MCP server and worker pool (M4), sweeps (M5), SLURM (M6), chains (M7); see `planning.md`.
+**Status (2026.10.21.5, milestone 4 of 8):** format, validation, Modelica generation, the reference implementation (M1); the OpenModelica driver (M2); checks and 11 benchmarks, all passing on mochi with OpenModelica (M3); the API with a worker pool, the CLI, the MCP server and pictures (M4). 209 tests pass without OpenModelica. Next: sweeps (M5), SLURM (M6), chains (M7), joining llm-translators (M8); see `planning.md`.
 
 ## Install
 
@@ -31,6 +31,8 @@ omct model examples/studies.json rlc_square_wave    # the generated model.mo, bu
 omct status                              # omc, MSL, the C compiler, the build cache
 omct run examples/studies.json rlc_square_wave [--solver omc|ref]   # runs now; results in ~/omct_runs/run_*/
 omct bench [NAMES...] [--solver omc|ref]  # the benchmarks with closed-form answers
+omct status REQUEST | jobs [--active] | cancel REQUEST [NAMES]
+omct images STUDY_FOLDER                  # pictures of a finished study again
 ```
 
 A run writes `<OMCT_OUT>/run_<date>_<time>_<id>/<study>/`: `model.mo`, `params.txt` (every value), `sim.log`, `result.mat` (MAT v4), `linearized_model.mo` (linearize), and `<study>.json` (the result). Compiled models live in the build cache, `<OMCT_OUT>/.cache/<hash>/`, keyed by the model's structure: a study that changes only values reuses the build (one compile of ~1-2 s on mochi; a run of a small model takes ~0.1 s).
@@ -111,8 +113,15 @@ Listed in `planning.md` (A1–A19), each with the probe that checks it (`tools/m
 | `simrun.py` | runs a cached model: override file, flags, process group, timeout and cancel flag, `OMP_NUM_THREADS=1`; reads the log (refused overrides, assertions, chattering, statistics) and reads values back |
 | `matfile.py`, `linear.py` | the MAT v4 result file; `linearized_model.mo` → A, B, C, D, modes, DC gain, Bode |
 | `post.py`, `energy.py`, `bench.py` | outputs, derived quantities (step, crossing, window, steady), comparisons, expect; the energy balance; the benchmarks |
-| `runner.py`, `api.py`, `proc.py` | one study end to end with every check; the API; process groups |
-| `cli.py` | `omct status | format | validate | model | run | bench` |
+| `runner.py`, `api.py`, `proc.py` | one study end to end with every check; the API (pool, request folders, status from files, cancel, jobs, benchmarks); process groups |
+| `render.py`, `mcp_server.py` | time and Bode plots; the MCP server |
+| `cli.py` | `omct status [REQUEST] | format | validate | model | run | bench | jobs | cancel | images | run-study` |
+
+## For LLM tools: the MCP server
+
+`omct-mcp` (stdio; `--http 8770` for HTTP). Tools: `study_format`, `validate_studies`, `run_studies`, `study_status`, `get_model`, `run_benchmarks`, `bench_status`, `jobs`, `cancel`, `get_image` (a PNG as an MCP image), `render_images`, `get_file`. `run_studies` and `study_status` return within 50 s with the rest `pending` (stage, elapsed, the time limit left); studies run in a worker pool (`OMCT_WORKERS`, 2) that lives across calls, and every state is read from the request folder, so another server process sees the results. Polling costs tokens: the instructions tell the model to report when a long run should finish and stop. `tools/mcp_smoke.py` runs the server as the Claude app would and simulates one example.
+
+Pictures: `"images": true` in a study writes `images/outputs.png` (one panel per unit) or `images/bode.png` (linearize with `bode`); `render_images` draws other selections (`{name, outputs, window}`) from the saved `series.npz`.
 
 ## Files
 
@@ -122,6 +131,7 @@ Listed in `planning.md` (A1–A19), each with the probe that checks it (`tools/m
 
 | Version | Changes |
 |---|---|
+| 2026.10.21.5 | M4: worker pool and request folders (`run` with `wait`, `start`, `status`, `jobs`, `cancel`), the MCP server (12 tools, SDK 1.x and 2.x), pictures (`render.py`), CLI `status REQUEST`, `jobs`, `cancel`, `images`, `run-study`; on mochi all 11 benchmarks pass with OpenModelica |
 | 2026.10.21.4 | M3: derived quantities, steady values, energy balance, reference comparison, converge, expect, 11 benchmarks (`omct bench`); the reference's square-wave edges and end-of-run steps fixed (found by the energy balance) |
 | 2026.10.21.3 | First runs on mochi (RC matches its closed form through OpenModelica); a value OpenModelica cannot change at run time (a mass's `v` became an alias of a spring-damper's `v_rel`) is now compiled in: the same value reuses the build, another value builds a variant |
 | 2026.10.21.2 | M2: the OpenModelica driver (build cache, runs, logs, MAT results, read-back, linearisation), `omct status` and `omct run`, the mochi probe's answers in `planning.md`; 187 tests (+2 with omc) |
