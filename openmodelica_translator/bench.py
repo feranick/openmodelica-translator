@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with closed-form answers: is the toolchain right?
-Version: 2026.10.21.17
+Version: 2026.10.21.18
 
 Each case is a study plus checks [(result path, expected, tolerance, why)]; tolerances are relative unless
 written {"abs": x}. Chains (chain_feat_modal, chain_b3dt_mass, chain_b3dt_inertia) run the other translator first and only when named; they are skipped
@@ -172,7 +172,9 @@ def _coolant_open():
                          "a2": {"kind": "ambient"}, "q": {"kind": "fixed_heat_flow", "Q_flow": Q}},
           "connect": [["a1.flowPort", "pump.flowPort_a"], ["pump.flowPort_b", "pipe.flowPort_a"],
                       ["pipe.flowPort_b", "a2.flowPort"], ["q.port", "pipe.heatPort"]],
-          "outputs": {"T": "pipe.T", "dp": "pipe.dp"}, "analysis": {"kind": "transient", "stop_time": 40, "intervals": 4000},
+          "outputs": {"T": "pipe.T", "dp": "pipe.dp"},
+          # tolerance 1e-8: dassl's relative tolerance acts on the absolute temperature (~300 K), the rise is 4.8 K
+          "analysis": {"kind": "transient", "stop_time": 40, "intervals": 4000, "tolerance": 1e-8},
           "derived": [{"kind": "crossing", "signal": "T", "level": 293.15 + dT * (1 - math.exp(-1))}]}
     sl, VL = 100 / 1e-5, 1e-5
     k = (2000 - sl * 1e-4) / (1e-4 - VL) ** 2
@@ -270,7 +272,8 @@ def _self_heating():
                          "amb": {"kind": "fixed_temperature", "T": "20 degC"}},
           "connect": [["v.p", "r.p"], ["r.n", "v.n"], ["v.n", "g"], ["r.heatPort", "cr.port"], ["cr.port", "gr.port_a"],
                       ["gr.port_b", "amb.port"]],
-          "outputs": {"T": "cr.T", "T_r": "r.T_heatPort"}, "analysis": {"kind": "transient", "stop_time": 1000, "intervals": 1000},
+          "outputs": {"T": "cr.T", "T_r": "r.T_heatPort"},
+          "analysis": {"kind": "transient", "stop_time": 1000, "intervals": 1000, "tolerance": 1e-8},
           "derived": [{"kind": "crossing", "signal": "T", "level": 293.15 + P / G * (1 - math.exp(-1))}]}
     return st, [("derived.T.crossing_time_s", Cth / G, 1e-4, "tau = C/G"),
                 ("outputs.T.final", 293.15 + P / G * (1 - math.exp(-1000 * G / Cth)), 1e-5, "T(1000 s)"),

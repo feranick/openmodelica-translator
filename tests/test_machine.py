@@ -31,8 +31,11 @@ def test_no_heat_ports():
     tr = M.translate(st, "m")
     decl = [x for x in tr.text.splitlines() if " M(" in x][0]
     assert "useThermalPort" not in decl and "frictionParameters(PRef=0.0, power_w=2.0)" in decl
-    assert "M.frictionParameters.PRef" in tr.overrides and "M.VaNominal" in tr.overrides
+    assert "M.frictionParameters.PRef" not in tr.overrides and "M.VaNominal" in tr.overrides   # loss records: structural
     assert ref.Ref(network.build(st)).exact
+    st["components"]["M"]["PRef_friction"] = 100.0
+    t2 = M.translate(st, "m")
+    assert t2.structure != tr.structure and "frictionParameters(PRef=100.0, power_w=2.0, wRef=" in t2.text
 
 
 def test_one_heat_port_takes_every_loss():

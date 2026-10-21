@@ -1,5 +1,5 @@
 """modelica.py — a study -> the Modelica model, the omc build script, and the values applied at run time.
-Version: 2026.10.21.15
+Version: 2026.10.21.18
 
 translate(study, name) -> Translation with
   text        model.mo: `model omct_model` with one declaration per element (sorted), every value in SI with
@@ -83,11 +83,14 @@ def element_values(net, e: str, selected: set):
             structural[mname] = fmt(v)
         else:
             values[mname] = float(v) if spec["type"] == "real" else v
-    for mname, fn in k["mods"].items():
+    for key, fn in k["mods"].items():
         v = fn(p)
-        spec = k["params"].get(mname)
+        if v is None:
+            continue
+        spec = k["params"].get(key)
+        mname = (spec.get("msl") or key) if spec is not None and spec.get("msl") is not False else key
         if spec is not None and spec["structural"]:
-            structural[mname] = fmt(v)
+            structural[mname] = fmt(float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else v)
         elif isinstance(v, str):
             structural[mname] = v
         else:

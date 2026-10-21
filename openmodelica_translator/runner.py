@@ -1,5 +1,5 @@
 """runner.py — one study end to end: validate, translate, build (or reuse), run, read, check, write the result.
-Version: 2026.10.21.17
+Version: 2026.10.21.18
 
 run_study(name, study, folder, solver, timeout, cancel) -> the result dict, also written atomically to
 <folder>/<name>.json. solver: "omc" (OpenModelica) or "ref" (the reference implementation only: linear
@@ -145,6 +145,18 @@ def _post(out, study, tr, t, get, units, solver, folder=None):
     return vals
 
 
+def allowed(y, lim, tol) -> float:
+    """The allowed error relative to an output's range: lim, or what the solver's relative tolerance allows on
+    the output's size (10 tol max|y|): an absolute temperature of 300 K rising by 1 K is only accurate to ~3e-4 K
+    at tolerance 1e-6, 3e-4 of its range."""
+    y = np.asarray(y, float)
+    if y.size == 0:
+        return lim
+    rng = float(np.max(y) - np.min(y))
+    mag = float(np.max(np.abs(y)))
+    return float(max(lim, 10 * tol * mag / rng)) if rng > 0 else lim
+
+
 def _reference(out, study, tr, t, vals, tol):
     """The reference implementation on the same (non-event) time points."""
     from .post import compare, not_events
@@ -171,15 +183,17 @@ def _reference(out, study, tr, t, vals, tol):
         out["checks"]["reference"] = {"ok": True, "covered": False, "why": f"reference failed: {exc}"}
         return
     lim = max(1e-4, 100 * tol)
-    errs = {}
+    errs, lims, ok = {}, {}, True
     for oname, (terms, _) in tr.outputs.items():
         y = None
         for c, path in terms:
             y = c * rv[path] if y is None else y + c * rv[path]
         errs[oname] = compare(vals[oname][m], y)
+        lims[oname] = allowed(y, lim, tol)
+        ok = ok and errs[oname] <= lims[oname]
     worst = max(errs.values()) if errs else 0.0
-    out["checks"]["reference"] = {"ok": worst <= lim, "covered": True, "max_error_rel": worst, "tol": lim,
-                                  "per_output": errs}
+    out["checks"]["reference"] = {"ok": ok, "covered": True, "max_error_rel": worst, "tol": lim,
+                                  "per_output": errs, "tol_per_output": lims}
 
 
 def _ref_eigen(out, tr):
@@ -355,16 +369,18 @@ def _converge(out, b, folder, overrides, tr, r, vals, t0, t1, n, tol, method, fi
     r2 = Result(sim["result"])
     m1, m2 = not_events(r.time), not_events(r2.time)
     lim = max(1e-6, 100 * tol)
-    diffs = {}
+    diffs, lims, ok = {}, {}, True
     for oname, (terms, _) in tr.outputs.items():
         y2 = combine(r2, terms)
         yi = np.interp(r.time[m1], r2.time[m2], y2[m2])
         y1 = vals[oname][m1]
         rng = float(np.max(y1) - np.min(y1)) or max(float(np.max(np.abs(y1))), 1e-300)
         diffs[oname] = float(np.max(np.abs(y1 - yi)) / rng) if y1.size else 0.0
+        lims[oname] = allowed(y1, lim, tol) if y1.size else lim
+        ok = ok and diffs[oname] <= lims[oname]
     worst = max(diffs.values()) if diffs else 0.0
-    out["checks"]["converge"] = {"ok": worst <= lim, "tolerance": tol / 10, "max_change_rel": worst, "tol": lim,
-                                 "per_output": diffs}
+    out["checks"]["converge"] = {"ok": ok, "tolerance": tol / 10, "max_change_rel": worst, "tol": lim,
+                                 "per_output": diffs, "tol_per_output": lims}
 
 
 def _run_ref(study, tr, out, units) -> dict:

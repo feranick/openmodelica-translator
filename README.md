@@ -16,7 +16,7 @@ It is part of [llm-translators](https://github.com/feranick/llm-translators), wi
 | Settings prefix | `OMCT_` |
 | Output folder | `~/omct_runs` (`OMCT_OUT`) |
 
-**Status (2026.10.21.17, milestone 8 of 8):** every milestone checked on mochi with OpenModelica 1.27.1: 11 closed-form benchmarks, the MCP server, sweeps on one build, SLURM queueing, and the chains with fea-translator and build123d-translator (`chain_feat_modal`: Rayleigh/feat = 1.0171 against 1.0146 expected, 0.24 %; `chain_b3dt_mass`: exact). It joins llm-translators as `omct` (M8). 228 tests pass without OpenModelica.
+**Status (2026.10.21.18, milestone 8 of 8):** every milestone checked on mochi with OpenModelica 1.27.1: 11 closed-form benchmarks, the MCP server, sweeps on one build, SLURM queueing, and the chains with fea-translator and build123d-translator (`chain_feat_modal`: Rayleigh/feat = 1.0171 against 1.0146 expected, 0.24 %; `chain_b3dt_mass`: exact). It joins llm-translators as `omct` (M8). 228 tests pass without OpenModelica.
 
 ## Install
 
@@ -175,6 +175,7 @@ Pictures: `"images": true` in a study writes `images/outputs.png` (one panel per
 
 | Version | Changes |
 |---|---|
+| 2026.10.21.18 | mochi: 11 of the 13 new benchmarks pass with OpenModelica. Fixes: the DC machine's loss records are structural (OpenModelica compiles their final parameters in: a reused build ran without losses); a fluid component's `m` is structural; the reference and converge checks allow the solver's relative tolerance on the output's size (absolute temperatures); `coolant_open_step` and `resistor_self_heating` run at tolerance 1e-8 |
 | 2026.10.21.17 | V2.5: the reference covers piecewise-linear elements by events (ideal diode, limiter, dead zone, LimPID with anti-windup (its integrator now on u_s − u_m plus the track, as in MSL), slew-rate limiter, the DC machine's brush drop): modes, guards, consistent modes at the start and after each switch, mode-specific losses, steady states by modes; benchmarks `limiter_loop`, `rectifier_mean`, `slew_rate_ramp`, `dc_machine_brush`; tests against independent integrations (rectifier with capacitor 1e-6, LimPID windup 1e-6) |
 | 2026.10.21.16 | V2.4: heat ports on resistors (`T_ref`, `alpha`, `T`; `R_actual`, `T_heatPort`), ideal diodes, the four dampers, `dc_motor` (group `heatPort`) and `dc_machine`, switched on by connecting them; reference: one-way heating as `Cascade` sources (a first run without the heat, then the thermal part with the losses from its dense solution; steady states the same way); energy balance: connected losses are internal, and the scale counts every term (a store feeding another cancels in the sums); benchmarks `resistor_self_heating`, `damper_heating`, `dc_machine_heating` |
 | 2026.10.21.15 | V2.3: `dc_machine` (MSL DC_PermanentMagnet) with loss records as flat parameters (`frictionParameters(PRef=...)` in the model), its power balance as outputs, heat ports none / `heatPort` group / six; port groups and record fields in the catalog; reference: the machine's linear equations (exact without stray load, with friction power_w 1, brush drop 0, no heat ports); energy balance from its storage and lossPowerTotal; benchmarks `dc_machine_nominal`, `dc_machine_losses` |

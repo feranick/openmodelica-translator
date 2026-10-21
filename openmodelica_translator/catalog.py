@@ -1,5 +1,5 @@
 """catalog.py — the curated MSL 4.0.0 components: kinds, ports, parameters (SI), variables, initial values.
-Version: 2026.10.21.16
+Version: 2026.10.21.18
 
 Every name below was checked against the MSL 4.0.0 sources (tag v4.0.0): class paths, port names, parameter
 names and defaults. A kind is either elementary (one MSL class) or composite (parts that are elementary kinds,
@@ -268,7 +268,8 @@ MED = {"medium": P("1", "water", structural=True, type="medium", msl=False,
 FAB_F = {"flowPort_a": "fluid", "flowPort_b": "fluid"}
 TP_VARS = {"T": "K", "T_a": "K", "T_b": "K", "dT": "K", "dp": "Pa", "V_flow": "m3/s", "Q_flow": "W"}
 TP_INIT = {"T0": I("T", "K", 293.15, abs_T=True)}
-MASS = {"m": P("kg", 0.0, min=0, doc="mass of medium inside (0: no storage, T follows at once)")}
+MASS = {"m": P("kg", 0.0, min=0, structural=True,
+               doc="mass of medium inside (0: no storage, T follows at once; it changes the equations: a rebuild)")}
 
 
 def _vl(p):
@@ -410,6 +411,18 @@ kind("slew_rate_limiter", BL + "Nonlinear.SlewRateLimiter", {"u": "in", "y": "ou
      doc="dy/dt = clip((u - y)/Td, Falling, Rising) (Falling default -Rising)")
 
 # ------------------------------------------------------------------------------------------- machines
+def _ref_or(p, name, pref, default):
+    """A loss record's reference: the given one, else (when the loss is on) the MSL default as a literal."""
+    if p.get(name) is not None:
+        return p[name]
+    return default if (p.get(pref) or 0) > 0 else None
+
+
+def _dcpm_vi(p):
+    from .network import dcpm_vi_nominal
+    return dcpm_vi_nominal(p)
+
+
 DCPM_HEAT = ["heatPortArmature", "heatPortCore", "heatPortStrayLoad", "heatPortFriction", "heatPortBrush",
              "heatPortPermanentMagnet"]
 MACH = "Modelica.Electrical.Machines."
@@ -421,14 +434,16 @@ kind("dc_machine", MACH + "BasicMachines.DCMachines.DC_PermanentMagnet",
       "alpha20a": P("1/K", 0.0, doc="temperature coefficient of Ra at 20 degC (copper 3.9e-3)"),
       "La": P("H", gt=0, doc="armature inductance"), "Jr": P("kg.m2", gt=0, doc="rotor inertia"),
       "TaOperational": P("K", 293.15, gt=0, abs_T=True, doc="armature temperature without heat ports"),
-      "PRef_friction": P("W", 0.0, min=0, msl="frictionParameters.PRef", doc="friction loss at wRef_friction"),
-      "wRef_friction": P("rad/s", None, gt=0, msl="frictionParameters.wRef", doc="default wNominal"),
-      "power_w_friction": P("1", 2.0, gt=0, msl="frictionParameters.power_w", doc="friction torque ~ w^(power_w - 1)"),
-      "PRef_core": P("W", 0.0, min=0, msl="coreParameters.PRef", doc="core loss at VRef_core"),
-      "VRef_core": P("V", None, gt=0, msl="coreParameters.VRef", doc="default the nominal induced voltage"),
-      "PRef_strayLoad": P("W", 0.0, min=0, msl="strayLoadParameters.PRef", doc="stray-load loss at IRef, wRef"),
+      # the loss records derive final parameters (tauRef, GcRef, wLinear, ...) that OpenModelica 1.27.1 folds at
+      # compile time (mochi, dc_machine_losses): their inputs are structural, references written as literals
+      "PRef_friction": P("W", 0.0, min=0, structural=True, msl="frictionParameters.PRef", doc="friction loss at wRef_friction"),
+      "wRef_friction": P("rad/s", None, gt=0, structural=True, msl="frictionParameters.wRef", doc="default wNominal"),
+      "power_w_friction": P("1", 2.0, gt=0, structural=True, msl="frictionParameters.power_w", doc="friction torque ~ w^(power_w - 1)"),
+      "PRef_core": P("W", 0.0, min=0, structural=True, msl="coreParameters.PRef", doc="core loss at VRef_core"),
+      "VRef_core": P("V", None, gt=0, structural=True, msl="coreParameters.VRef", doc="default the nominal induced voltage"),
+      "PRef_strayLoad": P("W", 0.0, min=0, structural=True, msl="strayLoadParameters.PRef", doc="stray-load loss at IRef, wRef"),
       "IRef_strayLoad": P("A", None, gt=0, msl="strayLoadParameters.IRef", doc="default IaNominal"),
-      "wRef_strayLoad": P("rad/s", None, gt=0, msl="strayLoadParameters.wRef", doc="default wNominal"),
+      "wRef_strayLoad": P("rad/s", None, gt=0, structural=True, msl="strayLoadParameters.wRef", doc="default wNominal"),
       "power_w_strayLoad": P("1", 1.0, gt=0, msl="strayLoadParameters.power_w"),
       "V_brush": P("V", 0.0, min=0, msl="brushParameters.V", doc="brush voltage drop above ILinear_brush"),
       "ILinear_brush": P("A", None, gt=0, msl="brushParameters.ILinear", doc="default 0.01 IaNominal")},
@@ -438,6 +453,9 @@ kind("dc_machine", MACH + "BasicMachines.DCMachines.DC_PermanentMagnet",
       "lossPowerBrush": "W"},
      {"ia0": I("ia", "A", 0.0), "w0": I("wMechanical", "rad/s", 0.0), "phi0": I("phiMechanical", "rad", 0.0)},
      cond_ports={h: "useThermalPort" for h in DCPM_HEAT}, port_groups={"heatPort": DCPM_HEAT},
+     mods={"wRef_friction": lambda p: _ref_or(p, "wRef_friction", "PRef_friction", p["wNominal"]),
+           "VRef_core": lambda p: _ref_or(p, "VRef_core", "PRef_core", _dcpm_vi(p)),
+           "wRef_strayLoad": lambda p: _ref_or(p, "wRef_strayLoad", "PRef_strayLoad", p["wNominal"])},
      var_paths={"Ta": "ra.T_heatPort", "Ra_actual": "ra.R_actual",
                 **{v: "powerBalance." + v for v in ("powerArmature", "powerMechanical", "lossPowerTotal",
                                                     "lossPowerArmature", "lossPowerCore", "lossPowerStrayLoad",
