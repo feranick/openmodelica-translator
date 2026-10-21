@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """fake_omc.py — a stand-in for omc and the executables it builds, for tests without OpenModelica.
-Version: 2026.10.21.2
+Version: 2026.10.21.3
 
     fake_omc.py --version            prints like omc 1.27.1
     fake_omc.py [-n=N] script.mos    the msl status script, or a build (modelica.build_mos): prints the 11 values
@@ -78,12 +78,18 @@ def sim(args):
     r.init_selection()
     vals = r.simulate(t)
     params = {k: v for k, v in ov.items() if k not in vals}
+    ref_ = os.environ.get("OMCT_FAKE_REFUSE")
+    if ref_ and ref_ not in ov:            # compiled in: the value comes from the model text, as in OpenModelica
+        import re
+        e, p = ref_.split(".", 1)
+        m = re.search(rf"\b{e}\(.*?\b{p}=([-+0-9.eE]+)", (inp / "model.mo").read_text())
+        params[ref_] = float(m.group(1))
     shift = os.environ.get("OMCT_FAKE_SHIFT")
     if shift in params:
         params[shift] *= 1.5
     matfile.write(outp / flags.get("r", "result.mat"), t, vals, params)
     log = (FIX / "run_ok.log").read_text()
-    if os.environ.get("OMCT_FAKE_REFUSE"):
+    if os.environ.get("OMCT_FAKE_REFUSE") in ov:
         log = (f"LOG_STDOUT        | warning | It is not possible to override the following quantity: "
                f"{os.environ['OMCT_FAKE_REFUSE']}\n|                 | |       | It seems to be structural.\n") + log
     if "l" in flags:

@@ -2,7 +2,7 @@
 
 Session context for Claude (the project documentation will be README.md). Start a chat with: "Read planning.md and start."
 
-Version: 2026.10.21.2 (milestone 2 done in the sandbox: the OpenModelica driver; waiting for its first run on mochi).
+Version: 2026.10.21.3 (milestone 2: the OpenModelica driver; first runs on mochi).
 
 ## What this is
 
@@ -373,6 +373,8 @@ Made while building M1 (tell me if any is wrong):
 - Composites are flattened into elements `X__part` (no nested models, so every value is a direct override and no bound parameter has to be recomputed by OpenModelica).
 
 ## State
+
+**2026.10.21.3 (mochi, first real runs, 2026-10-21)**: with 2026.10.21.2, 186 tests passed on mochi in 24 s, including the RC against its closed form at 1e-4 through OpenModelica; `omct status` found omc 1.27.1~2-g6db4671 and MSL 4.0.0. `omct run examples/studies.json` (only the tail was seen): two_mass_torque_step ran (w2 = 19.61 rad/s at 0.5 s, reliable); bracket_on_spring_from_feat failed: "m.v is fixed in the compiled model". OpenModelica made the mass's `v` (fixed=true) an alias of the spring-damper's `v_rel` (stateSelect prefer), and an alias is not changeable at run time. Fix: values with isValueChangeable false are left out of the override file when the build has the same value compiled in (meta.json `compiled_values`); a different value builds a variant whose key adds those values (`omc.build(variant=...)`); read-back still checks them. The pi_gain_sweep is refused until M5, as intended.
 
 **2026.10.21.2 (M2, sandbox)**: the probe report is in (`tools/m0_report_mochi.txt`, assumptions table updated: A1-A17 measured). New: `omc.py` (find omc, MSL status, the build script's 11 printed values parsed with a small tokenizer, checkModel counts compared, errors mapped to the declaration's line, the cache: flock on `<hash>.lock`, build in `.<hash>.<pid>.tmp`, prune to exe/_init.xml/_info.json/*.bin/.libs/.log + model.mo/build.mos/build.log/meta.json, atomic rename; failed builds kept in `.cache/.failed/`), `simrun.py` (flags, `-alarm`, `OMP_NUM_THREADS=1`, log parsing, refused/unknown overrides as errors, read-back), `matfile.py`, `linear.py`, `post.py` (output statistics, <= 400 points keeping events and extremes), `runner.py`, `api.py` (tool_status, run synchronously), `proc.py`, CLI `status` and `run`; the escape hatch builds too. Tests: 187 pass in the sandbox, from the mochi fixtures (`tests/fixtures/`: logs, the omc script output, linearized_model.mo) and `tests/fake_omc.py` (prints what omc printed on mochi; its executable simulates with the reference and writes a MAT file); 2 tests need omc (RC against the closed form at 1e-4; every example builds and runs). The reference reproduces the probe's thermal block: 376.37728 K at 20000 s against OpenModelica's 376.37711 K (5e-7).
 Not yet: the pool and pending results (M4), derived quantities / energy / reference comparison (M3), sweeps (M5: a sweep study is refused for now).

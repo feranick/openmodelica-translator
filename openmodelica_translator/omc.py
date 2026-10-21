@@ -1,5 +1,5 @@
 """omc.py — the only module that runs omc: finding it, its version and MSL, and the build cache.
-Version: 2026.10.21.2
+Version: 2026.10.21.3
 
 find_omc()          {exe, version} or {error}            (OMCT_OMC, else omc on PATH)
 msl_status()        {version, path} or {error}           (loadModel(Modelica, {"4.0.0"}) in a scratch folder)
@@ -194,11 +194,17 @@ def structure_key(tr) -> str:
     return M.structure_hash(tr.structure, o.get("version", "?"), msl_version())
 
 
-def build(tr, *, timeout: float = 600, cancel: Path | None = None, procs: int | None = None) -> dict:
+def build(tr, *, timeout: float = 600, cancel: Path | None = None, procs: int | None = None,
+          variant: dict | None = None) -> dict:
+    """variant: values the compiled model cannot take at run time (isValueChangeable false: OpenModelica made the
+    variable an alias, or evaluated it); they become part of the key, so each set of them is its own build."""
     o = find_omc()
     if "error" in o:
         return {"ok": False, "errors": [o["error"]], "warnings": []}
     key = structure_key(tr)
+    if variant:
+        import hashlib
+        key = key[:12] + hashlib.sha256((key + json.dumps(sorted(variant.items()))).encode()).hexdigest()[:8]
     root = cache_root()
     root.mkdir(parents=True, exist_ok=True)
     final = root / key
@@ -253,6 +259,9 @@ def build(tr, *, timeout: float = 600, cancel: Path | None = None, procs: int | 
         meta = {k: res[k] for k in ("hash", "omc", "msl", "check", "seconds", "warnings") if k in res}
         meta["built"] = time.time()
         meta["changeable"] = res.get("changeable", {})
+        meta["compiled_values"] = dict(getattr(tr, "overrides", {}) or {})
+        meta["variant"] = variant or {}
+        res["compiled_values"] = meta["compiled_values"]
         (tmp / "meta.json").write_text(json.dumps(meta, indent=1))
         os.replace(tmp, final) if not final.exists() else shutil.rmtree(tmp, ignore_errors=True)
         res.update({"dir": str(final), "cache_hit": False})

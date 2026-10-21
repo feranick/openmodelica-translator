@@ -16,7 +16,7 @@ It is part of [llm-translators](https://github.com/feranick/llm-translators), wi
 | Settings prefix | `OMCT_` |
 | Output folder | `~/omct_runs` (`OMCT_OUT`) |
 
-**Status (2026.10.21.2, milestone 2 of 8):** the study format, validation, Modelica generation and the reference implementation (M1), and the OpenModelica driver (M2: build cache, runs with override files, log and result reading, every value read back, linearisation) work; 187 tests pass without OpenModelica (a fake omc replays outputs recorded on mochi), and two more run with it. Next: derived quantities, the energy balance, the reference comparison and benchmarks (M3), the MCP server (M4), sweeps (M5), SLURM (M6), chains (M7); see `planning.md`.
+**Status (2026.10.21.3, milestone 2 of 8):** the study format, validation, Modelica generation and the reference implementation (M1), and the OpenModelica driver (M2: build cache, runs with override files, log and result reading, every value read back, linearisation) work; 187 tests pass without OpenModelica (a fake omc replays outputs recorded on mochi), and two more run with it. Next: derived quantities, the energy balance, the reference comparison and benchmarks (M3), the MCP server (M4), sweeps (M5), SLURM (M6), chains (M7); see `planning.md`.
 
 ## Install
 
@@ -98,6 +98,7 @@ Listed in `planning.md` (A1–A19), each with the probe that checks it (`tools/m
 
 | Version | Changes |
 |---|---|
+| 2026.10.21.3 | First runs on mochi (RC matches its closed form through OpenModelica); a value OpenModelica cannot change at run time (a mass's `v` became an alias of a spring-damper's `v_rel`) is now compiled in: the same value reuses the build, another value builds a variant |
 | 2026.10.21.2 | M2: the OpenModelica driver (build cache, runs, logs, MAT results, read-back, linearisation), `omct status` and `omct run`, the mochi probe's answers in `planning.md`; 187 tests (+2 with omc) |
 | 2026.10.21.1 | M1: catalog (82 kinds), units, validation, Modelica generation with structure hash and override file, reference implementation, CLI `format`/`validate`/`model`; 173 tests (Modelica syntax checked with modparc) |
 | 2026.10.20.1 | M0: research and plan (`planning.md`, `tools/m0_probe.sh`) |

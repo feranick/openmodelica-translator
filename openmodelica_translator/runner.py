@@ -1,5 +1,5 @@
 """runner.py — one study end to end: validate, translate, build (or reuse), run, read, check, write the result.
-Version: 2026.10.21.2
+Version: 2026.10.21.3
 
 run_study(name, study, folder, solver, timeout, cancel) -> the result dict, also written atomically to
 <folder>/<name>.json. solver: "omc" (OpenModelica) or "ref" (the reference implementation only: linear
@@ -109,17 +109,35 @@ def _run(name, study, folder, solver, timeout, cancel) -> dict:
         out.update({"ok": False, "why": "the model did not build", "errors": b.get("errors", [])})
         out["files"].update(b.get("files", {}))
         return out
-    # values the compiled model cannot take (isValueChangeable false in _init.xml)
+    # values the compiled model cannot take at run time (isValueChangeable false in _init.xml): fine when the
+    # build has the same value compiled in; otherwise a variant build with these values in its key
+    run_overrides = dict(tr.overrides)
     ch = b.get("changeable") or {}
-    refused = sorted(k for k in tr.overrides if ch.get(k) is False)
-    if refused:
-        out.update({"ok": False, "why": "values the compiled model cannot change",
-                    "errors": [f"{k} is fixed in the compiled model (structural, final or bound)" for k in refused]})
-        return out
+    fixed = sorted(k for k in tr.overrides if ch.get(k) is False)
+    if fixed:
+        comp = b.get("compiled_values") or {}
+        if any(comp.get(k) != tr.overrides[k] for k in fixed):
+            b = omc.build(tr, timeout=timeout, cancel=cancel, variant={k: tr.overrides[k] for k in fixed})
+            seconds["build_variant"] = b.get("seconds")
+            out["model_info"].update({"hash": b.get("hash"), "cache_hit": b.get("cache_hit"), "variant": fixed})
+            if not b.get("ok"):
+                out.update({"ok": False, "why": "the model did not build", "errors": b.get("errors", [])})
+                return out
+            comp = b.get("compiled_values") or {}
+        still = [k for k in fixed if comp.get(k) != tr.overrides[k]]
+        if still:
+            out.update({"ok": False, "why": "values the compiled model cannot change",
+                        "errors": [f"{k} is fixed in the compiled model at {comp.get(k)!r}, not {tr.overrides[k]!r}"
+                                   for k in still]})
+            return out
+        for k in fixed:
+            run_overrides.pop(k)
+        warnings.append(f"compiled into the model (OpenModelica cannot change them at run time; another value "
+                        f"rebuilds it): {', '.join(fixed)}")
     t0, t1, n, tol, method = _times(an)
     lin = an["kind"] == "linearize"
     filt = None if lin else M.variable_filter(tr)
-    sim = simrun.simulate(b["dir"], folder, tr.overrides, start=t0, stop=t1 if not lin else max(t1, t0),
+    sim = simrun.simulate(b["dir"], folder, run_overrides, start=t0, stop=t1 if not lin else max(t1, t0),
                           intervals=n, tolerance=tol, method=method, variable_filter=filt,
                           timeout=timeout, linearize_at=t1 if lin else None, cancel=cancel)
     seconds["simulate"] = sim["seconds"]

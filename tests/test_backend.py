@@ -1,6 +1,6 @@
 """test_backend.py — the omc driver, the runner and the result reading: on outputs recorded on mochi
 (tests/fixtures), with a fake omc (tests/fake_omc.py), and with the real OpenModelica when it is installed.
-Version: 2026.10.21.2
+Version: 2026.10.21.3
 """
 import json
 import math
@@ -138,14 +138,25 @@ def test_fake_failures(fake, monkeypatch):
     assert not r["ok"] and r["why"] == "values were not applied as asked" and r["errors"][0].startswith("R.R")
 
 
-def test_fake_refused_value(fake, monkeypatch):
+def test_fake_value_compiled_in(fake, monkeypatch):
+    """A value the model refuses at run time (an alias, measured on mochi with a mass's v): the same value runs
+    from the build; another value gets a variant build."""
     st = study(RC)
-    st["components"]["C"]["C"] = "2 uF"             # another structure hash is not needed: a fresh cache folder
     monkeypatch.setenv("OMCT_CACHE", str(fake / "cache2"))
     _with_study(monkeypatch, fake, st)
     monkeypatch.setenv("OMCT_FAKE_REFUSE", "C.C")
     r = run_study("rc", st, fake / "d" / "rc", "omc", 60)
-    assert not r["ok"] and "C.C is fixed in the compiled model" in r["errors"][0]
+    assert r["ok"], r
+    assert "C.C=" not in (fake / "d" / "rc" / "params.txt").read_text()
+    assert any("compiled into the model" in w and "C.C" in w for w in r["warnings"])
+    h1 = r["model_info"]["hash"]
+    r = run_study("rc", st, fake / "e" / "rc", "omc", 60)
+    assert r["ok"] and r["model_info"]["hash"] == h1 and r["model_info"]["cache_hit"]
+    st["components"]["C"]["C"] = "2 uF"
+    _with_study(monkeypatch, fake, st)
+    r = run_study("rc", st, fake / "f" / "rc", "omc", 60)
+    assert r["ok"] and r["model_info"]["variant"] == ["C.C"] and r["model_info"]["hash"] != h1
+    assert r["checks"]["overrides"]["ok"]
 
 
 def test_fake_linearize(fake, monkeypatch):
@@ -200,4 +211,5 @@ def test_real_examples_build_and_run(tmp_path, monkeypatch):
         r = run_study(name, st, tmp_path / name, "omc", 300)
         if not r["ok"]:
             bad[name] = (r.get("why"), r.get("errors"))
+        print(name, "ok" if r["ok"] else "FAILED", r.get("why", ""), r.get("errors", ""), r.get("warnings", ""))
     assert not bad, bad
