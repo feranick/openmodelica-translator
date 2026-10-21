@@ -2,7 +2,7 @@
 
 Session context for Claude (the project documentation will be README.md). Start a chat with: "Read planning.md and start."
 
-Version: 2026.10.21.8 (milestone 6: SLURM).
+Version: 2026.10.21.9 (milestone 6: SLURM, queueing confirmed on mochi).
 
 ## What this is
 
@@ -373,6 +373,9 @@ Made while building M1 (tell me if any is wrong):
 - Composites are flattened into elements `X__part` (no nested models, so every value is a direct override and no bound parameter has to be recomputed by OpenModelica).
 
 ## State
+
+**2026.10.21.9 (mochi, SLURM queueing, 2026-10-21)**: with 2026.10.21.8, `tools/m6_slurm_test.py`: job 2607 (sweep_a, 30 CPUs) ran while 2608 (sweep_b, 30 CPUs) waited with reason Resources (machine 30 of 40 CPUs allocated); 2608 started when 2607 ended; both 120 points, 120 reliable, 1 build each (b on a's cache), execution {executor slurm, procs_requested 30, procs_used 30, limits from_study [procs, queue]}; collected by a third process. **The queueing contract holds.** But each sweep took ~200 s for 120 points of 20000 intervals on 30 threads, and the estimate said 0.06 min: the points' Python checks (reading, energy, and above all the reference implementation on all 20001 points) ran serialised on the GIL in threads. Fixes: the reference comparison uses at most 1000 points (evenly over the non-event points); a sweep outside the server's daemonic pool (a SLURM job, the CLI) runs its points in processes (threads stay inside the pool); runs.json also keeps a whole study's time on the build (`study_s`), and the estimate uses it (x 1.5), else the simulation's s/interval x 3 + 2 s + 1e-4 s per interval. Tests: 226 pass.
+Next on mochi (1-2 min): `OMCT_EXECUTOR=slurm ~/Software/llm-translators/.venv/bin/python tools/m6_slurm_test.py` again: each sweep should now take a few seconds of its own, sweep_b still queued behind sweep_a.
 
 **2026.10.21.8 (mochi, first SLURM jobs)**: with 2026.10.21.7, 225 tests pass on mochi (91 s); `tools/m6_slurm_test.py` submitted both sweeps (jobs 2603, 2604; 30 CPUs each, estimate 0.06 min; 2604 queued behind 2603 with "Priority", ahead 1) but both jobs failed at once: `No module named 'openmodelica_translator'`. The job runs the venv's python in the study folder, and the translator is not installed in the venv yet (it will be with `llmt install omct`); the fake-SLURM tests passed because their fixture put the repository on PYTHONPATH. Fix: job.sh exports the package's folder on PYTHONPATH; the fake-SLURM fixture now clears PYTHONPATH, so the tests see what a real job sees. The failure states were right: "the job ended without a result (no accounting)" with the end of job.log.
 

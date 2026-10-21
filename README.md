@@ -16,7 +16,7 @@ It is part of [llm-translators](https://github.com/feranick/llm-translators), wi
 | Settings prefix | `OMCT_` |
 | Output folder | `~/omct_runs` (`OMCT_OUT`) |
 
-**Status (2026.10.21.8, milestone 6 of 8):** format, validation, Modelica generation, reference implementation (M1); the OpenModelica driver (M2); checks and benchmarks (M3); API, worker pool, MCP server, pictures (M4); sweeps on one build (M5), all checked on mochi; SLURM execution per llm-translators' docs/EXECUTION.md (M6, tested against a fake SLURM). 225 tests pass without OpenModelica. Next: chains (M7), joining llm-translators (M8); see `planning.md`.
+**Status (2026.10.21.9, milestone 6 of 8):** format, validation, Modelica generation, reference implementation (M1); the OpenModelica driver (M2); checks and benchmarks (M3); API, worker pool, MCP server, pictures (M4); sweeps on one build (M5), all checked on mochi; SLURM execution per llm-translators' docs/EXECUTION.md (M6; queueing confirmed on mochi). 226 tests pass without OpenModelica. Next: chains (M7), joining llm-translators (M8); see `planning.md`.
 
 ## Install
 
@@ -134,7 +134,7 @@ Listed in `planning.md` (A1–A19), each with the probe that checks it (`tools/m
 
 ### Sweeps
 
-`"sweep": {"params": {"pi.k": [0.5, 1, 2], "pi.T": [0.1, 0.2]}, "mode": "grid" | "zip", "report": ["derived.y.overshoot_pct"]}` on any analysis. Each point is the study with those values (parameters or initial values, with units allowed), run in `points/pNNNN/` with every check; the first point builds the model, the others reuse it and run `run.procs` (or `OMCT_PROCS`) at a time. Values compiled into the model (see the run warnings) make variant builds. Result: `sweep.table[i] = {point, params, params_si, values, ok, reliable, why}`, `columns`, `builds`, `ok_points`, `reliable_points`, `failed`; with `images`, `images/sweep.png` (each column against the first parameter). Default report: `outputs.*.final` (`steady.*.value`; `linearization.natural_frequencies_Hz`, `damping_ratios`, `time_constants_s`) and every numeric derived quantity.
+`"sweep": {"params": {"pi.k": [0.5, 1, 2], "pi.T": [0.1, 0.2]}, "mode": "grid" | "zip", "report": ["derived.y.overshoot_pct"]}` on any analysis. Each point is the study with those values (parameters or initial values, with units allowed), run in `points/pNNNN/` with every check; the first point builds the model, the others reuse it and run `run.procs` (or `OMCT_PROCS`) at a time, in processes (in threads inside the server's daemonic pool). Values compiled into the model (see the run warnings) make variant builds. Result: `sweep.table[i] = {point, params, params_si, values, ok, reliable, why}`, `columns`, `builds`, `ok_points`, `reliable_points`, `failed`; with `images`, `images/sweep.png` (each column against the first parameter). Default report: `outputs.*.final` (`steady.*.value`; `linearization.natural_frequencies_Hz`, `damping_ratios`, `time_constants_s`) and every numeric derived quantity.
 
 ## For LLM tools: the MCP server
 
@@ -150,6 +150,7 @@ Pictures: `"images": true` in a study writes `images/outputs.png` (one panel per
 
 | Version | Changes |
 |---|---|
+| 2026.10.21.9 | SLURM queueing confirmed on mochi (two 30-CPU sweeps: the second waits for Resources, both 120/120 reliable); sweeps run their points in processes outside the server's pool, the reference comparison uses ≤ 1000 points, estimates from a whole study's measured time |
 | 2026.10.21.8 | job.sh puts the package's folder on PYTHONPATH (mochi: the first SLURM jobs could not import the translator, not yet installed in the venv) |
 | 2026.10.21.7 | M6: SLURM (`executor.py` from cfdt, kind threads: CPUs from sweep points and cache misses, memory, time estimates from measured runs, states, jobs, cancel, run-study, bench through SLURM), fake-SLURM tests (13), `tools/m6_slurm_test.py`; on mochi the 12-point PI sweep ran on one build in 5.3 s, every point reliable |
 | 2026.10.21.6 | M5: sweeps (grid/zip on one build, threads, table, plot, progress), `get_path` with dotted keys, benchmark `sweep_rc`; on mochi the MCP smoke test passed with OpenModelica (DC motor + LimPID: reliable, 5.9 % overshoot) |

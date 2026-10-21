@@ -1,5 +1,5 @@
 """sweep.py — one study, many value sets: one build, one run per point, a table.
-Version: 2026.10.21.6
+Version: 2026.10.21.9
 
 run_sweep(name, study, folder, solver, timeout, cancel, run_point) -> the study's result with
     sweep: {points, ok_points, reliable_points, params, columns, table: [{point, params, values, ok, reliable,
@@ -7,8 +7,8 @@ run_sweep(name, study, folder, solver, timeout, cancel, run_point) -> the study'
 Each point is the study with the point's values set (grid: every combination; zip: element by element), run in
 <folder>/points/pNNNN/ by run_point (runner._run_point). The first point runs alone: it builds the model (or
 finds it in the cache); the others reuse that build and run in threads, OMCT_PROCS or the study's run.procs at
-a time (the work is the simulation executable, a separate process, so threads suffice; worker processes of
-the pool cannot start processes of their own). A point is reported as it finishes (points/pNNNN/pNNNN.json),
+a time: in worker processes when the sweep runs in a normal process (a SLURM job, the CLI), in threads when it
+runs inside the server's daemonic pool (which cannot start processes). A point is reported as it finishes (points/pNNNN/pNNNN.json),
 so progress counts them.
 """
 from __future__ import annotations
@@ -76,10 +76,24 @@ def run_sweep(name, study, folder: Path, solver, timeout, cancel, run_point) -> 
         i, r = one(0)
         results[i] = r
     n = procs(study)
+    kind = "threads"
     if len(pts) > 1:
-        with ThreadPoolExecutor(max_workers=max(1, min(n, len(pts) - 1))) as ex:
-            for i, r in ex.map(one, range(1, len(pts))):
-                results[i] = r
+        workers = max(1, min(n, len(pts) - 1))
+        import multiprocessing as mp
+        if workers > 1 and not mp.current_process().daemon:
+            # processes: each point's checks (reading, the reference implementation) are Python and would
+            # serialise on the GIL in threads (measured on mochi: 120 points on 30 threads took 200 s)
+            from concurrent.futures import ProcessPoolExecutor
+            kind = "processes"
+            jobs = [(f"p{i:04d}", point_study(study, pts[i]), str(folder / "points" / f"p{i:04d}"), solver, timeout,
+                     str(cancel)) for i in range(1, len(pts))]
+            with ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("spawn")) as ex:
+                for i, r in zip(range(1, len(pts)), ex.map(_point_job, jobs)):
+                    results[i] = r
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                for i, r in ex.map(one, range(1, len(pts))):
+                    results[i] = r
     first = next((r for r in results.values() if r.get("ok")), results.get(0, {}))
     cols = sw.get("report") or default_report(study, first)
     from .network import build
@@ -113,7 +127,7 @@ def run_sweep(name, study, folder: Path, solver, timeout, cancel, run_point) -> 
     rel_n = sum(1 for r in table if r["reliable"])
     out = {"ok": ok_n > 0, "reliable": rel_n == len(pts), "solver": solver,
            "sweep": {"points": len(pts), "ok_points": ok_n, "reliable_points": rel_n, "params": list(sw["params"]),
-                     "mode": sw.get("mode", "grid"), "procs": n, "columns": cols, "table": table, "failed": failed,
+                     "mode": sw.get("mode", "grid"), "procs": n, "parallel": kind, "columns": cols, "table": table, "failed": failed,
                      "seconds": round(time.perf_counter() - t0, 3)},
            "warnings": list(first.get("warnings") or []), "files": {"points": str(folder / "points")},
            "model_info": first.get("model_info"), "inputs": first.get("inputs")}
@@ -125,6 +139,17 @@ def run_sweep(name, study, folder: Path, solver, timeout, cancel, run_point) -> 
         out["why"] = f"no point ran: {first.get('why')}"
         out["errors"] = first.get("errors")
     return out
+
+
+def _point_job(args):
+    """One point in a worker process (a sweep run outside the daemonic pool: a SLURM job, the CLI)."""
+    from .runner import run_study
+    pn, st, folder, solver, timeout, cancel = args
+    if Path(cancel).exists():
+        return {"ok": False, "state": "cancelled", "why": "cancelled"}
+    r = run_study(pn, st, Path(folder), solver, timeout, Path(cancel))
+    r.pop("trace", None)
+    return r
 
 
 def plot(folder: Path, res: dict) -> dict:

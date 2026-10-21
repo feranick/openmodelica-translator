@@ -1,5 +1,5 @@
 """runner.py — one study end to end: validate, translate, build (or reuse), run, read, check, write the result.
-Version: 2026.10.21.7
+Version: 2026.10.21.9
 
 run_study(name, study, folder, solver, timeout, cancel) -> the result dict, also written atomically to
 <folder>/<name>.json. solver: "omc" (OpenModelica) or "ref" (the reference implementation only: linear
@@ -91,6 +91,9 @@ def run_study(name: str, study: dict, folder, solver: str = "omc", timeout: floa
         except Exception as exc:  # noqa: BLE001
             res.setdefault("warnings", []).append(f"pictures failed: {type(exc).__name__}: {exc}")
     _atomic(folder / f"{name}.json", res)
+    if res.get("ok") and not res.get("sweep") and (res.get("model_info") or {}).get("hash"):
+        from .executor import record_study
+        record_study(res["model_info"]["hash"], res["seconds"]["total"])
     return res
 
 
@@ -156,6 +159,11 @@ def _reference(out, study, tr, t, vals, tol):
     tarr = np.asarray(t, float)
     for b in r.breaks(float(tarr[0]), float(tarr[-1]), ends=True):     # where sources step: either side is right
         m &= np.abs(tarr - b) > 1e-9 * max(1.0, abs(b))
+    idx = np.nonzero(m)[0]
+    if idx.size > 1000:                      # at most 1000 points: the reference's cost grows with them
+        keep = np.unique(np.linspace(0, idx.size - 1, 1000).round().astype(int))
+        m = np.zeros_like(m)
+        m[idx[keep]] = True
     tt = tarr[m]
     try:
         rv = r.simulate(tt, t0=float(tarr[0]))

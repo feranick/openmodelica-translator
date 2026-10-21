@@ -86,3 +86,13 @@ def test_sweep_ref_and_expect_on_table(out):
     assert r["ok"] and r["reliable"] and r["passed"], r.get("expect")
     assert r["images"]["sweep"]["path"].endswith("sweep.png")
     assert r["sweep"]["columns"] == ["outputs.v.final"]
+
+
+def test_sweep_processes_outside_the_pool(out):
+    st = study(RC, sweep={"params": {"R.R": [500, 1000, 2000]}}, run={"procs": 2})
+    r = api.run({"s": st}, "ref")["studies"]["s"]          # inline (the CLI, a SLURM job): not daemonic
+    assert r["ok"] and r["sweep"]["parallel"] == "processes" and r["sweep"]["reliable_points"] == 3
+    r = api.run({"s": st}, "ref", wait=40)                  # in the server's pool: threads
+    if r["pending"]:
+        r = api.status(r["request"], 40)
+    assert r["studies"]["s"]["sweep"]["parallel"] == "threads"

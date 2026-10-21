@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study (kind: threads).
-Version: 2026.10.21.8
+Version: 2026.10.21.9
 
 Implements llm-translators' docs/EXECUTION.md (from cfd-translator's executor). Settings (environment):
     OMCT_EXECUTOR          local | slurm (local)
@@ -16,8 +16,9 @@ One job per study with --ntasks=1 --cpus-per-task=N: N = the sweep points it can
 points, OMCT_PROCS or run.procs), and at least OMCT_COMPILE_PROCS when the model is not in the build cache yet.
 Inside the job, SLURM_CPUS_PER_TASK sets the sweep's threads; each simulation stays single-threaded
 (OMP_NUM_THREADS=1, measured on mochi). Estimates before submitting: the build (0 on a cache hit, else ~0.1 min),
-and the runs from the cache's measured seconds per output interval (runs.json), else a cautious 2e-5 s per
-interval (about 10 x what mochi measured).
+and every point from the cache's runs.json: a whole study's measured time on this build (its checks and the
+reference included), else the simulation's seconds per output interval x 3 plus 2 s, else 2e-5 s per interval
+plus 2 s. Measured on mochi: a 20000-interval PI-loop point costs ~1.5 s with its checks.
 
 Every SLURM state is computed from the files and the queue (never from in-process handles):
     done           <name>.json exists
@@ -126,14 +127,13 @@ def estimate_minutes(study: dict, solver: str = "omc") -> float:
         return 0.05 * _points(study)
     d = _cache_dir(study)
     hit = bool(d and (d / "meta.json").is_file())
-    per = S_PER_INTERVAL
-    if d and (d / "runs.json").is_file():
-        try:
-            per = max(float(json.loads((d / "runs.json").read_text())["s_per_interval"]) * 3, 1e-7)
-        except (ValueError, KeyError, json.JSONDecodeError):
-            pass
+    rec = _runs(d) if d else {}
+    per = max(float(rec["s_per_interval"]) * 3, 1e-7) if "s_per_interval" in rec else S_PER_INTERVAL
     runs = _points(study) * (2 if study.get("converge") else 1)
-    one = per * _intervals(study) + 0.5                  # 0.5 s: start-up, reading, checks
+    if "study_s" in rec:                                 # measured: a whole study on this build, with its checks
+        one = 1.5 * float(rec["study_s"]) * (_intervals(study) / max(int(rec.get("intervals") or 1), 1)) ** 0.5
+    else:
+        one = per * _intervals(study) + 2.0 + 1e-4 * _intervals(study)   # start-up, reading, checks, reference
     secs = (0 if hit else 6.0) + runs * one / max(1, min(procs_of(study), _points(study)))
     return secs / 60.0
 
@@ -450,11 +450,33 @@ def cancel_slurm(request: Path, names: list[str]) -> list[str]:
     return ids
 
 
-def record_run(cache_dir: Path, seconds: float, intervals: int) -> None:
-    """The cache's measured seconds per output interval (for the next estimate)."""
+def _runs(cache_dir: Path) -> dict:
     try:
-        write_atomic(Path(cache_dir) / "runs.json",
-                     json.dumps({"s_per_interval": seconds / max(intervals, 1), "seconds": seconds,
-                                 "intervals": intervals, "when": time.time()}))
+        return json.loads((Path(cache_dir) / "runs.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def record_run(cache_dir: Path, seconds: float, intervals: int) -> None:
+    """The cache's measured seconds per output interval of the simulation (for the next estimate)."""
+    try:
+        r = _runs(cache_dir)
+        r.update({"s_per_interval": seconds / max(intervals, 1), "seconds": seconds, "intervals": intervals,
+                  "when": time.time()})
+        write_atomic(Path(cache_dir) / "runs.json", json.dumps(r))
+    except OSError:
+        pass
+
+
+def record_study(key: str, seconds: float) -> None:
+    """A whole study's time on this build (simulation, reading, checks, reference): what a sweep point costs."""
+    from .omc import cache_root
+    d = cache_root() / key
+    if not d.is_dir():
+        return
+    try:
+        r = _runs(d)
+        r.update({"study_s": seconds, "study_when": time.time()})
+        write_atomic(d / "runs.json", json.dumps(r))
     except OSError:
         pass
