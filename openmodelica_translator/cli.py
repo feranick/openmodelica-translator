@@ -1,5 +1,5 @@
 """cli.py — the command line. Every command prints JSON; '-' reads the studies from stdin.
-Version: 2026.10.21.5
+Version: 2026.10.21.7
 
     omct status [REQUEST]                    versions, omc, MSL, cache, executor (JSON: llm-translators parses
                                              it); with a request folder: its studies, finished and pending
@@ -97,13 +97,8 @@ def main(argv=None) -> int:
     elif a.cmd == "images":
         out = api.render_images(a.folder, True)
     elif a.cmd == "run-study":
-        from pathlib import Path
-
-        from .runner import run_study
-        req = Path(a.request).expanduser().resolve()
-        meta = json.loads((req / "request.json").read_text())
-        r = run_study(a.name, meta["studies"][a.name], req / a.name, meta["solver"], api.timeout_s(meta["studies"][a.name]))
-        out = {"name": a.name, "ok": r.get("ok"), "result": str(req / a.name / f"{a.name}.json")}
+        from .executor import run_study_job
+        return run_study_job(a.request, a.name)
     elif a.cmd == "model":
         studies = _load(a.studies)
         out = api.model(studies[a.name], a.name) if a.name in studies else \

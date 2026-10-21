@@ -1,5 +1,5 @@
 """omc.py — the only module that runs omc: finding it, its version and MSL, and the build cache.
-Version: 2026.10.21.3
+Version: 2026.10.21.7
 
 find_omc()          {exe, version} or {error}            (OMCT_OMC, else omc on PATH)
 msl_status()        {version, path} or {error}           (loadModel(Modelica, {"4.0.0"}) in a scratch folder)
@@ -33,7 +33,7 @@ from .proc import run as run_proc
 
 EXE = M.MODEL
 KEEP = {EXE, f"{EXE}_init.xml", f"{EXE}_info.json", f"{EXE}.libs", f"{EXE}.log", "model.mo", "build.mos",
-        "build.log", "meta.json"}
+        "build.log", "meta.json", "runs.json"}
 
 
 def out_root() -> Path:

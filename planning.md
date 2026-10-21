@@ -2,7 +2,7 @@
 
 Session context for Claude (the project documentation will be README.md). Start a chat with: "Read planning.md and start."
 
-Version: 2026.10.21.6 (milestone 5: sweeps).
+Version: 2026.10.21.7 (milestone 6: SLURM).
 
 ## What this is
 
@@ -342,7 +342,7 @@ tools/  m0_probe.sh (M0 probe), check_catalog_msl.py (catalog vs the MSL 4.0.0 s
 | `OMCT_PROCS` | parallel sweep points per study (1) |
 | `OMCT_COMPILE_PROCS` | parallel C compile, omc `-n` (4) |
 | `OMCT_OMP_THREADS` | threads inside one simulation (1) |
-| `OMCT_EXECUTOR`, `OMCT_SLURM_MIN_MINUTES` (1), `OMCT_SLURM_ARGS`, `OMCT_SLURM_MEM` (auto), `OMCT_SLURM_TIME` (timeout) | SLURM (EXECUTION.md) |
+| `OMCT_EXECUTOR`, `OMCT_SLURM_MIN_MINUTES` (1), `OMCT_SLURM_ARGS`, `OMCT_SLURM_MEM` (auto: 1 GB + 256 MB per CPU), `OMCT_SLURM_TIME` (timeout), `OMCT_SLURM_TIME_MIN` (20), `OMCT_SLURM_TIME_FACTOR` (3) | SLURM (EXECUTION.md) |
 | `OMCT_MAX_TIMEOUT`, `OMCT_MAX_MEM`, `OMCT_MAX_PROCS` | caps for a study's `run` |
 
 ## Milestones (each: version bump, tests, README and planning.md updated)
@@ -353,7 +353,7 @@ tools/  m0_probe.sh (M0 probe), check_catalog_msl.py (catalog vs the MSL 4.0.0 s
 - **M3 Checks and benchmarks:** energy balance, `converge`, reliability, `bench.py`. Done in the sandbox (2026.10.21.4); benchmarks to run on mochi.
 - **M4 Interfaces:** `api.py`, `cli.py`, `mcp_server.py`, images. Done in the sandbox (2026.10.21.5).
 - **M5 Analyses:** sweeps, linearisation, steady. Done (2026.10.21.6; linearisation and steady came with M2/M3).
-- **M6 SLURM:** `executor.py` from cfdt with sizing, caps, fake-SLURM tests; on mochi two sweeps from two conversations queue.
+- **M6 SLURM:** `executor.py` from cfdt with sizing, caps, fake-SLURM tests; on mochi two sweeps from two conversations queue. Done in the sandbox (2026.10.21.7); the queueing test on mochi is next.
 - **M7 Chains:** `chain_feat_modal`, b3dt mass, cfdt tables.
 - **M8 Joining the umbrella:** submodule, `translators.json` (key `omct`, port 8770, `suggest: remote`, `executor: {prefix: OMCT, kind: threads, min_minutes: 1}`, backends `omc` and `msl`, every setting in `env`), `BACKENDS.md` (official apt repository, MSL 4.0.0 via the package manager, checks), README row, `llmt install/status/test/bench/tune/mcp test` on mochi, `llmt mcp setup` on the Mac.
 
@@ -373,6 +373,15 @@ Made while building M1 (tell me if any is wrong):
 - Composites are flattened into elements `X__part` (no nested models, so every value is a direct override and no bound parameter has to be recomputed by OpenModelica).
 
 ## State
+
+**2026.10.21.7 (M6, sandbox)**: on mochi with 2026.10.21.6: 212 tests pass; `bench sweep_rc` passes (one build, three reliable points, tau = RC to 1e-4); `pi_gain_sweep`: 12 points, 1 build, 5.3 s, every point reliable (overshoot 5.5598 % at k 0.5, T 0.1 against the reference's 5.5595 %). New: `executor.py` from cfdt (kind threads: --ntasks=1 --cpus-per-task = min(points, run.procs/OMCT_PROCS), at least OMCT_COMPILE_PROCS on a cache miss, the reference solver never compiles; --mem auto 1 GB + 256 MB/CPU; time limit timeout + 10 or the estimate; estimates from the cache's runs.json, written after each run, else 2e-5 s/interval; job.sh/job.json; states from squeue/sacct/job.log; jobs with the queue summary; cancel with scancel; run-study sets the sweep threads from SLURM_CPUS_PER_TASK; execution record with procs_requested/used and limits); api start() submits, _collect and status read SLURM states (status returns SLURM-only waits after 15 s), bench through SLURM; MCP instructions with the SLURM paragraph (27 lines). Tests: 225 pass, 13 against `tests/fake_slurm.py` (submit and collection by a new process, routing, sizing, queued then cancelled, every final state from sacct and from job.log, sbatch failure, run-study by hand, status, bench).
+Next on mochi (1-3 min): the queueing test, two 120-point sweeps from two processes, 30 CPUs each on the 40-CPU node:
+```bash
+cd ~/Software/openmodelica-translator && git pull
+PY=~/Software/llm-translators/.venv/bin/python
+$PY -m pytest -q tests/ 2>&1 | tail -2
+OMCT_EXECUTOR=slurm $PY tools/m6_slurm_test.py
+```
 
 **2026.10.21.6 (M5, sandbox)**: on mochi with 2026.10.21.5: 209 tests pass (74 s); `tools/mcp_smoke.py --solver omc` through the stdio MCP client: the DC motor with LimPID PI speed control ran reliable (every check ok; reference not covered: LimPID), w 0 -> 209.44 rad/s (2000 rpm), rise 46.5 ms, overshoot 5.88 %, peak at 0.102 s, settling 0.174 s, picture returned. New: `sweep.py` (grid/zip points, the first point builds, the rest in threads, run.procs or OMCT_PROCS at a time, since pool workers are daemonic and cannot fork pools; per-point folders points/pNNNN with full checks; table with params, params_si, values, ok, reliable; builds counted; sweep.png; progress "k of n points"); `post.get_path` takes keys with dots (table columns); benchmark `sweep_rc`. Tests: 212 pass (the fake-omc sweep: 6 points, 1 build).
 Next on mochi (about 1-2 min):

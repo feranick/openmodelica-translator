@@ -1,6 +1,6 @@
 """mcp_server.py — MCP server: lets LLM-based tools simulate systems (circuits, drives, heat paths, controllers)
 with OpenModelica and the Modelica Standard Library.
-Version: 2026.10.21.6
+Version: 2026.10.21.7
 
 Tools (all JSON):
   study_format      the study format: component kinds, ports, parameters, analyses, conventions. Read it first.
@@ -52,7 +52,11 @@ are fixed only where they are free (a capacitor across a source follows it). Eve
 ground. Values change without recompiling: "sweep": {params: {"comp.param": [values]}, mode: grid | zip,
 report: [paths]} runs every point on one build and returns sweep.table (run.procs points at a time). Polling costs tokens: when a run needs more than about 5 minutes, tell the user when
 it should finish and stop; collect it later with study_status.
-A study's "run": {timeout_s, mem, procs, queue} sets its own limits, within the caps in study_format's status.
+Long studies (big sweeps) run as SLURM jobs on the machine (when OMCT_EXECUTOR=slurm): run_studies returns them
+pending with job ids. They do not depend on this conversation. Report the expected finish time and stop; do not
+poll. Later, study_status(request) collects them; jobs() lists recent and active runs (also those started in
+other conversations); cancel(request) stops them. A study's "run": {timeout_s, mem, procs, queue} overrides the
+machine's defaults for that study (procs: sweep points at once), within the caps in study_format's status.
 Pictures: "images": true in a study; results.images.<name>.path, then get_image shows each; render_images makes
 them again for a finished study. Results: outputs.<name>.{final, min, max, ...}, derived.<name>.*,
 steady.<name>.*, linearization.{eigenvalues, modes, natural_frequencies_Hz, damping_ratios, dc_gain, bode},

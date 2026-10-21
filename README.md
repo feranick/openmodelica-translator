@@ -16,7 +16,7 @@ It is part of [llm-translators](https://github.com/feranick/llm-translators), wi
 | Settings prefix | `OMCT_` |
 | Output folder | `~/omct_runs` (`OMCT_OUT`) |
 
-**Status (2026.10.21.6, milestone 5 of 8):** format, validation, Modelica generation, reference implementation (M1); the OpenModelica driver (M2); checks and benchmarks, all passing on mochi (M3); API, worker pool, MCP server and pictures, checked on mochi through the MCP client (M4); sweeps on one build, linearisation in every analysis (M5). 212 tests pass without OpenModelica. Next: SLURM (M6), chains (M7), joining llm-translators (M8); see `planning.md`.
+**Status (2026.10.21.7, milestone 6 of 8):** format, validation, Modelica generation, reference implementation (M1); the OpenModelica driver (M2); checks and benchmarks (M3); API, worker pool, MCP server, pictures (M4); sweeps on one build (M5), all checked on mochi; SLURM execution per llm-translators' docs/EXECUTION.md (M6, tested against a fake SLURM). 225 tests pass without OpenModelica. Next: chains (M7), joining llm-translators (M8); see `planning.md`.
 
 ## Install
 
@@ -36,6 +36,19 @@ omct images STUDY_FOLDER                  # pictures of a finished study again
 ```
 
 A run writes `<OMCT_OUT>/run_<date>_<time>_<id>/<study>/`: `model.mo`, `params.txt` (every value), `sim.log`, `result.mat` (MAT v4), `linearized_model.mo` (linearize), and `<study>.json` (the result). Compiled models live in the build cache, `<OMCT_OUT>/.cache/<hash>/`, keyed by the model's structure: a study that changes only values reuses the build (one compile of ~1-2 s on mochi; a run of a small model takes ~0.1 s).
+
+## Running on SLURM
+
+With `OMCT_EXECUTOR=slurm` (llm-translators' docs/EXECUTION.md), a study whose estimate is at least `OMCT_SLURM_MIN_MINUTES` (1) becomes one SLURM job; most single studies take seconds and stay in the local pool, big sweeps go to the queue. A study's `run.queue` true/false forces either way.
+
+- **Sizing** (`executor.py`, kind *threads*): `--ntasks=1 --cpus-per-task=N`, N = the sweep points it can run at once (≤ points, `run.procs` or `OMCT_PROCS`), at least `OMCT_COMPILE_PROCS` (4) when the model is not in the build cache yet. Inside the job `SLURM_CPUS_PER_TASK` sets the sweep's threads; each simulation is single-threaded (`OMP_NUM_THREADS=1`).
+- **Memory:** `OMCT_SLURM_MEM` auto = 1 GB + 256 MB per CPU (or a size, or none); `run.mem` wins.
+- **Time:** the job's limit is the timeout + 10 min; with `OMCT_SLURM_TIME=estimate`, max(`OMCT_SLURM_TIME_MIN` 20, 3 × estimate + 10). Estimates: the build (0 on a cache hit) plus every point at the cache's measured seconds per interval (`runs.json`), else a cautious 2e-5 s per interval.
+- **Per-study `run`:** `{timeout_s, mem, procs, queue}` within `OMCT_MAX_TIMEOUT`, `OMCT_MAX_MEM`, `OMCT_MAX_PROCS` (validation refuses more, naming the variable).
+- **What a submission writes:** `<request>/<study>/job.sh` (a complete script: `sbatch job.sh` reruns it), `job.json` (id, CPUs, time, memory, estimate), `job.log`; the job runs `omct run-study REQUEST NAME`.
+- **States** from the files and one `squeue` per request: queued (reason, ahead, expected start), running (stage, points done, elapsed), done, and the final ones from `sacct` or `job.log` without accounting: timed_out, out_of_memory, cancelled, failed (written as the study's result). `could not submit` when `sbatch` fails: never a silent local fallback.
+- **Tools:** `jobs` (recent requests from any conversation, the queue of `omct:` jobs, the machine's CPUs), `cancel` (scancel + flag files), `run_benchmarks` returns at once and `bench_status` collects.
+- **Run record** in every result: `execution: {executor: slurm | local | by hand, slurm_job, procs_requested, procs_used, mpi: null, limits: {timeout_s, mem, from_study}}`.
 
 ## A study
 
@@ -116,6 +129,7 @@ Listed in `planning.md` (A1–A19), each with the probe that checks it (`tools/m
 | `post.py`, `energy.py`, `bench.py` | outputs, derived quantities (step, crossing, window, steady), comparisons, expect; the energy balance; the benchmarks |
 | `runner.py`, `api.py`, `proc.py` | one study end to end with every check; the API (pool, request folders, status from files, cancel, jobs, benchmarks); process groups |
 | `render.py`, `mcp_server.py`, `sweep.py` | time and Bode plots; the MCP server; sweeps |
+| `executor.py` | the local pool or one SLURM job per study: sizing, estimates, job.sh/job.json, states, jobs, cancel, run-study |
 | `cli.py` | `omct status [REQUEST] | format | validate | model | run | bench | jobs | cancel | images | run-study` |
 
 ### Sweeps
@@ -136,6 +150,7 @@ Pictures: `"images": true` in a study writes `images/outputs.png` (one panel per
 
 | Version | Changes |
 |---|---|
+| 2026.10.21.7 | M6: SLURM (`executor.py` from cfdt, kind threads: CPUs from sweep points and cache misses, memory, time estimates from measured runs, states, jobs, cancel, run-study, bench through SLURM), fake-SLURM tests (13), `tools/m6_slurm_test.py`; on mochi the 12-point PI sweep ran on one build in 5.3 s, every point reliable |
 | 2026.10.21.6 | M5: sweeps (grid/zip on one build, threads, table, plot, progress), `get_path` with dotted keys, benchmark `sweep_rc`; on mochi the MCP smoke test passed with OpenModelica (DC motor + LimPID: reliable, 5.9 % overshoot) |
 | 2026.10.21.5 | M4: worker pool and request folders (`run` with `wait`, `start`, `status`, `jobs`, `cancel`), the MCP server (12 tools, SDK 1.x and 2.x), pictures (`render.py`), CLI `status REQUEST`, `jobs`, `cancel`, `images`, `run-study`; on mochi all 11 benchmarks pass with OpenModelica |
 | 2026.10.21.4 | M3: derived quantities, steady values, energy balance, reference comparison, converge, expect, 11 benchmarks (`omct bench`); the reference's square-wave edges and end-of-run steps fixed (found by the energy balance) |

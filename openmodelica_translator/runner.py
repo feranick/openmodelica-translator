@@ -1,5 +1,5 @@
 """runner.py — one study end to end: validate, translate, build (or reuse), run, read, check, write the result.
-Version: 2026.10.21.6
+Version: 2026.10.21.7
 
 run_study(name, study, folder, solver, timeout, cancel) -> the result dict, also written atomically to
 <folder>/<name>.json. solver: "omc" (OpenModelica) or "ref" (the reference implementation only: linear
@@ -39,8 +39,10 @@ def _json(x):
     return str(x)
 
 
-def execution(procs_requested=1, procs_used=1, limits=None) -> dict:
+def execution(procs_requested=None, procs_used=1, limits=None) -> dict:
     kind = os.environ.get("OMCT_EXECUTION") or ("slurm" if os.environ.get("SLURM_JOB_ID") else "local")
+    if procs_requested is None:
+        procs_requested = int(os.environ.get("OMCT_PROCS_REQUESTED") or os.environ.get("SLURM_CPUS_PER_TASK") or 1)
     return {"executor": kind, "slurm_job": os.environ.get("SLURM_JOB_ID"), "procs_requested": procs_requested,
             "procs_used": procs_used, "mpi": None, "limits": limits or {}}
 
@@ -71,8 +73,10 @@ def run_study(name: str, study: dict, folder, solver: str = "omc", timeout: floa
     res["translator"] = __version__
     res.setdefault("seconds", {})
     res["seconds"]["total"] = round(time.perf_counter() - t_start, 3)
-    res.setdefault("execution", execution(limits={"timeout_s": timeout,
-                                                  "from_study": sorted((study.get("run") or {}).keys())}))
+    used = (res.get("sweep") or {}).get("procs", 1)
+    res.setdefault("execution", execution(procs_used=used, limits={
+        "timeout_s": timeout, "mem": (study.get("run") or {}).get("mem") or os.environ.get("OMCT_SLURM_MEM"),
+        "from_study": sorted((study.get("run") or {}).keys())}))
     if res.get("ok") is False:
         res.setdefault("reliable", False)
         res.setdefault("unreliable_because", [res.get("why", "failed")])
@@ -279,6 +283,9 @@ def _run(name, study, folder, solver, timeout, cancel) -> dict:
                           intervals=n, tolerance=tol, method=method, variable_filter=filt,
                           timeout=timeout, linearize_at=t1 if lin else None, cancel=cancel)
     seconds["simulate"] = sim["seconds"]
+    if sim["ok"] and not lin:
+        from .executor import record_run
+        record_run(b["dir"], sim["seconds"], n)
     out["files"].update(sim["files"])
     warnings += sim["warnings"]
     out["checks"].update({"balance": {"ok": True, **(b.get("check") or {})},

@@ -1,5 +1,5 @@
 """api.py — what the CLI and the MCP server call. JSON in, JSON out.
-Version: 2026.10.21.6
+Version: 2026.10.21.7
 
     tool_status()                  versions; omc, MSL, the C compiler, the build cache; the executor and its caps
     study_format()                 the study format, with status
@@ -16,10 +16,10 @@ Version: 2026.10.21.6
     render_images(folder, images)  new pictures of a finished study; image_path(path) a checked PNG path
     read_file(path, max_mb)        a written file as base64 (only under OMCT_OUT)
 
-Studies run in worker processes (OMCT_WORKERS, default 2) that live across calls of one server process. Every
-state is read from the files (request.json, <name>/<name>.json, model.mo, sim.log), so another server process
-sees the same results; a study still running in a process that ended is reported failed. SLURM comes with
-milestone 6.
+Studies run in worker processes (OMCT_WORKERS, default 2) that live across calls of one server process, or as
+SLURM jobs (OMCT_EXECUTOR=slurm, executor.py: one job per study). Every state is read from the files
+(request.json, <name>/<name>.json, job.json, model.mo, sim.log) and the queue, so another server process sees
+the same results; a local study still running in a process that ended is reported failed.
 """
 from __future__ import annotations
 
@@ -33,7 +33,6 @@ import uuid
 from pathlib import Path
 
 from . import __version__
-from .format import caps
 from .format import study_format as _format
 from .format import validate as _validate
 from .format import validate_study
@@ -54,13 +53,13 @@ def _solver(solver: str | None) -> str:
 
 
 def timeout_s(study: dict | None = None) -> float:
-    t = ((study or {}).get("run") or {}).get("timeout_s")
-    return float(t) if t else float(os.environ.get("OMCT_TIMEOUT", "600"))
+    from .executor import timeout_s as t
+    return t(study)
 
 
 def executor_status() -> dict:
-    return {"kind": "local", "workers": int(os.environ.get("OMCT_WORKERS", "2")),
-            "procs": int(os.environ.get("OMCT_PROCS", "1") or 1), "timeout_s": timeout_s(), "caps": caps()}
+    from .executor import status as st
+    return st()
 
 
 def tool_status() -> dict:
@@ -129,14 +128,21 @@ def start(studies: dict, solver: str | None = None, prefix: str = "run", inline:
                           "reliable": False, "unreliable_because": ["invalid study"]}
         else:
             jobs.append({"name": n, "study": st, "folder": str(folder), "solver": s, "timeout": timeout_s(st)})
+    from . import executor as X
     (folder / "request.json").write_text(json.dumps({
         "names": [j["name"] for j in jobs], "invalid": invalid, "solver": s, "started": time.time(),
-        "executor": "local", "pid": os.getpid(), "studies": {j["name"]: j["study"] for j in jobs}}, default=float))
+        "executor": X.kind(), "pid": os.getpid(), "studies": {j["name"]: j["study"] for j in jobs}}, default=float))
+    local = []
+    for j in jobs:
+        if not inline and X.use_slurm(j["study"], s):
+            X.submit(folder, j["name"], j["study"], s)
+        else:
+            local.append(j)
     if inline:
-        for j in jobs:
+        for j in local:
             _run_one(j)
-    elif jobs:
-        _POOL.submit(folder, jobs)
+    elif local:
+        _POOL.submit(folder, local)
     return folder
 
 
@@ -166,9 +172,11 @@ def _progress(d: Path, timeout: float) -> dict:
 
 
 def _collect(folder: Path) -> dict:
+    from . import executor as X
     meta = json.loads((folder / "request.json").read_text())
     handles = _POOL.jobs.get(str(folder), {})
-    out, pending, progress = dict(meta.get("invalid", {})), [], {}
+    slurm = X.slurm_states(folder, meta["names"], meta.get("studies", {}))
+    out, pending, progress, job_ids = dict(meta.get("invalid", {})), [], {}, {}
     for name in meta["names"]:
         f = folder / name / f"{name}.json"
         h = handles.get(name)
@@ -179,6 +187,19 @@ def _collect(folder: Path) -> dict:
                 continue
             except json.JSONDecodeError:
                 pass
+        if name in slurm:
+            st = slurm[name]
+            job_ids[name] = st.get("job_id")
+            if st["state"] in X.FINAL:
+                out[name] = st
+            else:
+                pending.append(name)
+                progress[name] = st
+            continue
+        if (folder / name / "job.json").is_file():       # a job that finished between the reads
+            pending.append(name)
+            progress[name] = {"state": "running", "stage": "finishing"}
+            continue
         if h is not None and h.ready():
             try:
                 h.get()
@@ -203,8 +224,16 @@ def _collect(folder: Path) -> dict:
            "pending": pending, "elapsed_s": round(time.time() - meta.get("started", time.time()), 1), "studies": out}
     if pending:
         res["progress"] = progress
-        res["next"] = (f"call study_status(request='{folder}') to collect the rest. Polling costs tokens: if eta_min_max "
-                       f"is more than about 5 min, tell the user when to come back and stop polling")
+        sl = [job_ids[n] for n in pending if n in job_ids]
+        if sl:
+            etas = [p.get("eta_min_max") for p in progress.values() if p.get("eta_min_max") is not None]
+            res["next"] = (f"The studies are SLURM jobs on this machine (ids {', '.join(map(str, sl))}). They keep running "
+                           f"without this conversation. Tell the user when they should finish (at most "
+                           f"{max(etas) if etas else '?'} min once running) and stop; collect them later with "
+                           f"study_status(request='{folder}') or find them with jobs().")
+        else:
+            res["next"] = (f"call study_status(request='{folder}') to collect the rest. Polling costs tokens: if eta_min_max "
+                           f"is more than about 5 min, tell the user when to come back and stop polling")
     else:
         (folder / "results.json").write_text(json.dumps(res, indent=1, default=str))
     return res
@@ -224,12 +253,17 @@ def status(request: str, wait: float = 0.0) -> dict:
     folder = Path(request).expanduser()
     if not (folder / "request.json").is_file():
         return {"error": f"no request {folder}"}
-    t_end = time.time() + max(0.0, float(wait))
+    t0 = time.time()
+    t_end = t0 + max(0.0, float(wait))
     while True:
         res = _collect(folder)
         if res["done"] or time.time() >= t_end:
             return res
-        time.sleep(0.5)
+        # SLURM jobs do not need this process: give quick ones up to 15 s, then return them pending
+        prog = res.get("progress", {})
+        if prog and all("job_id" in v for v in prog.values()) and time.time() - t0 >= 15:
+            return res
+        time.sleep(0.5 if time.time() - t0 < 5 else 2.0)
 
 
 def run(studies: dict, solver: str | None = None, wait: float | None = None) -> dict:
@@ -256,10 +290,17 @@ def jobs(limit: int = 20, active: bool = False) -> dict:
             res = _collect(req)
         except (OSError, json.JSONDecodeError, KeyError):
             continue
-        studies = {n: {"state": "done" if s.get("ok") else s.get("state", "failed"), "ok": s.get("ok"),
-                       "reliable": s.get("reliable")} for n, s in res["studies"].items()}
+        studies = {}
+        for n, s in res["studies"].items():
+            jf = req / n / "job.json"
+            studies[n] = {"state": "done" if s.get("ok") else s.get("state", "failed"), "ok": s.get("ok"),
+                          "reliable": s.get("reliable"),
+                          "job_id": json.loads(jf.read_text()).get("job_id") if jf.is_file() else None}
         for n in res["pending"]:
-            studies[n] = {"state": res["progress"][n]["state"], "stage": res["progress"][n].get("stage")}
+            p = res["progress"][n]
+            studies[n] = {k: p.get(k) for k in ("state", "stage", "job_id", "reason", "ahead", "expected_start",
+                                                "eta_min_max", "job_elapsed_min", "points_done", "points")
+                          if p.get(k) is not None}
         live = bool(res["pending"])
         if active and not live:
             continue
@@ -267,8 +308,8 @@ def jobs(limit: int = 20, active: bool = False) -> dict:
                     "active": live, "studies": studies})
         if len(out) >= limit:
             break
-    return {"translator": __version__, "executor": executor_status(), "requests": out,
-            "note": "local worker pool only; SLURM jobs come with milestone 6"}
+    from . import executor as X
+    return {"translator": __version__, "executor": executor_status(), **X.queue_summary(), "requests": out}
 
 
 def cancel(request: str, names: list[str] | None = None) -> dict:
@@ -280,12 +321,16 @@ def cancel(request: str, names: list[str] | None = None) -> dict:
     unknown = [n for n in names if n not in meta["names"]]
     if unknown:
         return {"error": f"no studies {unknown} in this request ({meta['names']})"}
+    from . import executor as X
     todo = [n for n in names if not (folder / n / f"{n}.json").is_file()]
     for n in todo:
         (folder / n).mkdir(parents=True, exist_ok=True)
         (folder / n / "cancel").write_text(str(time.time()))
+    ids = X.cancel_slurm(folder, todo)
+    time.sleep(1.0 if ids else 0.0)
     res = status(str(folder), 3.0 if todo else 0.0)
-    return {"request": str(folder), "cancelled": todo, "already_finished": [n for n in names if n not in todo],
+    return {"request": str(folder), "cancelled": todo, "cancelled_jobs": ids,
+            "already_finished": [n for n in names if n not in todo],
             "states": {n: ("done" if n in res["studies"] and res["studies"][n].get("ok") else
                            res["studies"].get(n, {}).get("state") or res["studies"].get(n, {}).get("why") or
                            res.get("progress", {}).get(n, {}).get("state")) for n in names},
