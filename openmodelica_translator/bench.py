@@ -1,8 +1,9 @@
 """bench.py — benchmark studies with closed-form answers: is the toolchain right?
-Version: 2026.10.21.6
+Version: 2026.10.21.10
 
 Each case is a study plus checks [(result path, expected, tolerance, why)]; tolerances are relative unless
-written {"abs": x}. A case passes when the run is ok and reliable (balance, initialisation, solver, values read
+written {"abs": x}. Chains (chain_feat_modal, chain_b3dt_mass) run the other translator first and only when named; they are skipped
+when it is not installed. A case passes when the run is ok and reliable (balance, initialisation, solver, values read
 back, energy, reference) and every check holds. The expected values are computed here from the closed forms.
 """
 from __future__ import annotations
@@ -163,11 +164,84 @@ def cases() -> dict:
     return out
 
 
-def evaluate(name: str, res: dict, cs: dict | None = None) -> dict:
+# ---- chains: values from the other translators (run only when named; skipped when the translator is missing)
+def _chain_feat_modal():
+    """feat's static cantilever (tip stiffness k = F/u) and its mass -> a mass on a spring here; Rayleigh's
+    frequency sqrt(k / (33/140 m)) is 1.46 % above the first bending frequency, which feat's modal analysis of
+    the same beam gives: the ratio checks the chain (units mm -> m, N/mm -> N/m, provenance) end to end."""
+    from fea_translator import api as F
+    from fea_translator import bench as FB
+
+    from . import chains as CH
+    fc = FB.cases()
+    st = {n: {k: v for k, v in fc[n].items() if k != "expect"} for n in ("cantilever", "cantilever_modal")}
+    r = F.run(st, None, wait=None)["studies"]
+    for n in st:
+        if not r[n].get("ok", True) or r[n].get("reliable") is False:
+            raise RuntimeError(f"feat {n} failed: {r[n].get('why') or r[n].get('unreliable_because')}")
+    k = CH.feat_stiffness(r["cantilever"], "tip", "uz", 100.0, "feat cantilever (100x10x10 mm steel), 100 N tip load")
+    m = CH.feat_mass(r["cantilever_modal"], CH.RAYLEIGH_CANTILEVER, "33/140 x feat cantilever mass_kg (Rayleigh)")
+    f_feat = CH.feat_frequency(r["cantilever_modal"], 0)
+    study = {"components": {"m": {"kind": "mass", "m": m}, "k": {"kind": "spring", "c": k}, "base": {"kind": "fixed"},
+                            "F": {"kind": "force"}},
+             "connect": [["base.flange", "k.flange_a"], ["k.flange_b", "m.flange_a"], ["F.flange", "m.flange_b"]],
+             "outputs": {"x": "m.s"}, "analysis": {"kind": "linearize", "inputs": {"F": "F.f"}}}
+    checks = [("linearization.natural_frequencies_Hz.0", f_feat * CH.rayleigh_ratio(), 0.01,
+               f"Rayleigh with feat's stiffness and mass = 1.0146 x feat's modal first frequency ({f_feat:.2f} Hz)"),
+              ("inputs.k.c.si", k["value"] * 1000, 1e-12, "N/mm -> N/m, recorded with provenance")]
+    return study, checks
+
+
+def _chain_b3dt_mass():
+    """A build123d-translator box's volume x density -> the mass here; f = sqrt(k/m)/(2 pi) exactly."""
+    from . import chains as CH
+    goal = {"features": [{"kind": "base_box", "params": {"w": 100, "d": 10, "h": 10}}]}
+    m = CH.b3dt_mass(goal, 7850.0, "b3dt 100x10x10 mm box, steel")
+    k = 2.0e5
+    study = {"components": {"m": {"kind": "mass", "m": m}, "k": {"kind": "spring", "c": k}, "base": {"kind": "fixed"},
+                            "F": {"kind": "force"}},
+             "connect": [["base.flange", "k.flange_a"], ["k.flange_b", "m.flange_a"], ["F.flange", "m.flange_b"]],
+             "outputs": {"x": "m.s"}, "analysis": {"kind": "linearize", "inputs": {"F": "F.f"}}}
+    mass = 100 * 10 * 10 * 1e-9 * 7850
+    return study, [("inputs.m.m.si", mass, 1e-9, "volume 1e4 mm3 x 7850 kg/m3"),
+                   ("linearization.natural_frequencies_Hz.0", math.sqrt(k / mass) / (2 * math.pi), 1e-5,
+                    "f = sqrt(k/m) / (2 pi)")]
+
+
+CHAINS = {"chain_feat_modal": {"needs": "fea_translator", "prepare": _chain_feat_modal},
+          "chain_b3dt_mass": {"needs": "build123d_translator", "prepare": _chain_b3dt_mass}}
+
+
+def prepare(names) -> tuple[dict, dict, dict]:
+    """(studies, checks, skipped) for the named cases: chains run their other translator now."""
+    from . import chains as CH
+    cs = cases()
+    studies, checks, skipped = {}, {}, {}
+    for n in names:
+        if n in cs:
+            studies[n], checks[n] = cs[n]["study"], cs[n]["checks"]
+        elif n in CHAINS:
+            if not CH.available(CHAINS[n]["needs"]):
+                skipped[n] = f"needs {CHAINS[n]['needs']} (not installed here)"
+                continue
+            try:
+                studies[n], checks[n] = CHAINS[n]["prepare"]()
+            except Exception as exc:  # noqa: BLE001
+                skipped[n] = f"{CHAINS[n]['needs']} step failed: {type(exc).__name__}: {exc}"
+        else:
+            skipped[n] = f"no benchmark {n} (benchmarks: {', '.join(list(cs) + list(CHAINS))})"
+    return studies, checks, skipped
+
+
+def evaluate(name: str, res: dict, cs: dict | None = None, checks: list | None = None) -> dict:
     from .post import get_path
-    cs = cs or cases()
+    if checks is None:
+        cs = cs or cases()
+        checks_in = cs[name]["checks"]
+    else:
+        checks_in = checks
     checks = []
-    for q, exp, tol, why in cs[name]["checks"]:
+    for q, exp, tol, why in checks_in:
         try:
             got = float(get_path(res, q))
         except (KeyError, ValueError, IndexError, TypeError):
@@ -192,14 +266,11 @@ def run(solver: str, names=None, folder=None) -> dict:
     from pathlib import Path
 
     from .runner import run_study
-    cs = cases()
-    names = list(names) if names else list(cs)
-    out = {}
-    for n in names:
-        if n not in cs:
-            out[n] = {"skipped": f"no benchmark {n} (benchmarks: {', '.join(cs)})"}
-            continue
-        r = run_study(n, cs[n]["study"], Path(folder) / n, solver, 600)
-        out[n] = evaluate(n, r, cs)
+    names = list(names) if names else list(cases())
+    studies, checks, skipped = prepare(names)
+    out = {n: {"skipped": why} for n, why in skipped.items()}
+    for n, st in studies.items():
+        r = run_study(n, st, Path(folder) / n, solver, 600)
+        out[n] = evaluate(n, r, checks=checks[n])
         out[n]["checks_run"] = {k: v.get("ok") for k, v in (r.get("checks") or {}).items()}
     return out

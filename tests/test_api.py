@@ -67,7 +67,7 @@ def test_bench_in_pool_and_status(out):
     assert b["done"] and sorted(b["passed"]) == ["inertia_torque_step", "rc_step"]
     assert json.loads((api.Path(b["bench"]) / "bench.json").read_text())["passed"]
     b = api.bench(["nope"], "ref")
-    assert b["skipped"] == ["nope"]
+    assert list(b["skipped"]) == ["nope"]
 
 
 def test_mcp_tools():

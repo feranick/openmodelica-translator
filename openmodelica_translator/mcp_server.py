@@ -104,8 +104,9 @@ def get_model(study: dict, name: str = "study") -> dict:
 @server.tool()
 def run_benchmarks(names: list[str] | None = None, solver: str = "auto", wait_s: float = 30) -> dict:
     """Runs the benchmark studies with closed-form answers (RC, RLC step and poles, mass-spring-damper, inertia,
-    DC motor, thermal RC and steady state, two-mass drive, PI loop) and reports pass or fail per check. Returns
-    after at most wait_s seconds; collect the rest with bench_status(bench)."""
+    DC motor, thermal RC and steady state, two-mass drive, PI loop, a sweep) and reports pass or fail per check;
+    by name also the chains chain_feat_modal (runs fea-translator first) and chain_b3dt_mass (build123d-
+    translator). Returns after at most wait_s seconds; collect the rest with bench_status(bench)."""
     return api.bench(names, solver, wait_s=min(max(float(wait_s), 0.0), 50.0))
 
 

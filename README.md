@@ -16,7 +16,7 @@ It is part of [llm-translators](https://github.com/feranick/llm-translators), wi
 | Settings prefix | `OMCT_` |
 | Output folder | `~/omct_runs` (`OMCT_OUT`) |
 
-**Status (2026.10.21.9, milestone 6 of 8):** format, validation, Modelica generation, reference implementation (M1); the OpenModelica driver (M2); checks and benchmarks (M3); API, worker pool, MCP server, pictures (M4); sweeps on one build (M5), all checked on mochi; SLURM execution per llm-translators' docs/EXECUTION.md (M6; queueing confirmed on mochi). 226 tests pass without OpenModelica. Next: chains (M7), joining llm-translators (M8); see `planning.md`.
+**Status (2026.10.21.10, milestone 7 of 8):** M1-M6 checked on mochi (benchmarks, MCP, sweeps, SLURM queueing: two 30-CPU sweeps of 120 points, the second queued, 5.6 s each); chains with fea-translator and build123d-translator (M7: `chains.py`, two chain benchmarks). 228 tests pass without OpenModelica. Next: joining llm-translators (M8); see `planning.md`.
 
 ## Install
 
@@ -76,6 +76,10 @@ With `OMCT_EXECUTOR=slurm` (llm-translators' docs/EXECUTION.md), a study whose e
 - **Analyses:** `transient`, `steady`, `linearize` (A, B, C, D, eigenvalues, modes, Bode); `sweep` on any of them; `derived` quantities: `step` (rise, overshoot, settling), `crossing`, `window`, `steady`; `converge`; `expect`; `run`; `images`.
 - **Escape hatch:** `"modelica": {"text": ..., "model": ...}`, checked but without catalog checks or reference.
 
+### Values from the other translators (`chains.py`)
+
+A value from another tool goes into the study as `{"value", "unit", "from", "what"}`; the result's `inputs` records the conversion. Helpers: `feat_stiffness(static, face, comp, force)` (|F| / |faces.<face>.mean_u.<c>|, N/mm), `feat_mass(result, factor)` (mass_kg; 33/140 for a cantilever's tip mass by Rayleigh), `feat_frequency(modal, i)`, `feat_conductance(thermal, face, ΔT)` (W/K), `b3dt_mass(goal, density)` (volume from build123d-translator's check × density), `rayleigh_cantilever_hz(k, m)`. Keys read: fea-translator `faces.<face>.mean_u.<ux|uy|uz>`, `applied_force`, `frequencies`, `mass_kg`, `heat_flow.<face>`; build123d-translator `check()[name].volume`. cfd-translator's pressure-drop and pump curves enter as `table` blocks until fluid networks (v2).
+
 ### Interface (read by other tools; kept stable)
 
 `outputs.<name>.{final, min, max, initial, t_min, t_max}`, `derived.<name>.*`, `steady.<name>.*`, `linearization.{eigenvalues, modes, dc_gain, bode}`, `sweep.table`.
@@ -106,6 +110,8 @@ With `OMCT_EXECUTOR=slurm` (llm-translators' docs/EXECUTION.md), a study whose e
 | `two_mass` | ω² = c(J1 + J2)/(J1 J2) | 1e-5 |
 | `pi_first_order` | PI on a first-order plant: overshoot and peak time (scipy.signal) | 2e-3 |
 | `sweep_rc` | τ = RC at R = 500, 1000, 2000 Ω; one build for the three points; all reliable | 1e-4 |
+| `chain_feat_modal` (by name) | fea-translator's static cantilever (k = F/u) and mass → Rayleigh √(k/(33/140 m)) = 1.0146 × fea-translator's modal first frequency | 1 % |
+| `chain_b3dt_mass` (by name) | build123d-translator box volume × density → mass; f = √(k/m)/2π | 1e-5 |
 
 A case passes when its run is ok and reliable (energy, reference) and every check holds. All pass with `--solver ref`; with OpenModelica: see `planning.md` (State).
 
@@ -129,6 +135,7 @@ Listed in `planning.md` (A1–A19), each with the probe that checks it (`tools/m
 | `post.py`, `energy.py`, `bench.py` | outputs, derived quantities (step, crossing, window, steady), comparisons, expect; the energy balance; the benchmarks |
 | `runner.py`, `api.py`, `proc.py` | one study end to end with every check; the API (pool, request folders, status from files, cancel, jobs, benchmarks); process groups |
 | `render.py`, `mcp_server.py`, `sweep.py` | time and Bode plots; the MCP server; sweeps |
+| `chains.py` | values from fea-translator and build123d-translator results, with provenance |
 | `executor.py` | the local pool or one SLURM job per study: sizing, estimates, job.sh/job.json, states, jobs, cancel, run-study |
 | `cli.py` | `omct status [REQUEST] | format | validate | model | run | bench | jobs | cancel | images | run-study` |
 
@@ -150,6 +157,7 @@ Pictures: `"images": true` in a study writes `images/outputs.png` (one panel per
 
 | Version | Changes |
 |---|---|
+| 2026.10.21.10 | M7: `chains.py`, benchmarks `chain_feat_modal` and `chain_b3dt_mass` (by name; skipped without the other translator); bench requests keep their checks; on mochi SLURM sweeps take 5.6 s (was 200 s) |
 | 2026.10.21.9 | SLURM queueing confirmed on mochi (two 30-CPU sweeps: the second waits for Resources, both 120/120 reliable); sweeps run their points in processes outside the server's pool, the reference comparison uses ≤ 1000 points, estimates from a whole study's measured time |
 | 2026.10.21.8 | job.sh puts the package's folder on PYTHONPATH (mochi: the first SLURM jobs could not import the translator, not yet installed in the venv) |
 | 2026.10.21.7 | M6: SLURM (`executor.py` from cfdt, kind threads: CPUs from sweep points and cache misses, memory, time estimates from measured runs, states, jobs, cancel, run-study, bench through SLURM), fake-SLURM tests (13), `tools/m6_slurm_test.py`; on mochi the 12-point PI sweep ran on one build in 5.3 s, every point reliable |

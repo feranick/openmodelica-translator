@@ -1,5 +1,5 @@
 """api.py — what the CLI and the MCP server call. JSON in, JSON out.
-Version: 2026.10.21.7
+Version: 2026.10.21.10
 
     tool_status()                  versions; omc, MSL, the C compiler, the build cache; the executor and its caps
     study_format()                 the study format, with status
@@ -387,15 +387,14 @@ def image_path(path: str) -> Path:
 
 # ---- benchmarks ---------------------------------------------------------------------------------------
 def bench(names=None, solver: str | None = None, wait_s: float | None = None) -> dict:
-    """wait_s None: run here and return the verdicts; otherwise in the pool, returning after wait_s."""
+    """wait_s None: run here and return the verdicts; otherwise in the pool (or SLURM), returning after wait_s.
+    Chain cases (chain_*) run their other translator first, here, and only when named."""
     from . import bench as B
-    cs = B.cases()
-    names = list(names) if names else list(cs)
-    unknown = [n for n in names if n not in cs]
-    studies = {n: cs[n]["study"] for n in names if n in cs}
+    names = list(names) if names else list(B.cases())
+    studies, checks, skipped = B.prepare(names)
     folder = start(studies, solver, prefix="bench", inline=wait_s is None)
-    (folder / "bench_request.json").write_text(json.dumps({"names": list(studies), "skipped": unknown,
-                                                           "translator": __version__}))
+    (folder / "bench_request.json").write_text(json.dumps({"names": list(studies), "skipped": skipped,
+                                                           "checks": checks, "translator": __version__}, default=float))
     return bench_status(str(folder), 0 if wait_s is None else wait_s)
 
 
@@ -406,14 +405,15 @@ def bench_status(bench_folder: str, wait_s: float = 0) -> dict:
         return {"error": f"no benchmark request {folder}"}
     meta = json.loads((folder / "bench_request.json").read_text())
     st = status(str(folder), wait_s)
-    cs = B.cases()
-    res = {n: B.evaluate(n, r, cs) for n, r in st["studies"].items()}
+    res = {n: B.evaluate(n, r, checks=meta["checks"][n]) for n, r in st["studies"].items() if n in meta["checks"]}
     for n, r in st["studies"].items():
-        res[n]["checks_run"] = {k: v.get("ok") for k, v in (r.get("checks") or {}).items()}
+        if n in res:
+            res[n]["checks_run"] = {k: v.get("ok") for k, v in (r.get("checks") or {}).items()}
+    sk = meta.get("skipped", {})
     out = {"bench": str(folder), "solver": st["solver"], "translator": __version__, "done": st["done"],
            "passed": [n for n, v in res.items() if v.get("passed")],
            "failed": [n for n, v in res.items() if not v.get("passed")], "pending": st.get("pending", []),
-           "skipped": meta.get("skipped", []), "cases": res}
+           "skipped": sk if isinstance(sk, dict) else {n: "unknown" for n in sk}, "cases": res}
     if not st["done"]:
         out["progress"] = st.get("progress")
         out["next"] = f"call bench_status(bench='{folder}') in a little while"

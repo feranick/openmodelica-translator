@@ -2,7 +2,7 @@
 
 Session context for Claude (the project documentation will be README.md). Start a chat with: "Read planning.md and start."
 
-Version: 2026.10.21.9 (milestone 6: SLURM, queueing confirmed on mochi).
+Version: 2026.10.21.10 (milestone 7: chains).
 
 ## What this is
 
@@ -354,7 +354,7 @@ tools/  m0_probe.sh (M0 probe), check_catalog_msl.py (catalog vs the MSL 4.0.0 s
 - **M4 Interfaces:** `api.py`, `cli.py`, `mcp_server.py`, images. Done in the sandbox (2026.10.21.5).
 - **M5 Analyses:** sweeps, linearisation, steady. Done (2026.10.21.6; linearisation and steady came with M2/M3).
 - **M6 SLURM:** `executor.py` from cfdt with sizing, caps, fake-SLURM tests; on mochi two sweeps from two conversations queue. Done in the sandbox (2026.10.21.7); the queueing test on mochi is next.
-- **M7 Chains:** `chain_feat_modal`, b3dt mass, cfdt tables.
+- **M7 Chains:** `chain_feat_modal`, b3dt mass, cfdt tables. Done in the sandbox (2026.10.21.10; cfdt curves as `table` blocks until fluid networks in v2).
 - **M8 Joining the umbrella:** submodule, `translators.json` (key `omct`, port 8770, `suggest: remote`, `executor: {prefix: OMCT, kind: threads, min_minutes: 1}`, backends `omc` and `msl`, every setting in `env`), `BACKENDS.md` (official apt repository, MSL 4.0.0 via the package manager, checks), README row, `llmt install/status/test/bench/tune/mcp test` on mochi, `llmt mcp setup` on the Mac.
 
 ## Decisions:
@@ -373,6 +373,16 @@ Made while building M1 (tell me if any is wrong):
 - Composites are flattened into elements `X__part` (no nested models, so every value is a direct override and no bound parameter has to be recomputed by OpenModelica).
 
 ## State
+
+**2026.10.21.10 (M7, sandbox)**: on mochi with 2026.10.21.9 the SLURM test passed fully: 2609 ran (30 CPUs), 2610 waited (Resources) and followed; each sweep 120/120 reliable, 1 build, **5.6 s** (was 200 s: the points now run in processes and the reference uses <= 1000 points); estimate 0.36 min (an upper bound, as it should be). New: `chains.py` (feat stiffness/mass/frequency/conductance, b3dt mass, Rayleigh) and two chain benchmarks run by name: `chain_feat_modal` runs fea-translator's own `cantilever` and `cantilever_modal` cases (100x10x10 mm steel, 20x4x4 mesh), builds a mass (33/140 m) on a spring (k = 100 N / |tip uz|) here, linearises, and checks f = 1.0146 x feat's first frequency (1 %); `chain_b3dt_mass`: a b3dt box's volume x 7850 kg/m3 -> mass (1e-9), f = sqrt(k/m)/2 pi (1e-5). bench requests store their checks (chains are prepared once, when submitted). Tests: 228 pass (the feat chain with a stand-in feat giving exact Euler-Bernoulli answers: 1.01465). Open: b3dt does not report inertia (build123d has matrix_of_inertia; ask b3dt to add it, then rotational chains).
+Next on mochi (feat and b3dt are in the venv; ~1 min):
+```bash
+cd ~/Software/openmodelica-translator && git pull
+PY=~/Software/llm-translators/.venv/bin/python
+$PY -m pytest -q tests/ 2>&1 | tail -2
+$PY -m openmodelica_translator.cli bench chain_feat_modal chain_b3dt_mass > tools/m7_chains_mochi.json
+$PY -c "import json; d=json.load(open('tools/m7_chains_mochi.json')); print('passed', d['passed'], 'failed', d['failed'], 'skipped', d['skipped']); [print(n, [(c['quantity'], c['expected'], c['got'], c.get('error')) for c in v['checks']], v.get('why','')) for n, v in d['cases'].items()]"
+```
 
 **2026.10.21.9 (mochi, SLURM queueing, 2026-10-21)**: with 2026.10.21.8, `tools/m6_slurm_test.py`: job 2607 (sweep_a, 30 CPUs) ran while 2608 (sweep_b, 30 CPUs) waited with reason Resources (machine 30 of 40 CPUs allocated); 2608 started when 2607 ended; both 120 points, 120 reliable, 1 build each (b on a's cache), execution {executor slurm, procs_requested 30, procs_used 30, limits from_study [procs, queue]}; collected by a third process. **The queueing contract holds.** But each sweep took ~200 s for 120 points of 20000 intervals on 30 threads, and the estimate said 0.06 min: the points' Python checks (reading, energy, and above all the reference implementation on all 20001 points) ran serialised on the GIL in threads. Fixes: the reference comparison uses at most 1000 points (evenly over the non-event points); a sweep outside the server's daemonic pool (a SLURM job, the CLI) runs its points in processes (threads stay inside the pool); runs.json also keeps a whole study's time on the build (`study_s`), and the estimate uses it (x 1.5), else the simulation's s/interval x 3 + 2 s + 1e-4 s per interval. Tests: 226 pass.
 Next on mochi (1-2 min): `OMCT_EXECUTOR=slurm ~/Software/llm-translators/.venv/bin/python tools/m6_slurm_test.py` again: each sweep should now take a few seconds of its own, sweep_b still queued behind sweep_a.
