@@ -1,0 +1,967 @@
+
+################ machine
+2026-10-21T17:46:20+00:00
+OpenModelica 1.27.1~2-g6db4671
+Python 3.14.4
+
+################ build (checkModel + buildModel of each probe model)
+true
+""
+true
+""
+"Check of OmctV2.OpenLoop completed successfully.
+Class OmctV2.OpenLoop has 61 equation(s) and 61 variable(s).
+30 of these are trivial equation(s)."
+""
+"/home/nicola/omct_v2probe/OpenLoop"
+{"/home/nicola/omct_v2probe/OpenLoop/m", "m_init.xml"}
+"Warning: The model contains alias variables with redundant start and/or conflicting nominal values. It is recommended to resolve the conflicts, because otherwise the system could be hard to solve. To print the conflicting alias sets and the chosen candidates please use -d=aliasConflicts.
+"
+"/home/nicola/omct_v2probe"
+"Check of OmctV2.ClosedLoop completed successfully.
+Class OmctV2.ClosedLoop has 86 equation(s) and 86 variable(s).
+38 of these are trivial equation(s)."
+""
+"/home/nicola/omct_v2probe/ClosedLoop"
+{"/home/nicola/omct_v2probe/ClosedLoop/m", "m_init.xml"}
+"Warning: The model contains alias variables with redundant start and/or conflicting nominal values. It is recommended to resolve the conflicts, because otherwise the system could be hard to solve. To print the conflicting alias sets and the chosen candidates please use -d=aliasConflicts.
+"
+"/home/nicola/omct_v2probe"
+"Check of OmctV2.PumpCurve completed successfully.
+Class OmctV2.PumpCurve has 66 equation(s) and 66 variable(s).
+31 of these are trivial equation(s)."
+""
+"/home/nicola/omct_v2probe/PumpCurve"
+{"/home/nicola/omct_v2probe/PumpCurve/m", "m_init.xml"}
+"Warning: The model contains alias variables with redundant start and/or conflicting nominal values. It is recommended to resolve the conflicts, because otherwise the system could be hard to solve. To print the conflicting alias sets and the chosen candidates please use -d=aliasConflicts.
+Warning: The initial conditions are not fully specified. For more information set -d=initialization. In OMEdit Tools->Options->Simulation->Show additional information from the initialization process, in OMNotebook call setCommandLineOptions(\"-d=initialization\").
+"
+"/home/nicola/omct_v2probe"
+"Check of OmctV2.Dcpm completed successfully.
+Class OmctV2.Dcpm has 192 equation(s) and 192 variable(s).
+146 of these are trivial equation(s)."
+""
+"/home/nicola/omct_v2probe/Dcpm"
+{"/home/nicola/omct_v2probe/Dcpm/m", "m_init.xml"}
+"[/home/nicola/.openmodelica/libraries/Modelica 4.0.0+maint.om/Mechanics/Rotational/Sources/TorqueStep.mo:6:3-7:23:writable] Warning: Parameter load.offsetTorque has no value, and is fixed during initialization (fixed=true), using available start value (start=0) as default value.
+Warning: The initial conditions are not fully specified. For more information set -d=initialization. In OMEdit Tools->Options->Simulation->Show additional information from the initialization process, in OMNotebook call setCommandLineOptions(\"-d=initialization\").
+"
+"/home/nicola/omct_v2probe"
+"Check of OmctV2.DcpmLosses completed successfully.
+Class OmctV2.DcpmLosses has 192 equation(s) and 192 variable(s).
+142 of these are trivial equation(s)."
+""
+"/home/nicola/omct_v2probe/DcpmLosses"
+{"/home/nicola/omct_v2probe/DcpmLosses/m", "m_init.xml"}
+"[/home/nicola/.openmodelica/libraries/Modelica 4.0.0+maint.om/Mechanics/Rotational/Sources/TorqueStep.mo:6:3-7:23:writable] Warning: Parameter load.offsetTorque has no value, and is fixed during initialization (fixed=true), using available start value (start=0) as default value.
+Warning: The initial conditions are not fully specified. For more information set -d=initialization. In OMEdit Tools->Options->Simulation->Show additional information from the initialization process, in OMNotebook call setCommandLineOptions(\"-d=initialization\").
+"
+"/home/nicola/omct_v2probe"
+"Check of OmctV2.DcpmThermal completed successfully.
+Class OmctV2.DcpmThermal has 181 equation(s) and 181 variable(s).
+130 of these are trivial equation(s)."
+""
+"/home/nicola/omct_v2probe/DcpmThermal"
+{"/home/nicola/omct_v2probe/DcpmThermal/m", "m_init.xml"}
+"[/home/nicola/.openmodelica/libraries/Modelica 4.0.0+maint.om/Electrical/Machines/Interfaces/PartialBasicDCMachine.mo:3:3-5:66:writable] Warning: Parameter dcpm.TaOperational has no value, and is fixed during initialization (fixed=true), using available start value (start=293.15) as default value.
+[/home/nicola/.openmodelica/libraries/Modelica 4.0.0+maint.om/Mechanics/Rotational/Sources/TorqueStep.mo:6:3-7:23:writable] Warning: Parameter load.offsetTorque has no value, and is fixed during initialization (fixed=true), using available start value (start=0) as default value.
+Warning: The initial conditions are not fully specified. For more information set -d=initialization. In OMEdit Tools->Options->Simulation->Show additional information from the initialization process, in OMNotebook call setCommandLineOptions(\"-d=initialization\").
+"
+"/home/nicola/omct_v2probe"
+"Check of OmctV2.DcpmThermalOne completed successfully.
+Class OmctV2.DcpmThermalOne has 168 equation(s) and 168 variable(s).
+121 of these are trivial equation(s)."
+""
+"/home/nicola/omct_v2probe/DcpmThermalOne"
+{"", ""}
+"[/home/nicola/.openmodelica/libraries/Modelica 4.0.0+maint.om/Electrical/Machines/Interfaces/PartialBasicDCMachine.mo:3:3-5:66:writable] Warning: Parameter dcpm.TaOperational has no value, and is fixed during initialization (fixed=true), using available start value (start=293.15) as default value.
+[/home/nicola/.openmodelica/libraries/Modelica 4.0.0+maint.om/Electrical/Machines/Interfaces/PartialBasicDCMachine.mo:14:3-16:50:writable] Warning: Parameter dcpm.TaNominal has no value, and is fixed during initialization (fixed=true), using available start value (start=293.15) as default value.
+[/home/nicola/.openmodelica/libraries/Modelica 4.0.0+maint.om/Electrical/Machines/Interfaces/PartialBasicDCMachine.mo:20:3-22:40:writable] Warning: Parameter dcpm.TaRef has no value, and is fixed during initialization (fixed=true), using available start value (start=293.15) as default value.
+[/home/nicola/.openmodelica/libraries/Modelica 4.0.0+maint.om/Electrical/Machines/Interfaces/PartialBasicDCMachine.mo:23:3-25:40:writable] Warning: Parameter dcpm.alpha20a has no value, and is fixed during initialization (fixed=true), using available start value (start=0) as default value.
+Error: An independent subset of the model has imbalanced number of equations (155) and variables (151).
+variables:
+cap.port.Q_flow
+cap.port.T
+cap.der_T
+cap.T
+gnd.p.i
+gnd.p.v
+va.i
+va.n.i
+va.n.v
+va.p.i
+va.p.v
+va.v
+dcpm.ie.i
+dcpm.ie.n.i
+dcpm.ie.n.v
+dcpm.ie.p.i
+dcpm.ie.p.v
+dcpm.ie.v
+dcpm.eGround.p.i
+dcpm.eGround.p.v
+dcpm.airGapDC.pin_en.i
+dcpm.airGapDC.pin_en.v
+dcpm.airGapDC.pin_an.i
+dcpm.airGapDC.pin_an.v
+dcpm.airGapDC.pin_ep.i
+dcpm.airGapDC.pin_ep.v
+dcpm.airGapDC.pin_ap.i
+dcpm.airGapDC.pin_ap.v
+dcpm.airGapDC.support.tau
+dcpm.airGapDC.support.phi
+dcpm.airGapDC.flange.tau
+dcpm.airGapDC.flange.phi
+dcpm.airGapDC.tauElectrical
+dcpm.airGapDC.ia
+dcpm.airGapDC.vai
+dcpm.airGapDC.psi_e
+dcpm.airGapDC.ie
+dcpm.airGapDC.vei
+dcpm.airGapDC.w
+dcpm.internalThermalPort.heatPortBrush.Q_flow
+dcpm.internalThermalPort.heatPortFriction.Q_flow
+dcpm.internalThermalPort.heatPortStrayLoad.Q_flow
+dcpm.internalThermalPort.heatPortCore.Q_flow
+dcpm.internalThermalPort.heatPortArmature.Q_flow
+dcpm.internalThermalPort.heatPortArmature.T
+dcpm.thermalPort.heatPortBrush.Q_flow
+dcpm.thermalPort.heatPortFriction.Q_flow
+dcpm.thermalPort.heatPortStrayLoad.Q_flow
+dcpm.thermalPort.heatPortCore.Q_flow
+dcpm.thermalPort.heatPortArmature.Q_flow
+dcpm.thermalPort.heatPortArmature.T
+dcpm.strayLoad.lossPower
+dcpm.strayLoad.heatPort.Q_flow
+dcpm.strayLoad.w
+dcpm.strayLoad.tau
+dcpm.strayLoad.phi
+dcpm.strayLoad.support.tau
+dcpm.strayLoad.support.phi
+dcpm.strayLoad.flange.tau
+dcpm.strayLoad.flange.phi
+dcpm.strayLoad.i
+dcpm.strayLoad.n.i
+dcpm.strayLoad.n.v
+dcpm.strayLoad.p.i
+dcpm.strayLoad.p.v
+dcpm.strayLoad.v
+dcpm.core.wLimit
+dcpm.core.w
+dcpm.core.lossPower
+dcpm.core.heatPort.Q_flow
+dcpm.core.i
+dcpm.core.n.i
+dcpm.core.n.v
+dcpm.core.p.i
+dcpm.core.p.v
+dcpm.core.v
+dcpm.brush.lossPower
+dcpm.brush.heatPort.Q_flow
+dcpm.brush.i
+dcpm.brush.n.i
+dcpm.brush.n.v
+dcpm.brush.p.i
+dcpm.brush.p.v
+dcpm.brush.v
+dcpm.la.i
+dcpm.la.n.i
+dcpm.la.n.v
+dcpm.la.p.i
+dcpm.la.p.v
+dcpm.la.v
+dcpm.ra.R_actual
+dcpm.ra.T_heatPort
+dcpm.ra.LossPower
+dcpm.ra.heatPort.Q_flow
+dcpm.ra.heatPort.T
+dcpm.ra.i
+dcpm.ra.n.i
+dcpm.ra.n.v
+dcpm.ra.p.i
+dcpm.ra.p.v
+dcpm.ra.v
+dcpm.pin_an.i
+dcpm.pin_an.v
+dcpm.pin_ap.i
+dcpm.pin_ap.v
+dcpm.ia
+dcpm.va
+dcpm.powerBalance.lossPowerPermanentMagnet
+dcpm.powerBalance.lossPowerBrush
+dcpm.powerBalance.lossPowerFriction
+dcpm.powerBalance.lossPowerStrayLoad
+dcpm.powerBalance.lossPowerCore
+dcpm.powerBalance.lossPowerArmature
+dcpm.powerBalance.lossPowerTotal
+dcpm.powerBalance.powerInertiaRotor
+dcpm.powerBalance.powerInertiaStator
+dcpm.powerBalance.powerMechanical
+dcpm.powerBalance.powerArmature
+dcpm.internalSupport.tau
+dcpm.internalSupport.phi
+dcpm.friction.lossPower
+dcpm.friction.heatPort.Q_flow
+dcpm.friction.w
+dcpm.friction.tau
+dcpm.friction.phi
+dcpm.friction.support.tau
+dcpm.friction.support.phi
+dcpm.friction.flange.tau
+dcpm.friction.flange.phi
+dcpm.fixed.flange.tau
+dcpm.fixed.flange.phi
+dcpm.inertiaStator.a
+dcpm.inertiaStator.w
+dcpm.inertiaStator.phi
+dcpm.inertiaStator.flange_b.tau
+dcpm.inertiaStator.flange_b.phi
+dcpm.inertiaStator.flange_a.tau
+dcpm.inertiaStator.flange_a.phi
+dcpm.inertiaRotor.a
+dcpm.inertiaRotor.w
+dcpm.inertiaRotor.phi
+dcpm.inertiaRotor.flange_b.tau
+dcpm.inertiaRotor.flange_b.phi
+dcpm.inertiaRotor.flange_a.tau
+dcpm.inertiaRotor.flange_a.phi
+dcpm.flange.tau
+dcpm.flange.phi
+dcpm.tauShaft
+dcpm.tauElectrical
+dcpm.wMechanical
+dcpm.phiMechanical
+equations:
+1 : dcpm.airGapDC.pin_en.v = dcpm.eGround.p.v
+2 : dcpm.airGapDC.pin_en.v = dcpm.ie.p.v
+3 : dcpm.airGapDC.pin_ep.v = dcpm.ie.n.v
+4 : dcpm.airGapDC.pin_ap.v = dcpm.la.n.v
+5 : dcpm.friction.support.phi = dcpm.internalSupport.phi
+6 : dcpm.friction.support.phi = dcpm.inertiaStator.flange_a.phi
+7 : dcpm.friction.support.phi = dcpm.fixed.flange.phi
+8 : dcpm.friction.support.phi = dcpm.strayLoad.support.phi
+9 : dcpm.friction.support.phi = dcpm.airGapDC.support.phi
+10 : dcpm.airGapDC.flange.phi = dcpm.inertiaRotor.flange_a.phi
+11 : dcpm.core.n.v = dcpm.brush.p.v
+12 : dcpm.core.n.v = dcpm.airGapDC.pin_an.v
+13 : dcpm.la.p.v = dcpm.core.p.v
+14 : dcpm.la.p.v = dcpm.ra.n.v
+15 : dcpm.brush.n.v = dcpm.pin_an.v
+16 : dcpm.pin_ap.v = dcpm.strayLoad.p.v
+17 : dcpm.strayLoad.p.i - dcpm.pin_ap.i = 0.0
+18 : dcpm.strayLoad.n.v = dcpm.ra.p.v
+19 : dcpm.internalThermalPort.heatPortArmature.T = dcpm.thermalPort.heatPortArmature.T
+20 : dcpm.internalThermalPort.heatPortArmature.T = dcpm.ra.heatPort.T
+21 : dcpm.inertiaRotor.flange_b.phi = dcpm.friction.flange.phi
+22 : dcpm.inertiaRotor.flange_b.phi = dcpm.flange.phi
+23 : dcpm.inertiaRotor.flange_b.phi = dcpm.strayLoad.flange.phi
+24 : dcpm.strayLoad.flange.tau + dcpm.friction.flange.tau + dcpm.inertiaRotor.flange_b.tau - dcpm.flange.tau = 0.0
+25 : va.p.v = dcpm.pin_ap.v
+26 : va.n.v = gnd.p.v
+27 : va.n.v = dcpm.pin_an.v
+28 : dcpm.thermalPort.heatPortArmature.T = cap.port.T
+29 : dcpm.flange.tau = 0.0
+30 : dcpm.inertiaStator.flange_b.tau = 0.0
+31 : dcpm.friction.heatPort.Q_flow + (-dcpm.internalThermalPort.heatPortFriction.Q_flow) - dcpm.thermalPort.heatPortFriction.Q_flow = 0.0
+32 : dcpm.internalSupport.tau = 0.0
+33 : gnd.p.i + va.n.i + dcpm.pin_an.i = 0.0
+34 : dcpm.core.p.i + dcpm.la.p.i + dcpm.ra.n.i = 0.0
+35 : dcpm.ra.heatPort.Q_flow + (-dcpm.internalThermalPort.heatPortArmature.Q_flow) - dcpm.thermalPort.heatPortArmature.Q_flow = 0.0
+36 : dcpm.brush.n.i - dcpm.pin_an.i = 0.0
+37 : dcpm.brush.heatPort.Q_flow + (-dcpm.internalThermalPort.heatPortBrush.Q_flow) - dcpm.thermalPort.heatPortBrush.Q_flow = 0.0
+38 : dcpm.core.heatPort.Q_flow + (-dcpm.internalThermalPort.heatPortCore.Q_flow) - dcpm.thermalPort.heatPortCore.Q_flow = 0.0
+39 : dcpm.strayLoad.n.i + dcpm.ra.p.i = 0.0
+40 : dcpm.strayLoad.heatPort.Q_flow + (-dcpm.internalThermalPort.heatPortStrayLoad.Q_flow) - dcpm.thermalPort.heatPortStrayLoad.Q_flow = 0.0
+41 : cap.port.Q_flow + dcpm.thermalPort.heatPortArmature.Q_flow = 0.0
+42 : dcpm.thermalPort.heatPortCore.Q_flow = 0.0
+43 : dcpm.thermalPort.heatPortStrayLoad.Q_flow = 0.0
+44 : dcpm.thermalPort.heatPortFriction.Q_flow = 0.0
+45 : dcpm.thermalPort.heatPortBrush.Q_flow = 0.0
+46 : dcpm.internalThermalPort.heatPortArmature.Q_flow = 0.0
+47 : dcpm.internalThermalPort.heatPortCore.Q_flow = 0.0
+48 : dcpm.internalThermalPort.heatPortStrayLoad.Q_flow = 0.0
+49 : dcpm.internalThermalPort.heatPortFriction.Q_flow = 0.0
+50 : dcpm.internalThermalPort.heatPortBrush.Q_flow = 0.0
+51 : dcpm.airGapDC.flange.tau + dcpm.inertiaRotor.flange_a.tau = 0.0
+52 : dcpm.airGapDC.support.tau + dcpm.strayLoad.support.tau + dcpm.friction.support.tau + dcpm.fixed.flange.tau + dcpm.inertiaStator.flange_a.tau - dcpm.internalSupport.tau = 0.0
+53 : dcpm.airGapDC.pin_ap.i + dcpm.la.n.i = 0.0
+54 : dcpm.ie.n.i + dcpm.airGapDC.pin_ep.i = 0.0
+55 : dcpm.airGapDC.pin_an.i + dcpm.core.n.i + dcpm.brush.p.i = 0.0
+56 : dcpm.ie.p.i + dcpm.eGround.p.i + dcpm.airGapDC.pin_en.i = 0.0
+57 : va.p.i + dcpm.pin_ap.i = 0.0
+58 : dcpm.inertiaRotor.phi = dcpm.inertiaRotor.flange_a.phi
+59 : dcpm.inertiaRotor.phi = dcpm.inertiaRotor.flange_b.phi
+60 : dcpm.inertiaRotor.w = der(dcpm.inertiaRotor.phi)
+61 : dcpm.inertiaRotor.a = der(dcpm.inertiaRotor.w)
+62 : dcpm.inertiaRotor.J * dcpm.inertiaRotor.a = dcpm.inertiaRotor.flange_a.tau + dcpm.inertiaRotor.flange_b.tau
+63 : dcpm.inertiaStator.phi = dcpm.inertiaStator.flange_a.phi
+64 : dcpm.inertiaStator.phi = dcpm.inertiaStator.flange_b.phi
+65 : dcpm.inertiaStator.w = der(dcpm.inertiaStator.phi)
+66 : dcpm.inertiaStator.a = der(dcpm.inertiaStator.w)
+67 : dcpm.inertiaStator.J * dcpm.inertiaStator.a = dcpm.inertiaStator.flange_a.tau + dcpm.inertiaStator.flange_b.tau
+68 : dcpm.fixed.flange.phi = dcpm.fixed.phi0
+69 : dcpm.friction.tau = -(if noEvent(abs(dcpm.friction.w) > dcpm.friction.frictionParameters.wLinear) then dcpm.friction.frictionParameters.tauRef * /*Real*/(sign(dcpm.friction.w)) * (abs(dcpm.friction.w) / dcpm.friction.frictionParameters.wRef) ^ dcpm.friction.frictionParameters.power_w else dcpm.friction.frictionParameters.tauLinear * dcpm.friction.w / dcpm.friction.frictionParameters.wLinear)
+70 : dcpm.friction.lossPower = (-dcpm.friction.tau) * dcpm.friction.w
+71 : dcpm.friction.phi = dcpm.friction.flange.phi - dcpm.friction.support.phi
+72 : dcpm.friction.w = der(dcpm.friction.phi)
+73 : dcpm.friction.tau = -dcpm.friction.flange.tau
+74 : dcpm.friction.tau = dcpm.friction.support.tau
+75 : dcpm.ra.R_actual = dcpm.ra.R * (1.0 + dcpm.ra.alpha * (dcpm.ra.T_heatPort - dcpm.ra.T_ref))
+76 : dcpm.ra.v = dcpm.ra.R_actual * dcpm.ra.i
+77 : dcpm.ra.LossPower = dcpm.ra.v * dcpm.ra.i
+78 : 0.0 = dcpm.ra.p.i + dcpm.ra.n.i
+79 : dcpm.ra.i = dcpm.ra.p.i
+80 : dcpm.ra.v = dcpm.ra.p.v - dcpm.ra.n.v
+81 : dcpm.la.v = dcpm.la.L * der(dcpm.la.i)
+82 : 0.0 = dcpm.la.p.i + dcpm.la.n.i
+83 : dcpm.la.i = dcpm.la.p.i
+84 : dcpm.la.v = dcpm.la.p.v - dcpm.la.n.v
+85 : dcpm.brush.v = 0.0
+86 : dcpm.brush.lossPower = dcpm.brush.v * dcpm.brush.i
+87 : 0.0 = dcpm.brush.p.i + dcpm.brush.n.i
+88 : dcpm.brush.i = dcpm.brush.p.i
+89 : dcpm.brush.v = dcpm.brush.p.v - dcpm.brush.n.v
+90 : dcpm.core.i = 0.0
+91 : dcpm.core.lossPower = dcpm.core.v * dcpm.core.i
+92 : 0.0 = dcpm.core.p.i + dcpm.core.n.i
+93 : dcpm.core.i = dcpm.core.p.i
+94 : dcpm.core.v = dcpm.core.p.v - dcpm.core.n.v
+95 : dcpm.strayLoad.v = 0.0
+96 : dcpm.strayLoad.tau = 0.0
+97 : dcpm.strayLoad.lossPower = (-dcpm.strayLoad.tau) * dcpm.strayLoad.w
+98 : dcpm.strayLoad.phi = dcpm.strayLoad.flange.phi - dcpm.strayLoad.support.phi
+99 : dcpm.strayLoad.w = der(dcpm.strayLoad.phi)
+100 : dcpm.strayLoad.tau = -dcpm.strayLoad.flange.tau
+101 : dcpm.strayLoad.tau = dcpm.strayLoad.support.tau
+102 : 0.0 = dcpm.strayLoad.p.i + dcpm.strayLoad.n.i
+103 : dcpm.strayLoad.i = dcpm.strayLoad.p.i
+104 : dcpm.strayLoad.v = dcpm.strayLoad.p.v - dcpm.strayLoad.n.v
+105 : dcpm.airGapDC.psi_e = dcpm.airGapDC.ie
+106 : dcpm.airGapDC.vai = dcpm.airGapDC.pin_ap.v - dcpm.airGapDC.pin_an.v
+107 : dcpm.airGapDC.ia = dcpm.airGapDC.pin_ap.i
+108 : dcpm.airGapDC.ia = -dcpm.airGapDC.pin_an.i
+109 : dcpm.airGapDC.vei = dcpm.airGapDC.pin_ep.v - dcpm.airGapDC.pin_en.v
+110 : dcpm.airGapDC.ie = dcpm.airGapDC.pin_ep.i
+111 : dcpm.airGapDC.ie = -dcpm.airGapDC.pin_en.i
+112 : dcpm.airGapDC.vei = der(dcpm.airGapDC.psi_e)
+113 : dcpm.airGapDC.w = der(dcpm.airGapDC.flange.phi) - der(dcpm.airGapDC.support.phi)
+114 : dcpm.airGapDC.vai = dcpm.airGapDC.turnsRatio * dcpm.airGapDC.psi_e * dcpm.airGapDC.w
+115 : dcpm.airGapDC.tauElectrical = dcpm.airGapDC.turnsRatio * dcpm.airGapDC.psi_e * dcpm.airGapDC.ia
+116 : dcpm.airGapDC.flange.tau = -dcpm.airGapDC.tauElectrical
+117 : dcpm.airGapDC.support.tau = dcpm.airGapDC.tauElectrical
+118 : dcpm.eGround.p.v = 0.0
+119 : dcpm.ie.i = dcpm.ie.I
+120 : 0.0 = dcpm.ie.p.i + dcpm.ie.n.i
+121 : dcpm.ie.i = dcpm.ie.p.i
+122 : dcpm.ie.v = dcpm.ie.p.v - dcpm.ie.n.v
+123 : va.v = va.V
+124 : 0.0 = va.p.i + va.n.i
+125 : va.i = va.p.i
+126 : va.v = va.p.v - va.n.v
+127 : gnd.p.v = 0.0
+128 : cap.T = cap.port.T
+129 : cap.der_T = der(cap.T)
+130 : cap.C * der(cap.T) = cap.port.Q_flow
+131 : dcpm.phiMechanical = dcpm.flange.phi - dcpm.internalSupport.phi
+132 : dcpm.wMechanical = der(dcpm.phiMechanical)
+133 : dcpm.tauElectrical = dcpm.inertiaRotor.flange_a.tau
+134 : dcpm.tauShaft = -dcpm.flange.tau
+135 : dcpm.friction.heatPort.Q_flow = -dcpm.friction.lossPower
+136 : dcpm.powerBalance.powerArmature = dcpm.va * dcpm.ia
+137 : dcpm.powerBalance.powerMechanical = dcpm.wMechanical * dcpm.tauShaft
+138 : dcpm.powerBalance.powerInertiaStator = dcpm.inertiaStator.J * dcpm.inertiaStator.a * dcpm.inertiaStator.w
+139 : dcpm.powerBalance.powerInertiaRotor = dcpm.inertiaRotor.J * dcpm.inertiaRotor.a * dcpm.inertiaRotor.w
+140 : dcpm.powerBalance.lossPowerTotal = dcpm.powerBalance.lossPowerArmature + dcpm.powerBalance.lossPowerCore + dcpm.powerBalance.lossPowerStrayLoad + dcpm.powerBalance.lossPowerFriction + dcpm.powerBalance.lossPowerBrush + dcpm.powerBalance.lossPowerPermanentMagnet
+141 : dcpm.powerBalance.lossPowerArmature = dcpm.ra.LossPower
+142 : dcpm.powerBalance.lossPowerCore = dcpm.core.lossPower
+143 : dcpm.powerBalance.lossPowerStrayLoad = dcpm.strayLoad.lossPower
+144 : dcpm.powerBalance.lossPowerFriction = dcpm.friction.lossPower
+145 : dcpm.powerBalance.lossPowerBrush = dcpm.brush.lossPower
+146 : dcpm.powerBalance.lossPowerPermanentMagnet = 0.0
+147 : dcpm.va = dcpm.pin_ap.v - dcpm.pin_an.v
+148 : dcpm.ia = dcpm.pin_ap.i
+149 : dcpm.ra.heatPort.T = dcpm.ra.T_heatPort
+150 : dcpm.ra.heatPort.Q_flow = -dcpm.ra.LossPower
+151 : dcpm.brush.heatPort.Q_flow = -dcpm.brush.lossPower
+152 : dcpm.core.heatPort.Q_flow = -dcpm.core.lossPower
+153 : dcpm.core.w = dcpm.airGapDC.w
+154 : dcpm.core.wLimit = noEvent(max(noEvent(abs(dcpm.core.w)), dcpm.core.coreParameters.wMin))
+155 : dcpm.strayLoad.heatPort.Q_flow = -dcpm.strayLoad.lossPower
+Error: pre-optimization module clockPartitioning (simulation) failed.
+"
+"/home/nicola/omct_v2probe"
+"Check of OmctV2.HeatPorts completed successfully.
+Class OmctV2.HeatPorts has 53 equation(s) and 53 variable(s).
+38 of these are trivial equation(s)."
+""
+"/home/nicola/omct_v2probe/HeatPorts"
+{"/home/nicola/omct_v2probe/HeatPorts/m", "m_init.xml"}
+"Warning: The initial conditions are not fully specified. For more information set -d=initialization. In OMEdit Tools->Options->Simulation->Show additional information from the initialization process, in OMNotebook call setCommandLineOptions(\"-d=initialization\").
+"
+"/home/nicola/omct_v2probe"
+"Check of OmctV2.HeatPortOpen completed successfully.
+Class OmctV2.HeatPortOpen has 19 equation(s) and 19 variable(s).
+13 of these are trivial equation(s)."
+""
+"/home/nicola/omct_v2probe/HeatPortOpen"
+{"", ""}
+"Error: Internal error IndexReduction.pantelidesIndexReduction failed! Found empty set of continuous equations. Use -d=bltdump to get more information.
+Error: Internal error Transformation Module PFPlusExt index Reduction Method Pantelides failed!
+"
+"/home/nicola/omct_v2probe"
+"Check of OmctV2.Rectifier completed successfully.
+Class OmctV2.Rectifier has 34 equation(s) and 34 variable(s).
+20 of these are trivial equation(s)."
+""
+"/home/nicola/omct_v2probe/Rectifier"
+{"/home/nicola/omct_v2probe/Rectifier/m", "m_init.xml"}
+""
+"/home/nicola/omct_v2probe"
+"Check of OmctV2.LimLoop completed successfully.
+Class OmctV2.LimLoop has 11 equation(s) and 11 variable(s).
+7 of these are trivial equation(s)."
+""
+"/home/nicola/omct_v2probe/LimLoop"
+{"/home/nicola/omct_v2probe/LimLoop/m", "m_init.xml"}
+""
+"/home/nicola/omct_v2probe"
+
+################ B1, B4-B16: runs
+--- run OpenLoop 
+LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+|                 | |       | | timer
+|                 | |       | | |   0.00375029s          reading init.xml
+|                 | |       | | |  0.000832038s          reading info.xml
+|                 | |       | | |  0.000294778s [  4.7%] pre-initialization
+|                 | |       | | |  0.000178406s [  2.8%] initialization
+|                 | |       | | |    1.542e-06s [  0.0%] steps
+|                 | |       | | |  0.000444606s [  7.0%] solver (excl. callbacks)
+|                 | |       | | |   0.00134525s [ 21.3%] creating output-file
+|                 | |       | | |    3.707e-05s [  0.6%] event-handling
+|                 | |       | | |  0.000737475s [ 11.7%] overhead
+|                 | |       | | |   0.00328522s [ 51.9%] simulation
+|                 | |       | | |   0.00632435s [100.0%] total
+|                 | |       | | events
+|                 | |       | | |     0 state events
+|                 | |       | | |     0 time events
+|                 | |       | | solver: dassl
+|                 | |       | | |    54 steps taken
+|                 | |       | | |    71 calls of functionODE
+|                 | |       | | |    17 evaluations of jacobian
+|                 | |       | | |     2 error test failures
+|                 | |       | | |     0 convergence test failures
+|                 | |       | | | 1.1983e-05s time of jacobian evaluation
+LOG_SUCCESS       | info    | The simulation finished successfully.
+exit=0
+|                 | |       | | |     0 state events
+|                 | |       | | |     0 time events
+|                 | |       | | |    54 steps taken
+--- run ClosedLoop 
+LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+|                 | |       | | timer
+|                 | |       | | |   0.00489448s          reading init.xml
+|                 | |       | | |   0.00110139s          reading info.xml
+|                 | |       | | |  0.000304617s [  3.9%] pre-initialization
+|                 | |       | | |  0.000162874s [  2.1%] initialization
+|                 | |       | | |    1.988e-06s [  0.0%] steps
+|                 | |       | | |  0.000452046s [  5.8%] solver (excl. callbacks)
+|                 | |       | | |   0.00194574s [ 24.8%] creating output-file
+|                 | |       | | |   2.3642e-05s [  0.3%] event-handling
+|                 | |       | | |  0.000716683s [  9.1%] overhead
+|                 | |       | | |   0.00423729s [ 54.0%] simulation
+|                 | |       | | |   0.00784488s [100.0%] total
+|                 | |       | | events
+|                 | |       | | |     0 state events
+|                 | |       | | |     0 time events
+|                 | |       | | solver: dassl
+|                 | |       | | |    68 steps taken
+|                 | |       | | |    92 calls of functionODE
+|                 | |       | | |    18 evaluations of jacobian
+|                 | |       | | |     1 error test failures
+|                 | |       | | |     0 convergence test failures
+|                 | |       | | | 2.9216e-05s time of jacobian evaluation
+LOG_SUCCESS       | info    | The simulation finished successfully.
+exit=0
+|                 | |       | | |     0 state events
+|                 | |       | | |     0 time events
+|                 | |       | | |    68 steps taken
+--- run PumpCurve 
+LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+|                 | |       | | timer
+|                 | |       | | |    0.0038805s          reading init.xml
+|                 | |       | | |  0.000973143s          reading info.xml
+|                 | |       | | |  0.000247529s [  1.8%] pre-initialization
+|                 | |       | | |  0.000175506s [  1.3%] initialization
+|                 | |       | | |    4.589e-06s [  0.0%] steps
+|                 | |       | | |  0.000747712s [  5.5%] solver (excl. callbacks)
+|                 | |       | | |   0.00138787s [ 10.3%] creating output-file
+|                 | |       | | |   0.00224664s [ 16.7%] event-handling
+|                 | |       | | |   0.00102405s [  7.6%] overhead
+|                 | |       | | |   0.00765147s [ 56.7%] simulation
+|                 | |       | | |    0.0134854s [100.0%] total
+|                 | |       | | events
+|                 | |       | | |     0 state events
+|                 | |       | | |     0 time events
+|                 | |       | | solver: dassl
+|                 | |       | | |    30 steps taken
+|                 | |       | | |    30 calls of functionODE
+|                 | |       | | |    29 evaluations of jacobian
+|                 | |       | | |     0 error test failures
+|                 | |       | | |     0 convergence test failures
+|                 | |       | | | 1.6086e-05s time of jacobian evaluation
+LOG_SUCCESS       | info    | The simulation finished successfully.
+exit=0
+|                 | |       | | |     0 state events
+|                 | |       | | |     0 time events
+|                 | |       | | |    30 steps taken
+--- run Dcpm 
+LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+|                 | |       | | timer
+|                 | |       | | |   0.00697858s          reading init.xml
+|                 | |       | | |  0.000964111s          reading info.xml
+|                 | |       | | |   0.00049828s [  5.6%] pre-initialization
+|                 | |       | | |   8.5726e-05s [  1.0%] initialization
+|                 | |       | | |    1.645e-06s [  0.0%] steps
+|                 | |       | | |   0.00138503s [ 15.5%] solver (excl. callbacks)
+|                 | |       | | |   0.00243309s [ 27.2%] creating output-file
+|                 | |       | | |  0.000428993s [  4.8%] event-handling
+|                 | |       | | |  0.000714602s [  8.0%] overhead
+|                 | |       | | |   0.00339107s [ 37.9%] simulation
+|                 | |       | | |   0.00893843s [100.0%] total
+|                 | |       | | events
+|                 | |       | | |     1 state events
+|                 | |       | | |     0 time events
+|                 | |       | | solver: dassl
+|                 | |       | | |   556 steps taken
+|                 | |       | | |   765 calls of functionODE
+|                 | |       | | |    70 evaluations of jacobian
+|                 | |       | | |    15 error test failures
+|                 | |       | | |     0 convergence test failures
+|                 | |       | | | 8.6517e-05s time of jacobian evaluation
+LOG_SUCCESS       | info    | The simulation finished successfully.
+exit=0
+|                 | |       | | |     1 state events
+|                 | |       | | |     0 time events
+|                 | |       | | |   556 steps taken
+--- run DcpmLosses 
+LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+|                 | |       | | timer
+|                 | |       | | |   0.00701985s          reading init.xml
+|                 | |       | | |   0.00102954s          reading info.xml
+|                 | |       | | |  0.000476858s [  2.0%] pre-initialization
+|                 | |       | | |  0.000116767s [  0.5%] initialization
+|                 | |       | | |    4.164e-06s [  0.0%] steps
+|                 | |       | | |    0.0018948s [  8.0%] solver (excl. callbacks)
+|                 | |       | | |   0.00265238s [ 11.2%] creating output-file
+|                 | |       | | |   0.00736504s [ 31.1%] event-handling
+|                 | |       | | |   0.00091114s [  3.9%] overhead
+|                 | |       | | |    0.0102328s [ 43.3%] simulation
+|                 | |       | | |    0.0236539s [100.0%] total
+|                 | |       | | events
+|                 | |       | | |     8 state events
+|                 | |       | | |     0 time events
+|                 | |       | | solver: dassl
+|                 | |       | | |   737 steps taken
+|                 | |       | | |  1094 calls of functionODE
+|                 | |       | | |   265 evaluations of jacobian
+|                 | |       | | |    62 error test failures
+|                 | |       | | |     2 convergence test failures
+|                 | |       | | | 0.00117274s time of jacobian evaluation
+LOG_SUCCESS       | info    | The simulation finished successfully.
+exit=0
+|                 | |       | | |     8 state events
+|                 | |       | | |     0 time events
+|                 | |       | | |   737 steps taken
+--- run DcpmThermal 
+LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+|                 | |       | | timer
+|                 | |       | | |   0.00659734s          reading init.xml
+|                 | |       | | |  0.000950856s          reading info.xml
+|                 | |       | | |  0.000434322s [  4.6%] pre-initialization
+|                 | |       | | |   9.8219e-05s [  1.0%] initialization
+|                 | |       | | |    2.029e-06s [  0.0%] steps
+|                 | |       | | |   0.00145871s [ 15.4%] solver (excl. callbacks)
+|                 | |       | | |   0.00247398s [ 26.1%] creating output-file
+|                 | |       | | |   0.00042373s [  4.5%] event-handling
+|                 | |       | | |  0.000714353s [  7.5%] overhead
+|                 | |       | | |    0.0038849s [ 40.9%] simulation
+|                 | |       | | |   0.00949024s [100.0%] total
+|                 | |       | | events
+|                 | |       | | |     1 state events
+|                 | |       | | |     0 time events
+|                 | |       | | solver: dassl
+|                 | |       | | |   537 steps taken
+|                 | |       | | |   702 calls of functionODE
+|                 | |       | | |    67 evaluations of jacobian
+|                 | |       | | |    11 error test failures
+|                 | |       | | |     0 convergence test failures
+|                 | |       | | | 0.000153983s time of jacobian evaluation
+LOG_SUCCESS       | info    | The simulation finished successfully.
+exit=0
+|                 | |       | | |     1 state events
+|                 | |       | | |     0 time events
+|                 | |       | | |   537 steps taken
+--- run DcpmThermalOne 
+(no executable: the build failed, see above)
+--- run HeatPorts 
+LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+|                 | |       | | timer
+|                 | |       | | |   0.00202505s          reading init.xml
+|                 | |       | | |  0.000251935s          reading info.xml
+|                 | |       | | |  0.000210547s [  4.4%] pre-initialization
+|                 | |       | | |   5.8439e-05s [  1.2%] initialization
+|                 | |       | | |    1.185e-06s [  0.0%] steps
+|                 | |       | | |  0.000516758s [ 10.9%] solver (excl. callbacks)
+|                 | |       | | |   0.00118547s [ 25.0%] creating output-file
+|                 | |       | | |   4.2078e-05s [  0.9%] event-handling
+|                 | |       | | |  0.000387895s [  8.2%] overhead
+|                 | |       | | |   0.00233314s [ 49.3%] simulation
+|                 | |       | | |   0.00473551s [100.0%] total
+|                 | |       | | events
+|                 | |       | | |     0 state events
+|                 | |       | | |     0 time events
+|                 | |       | | solver: dassl
+|                 | |       | | |    56 steps taken
+|                 | |       | | |    66 calls of functionODE
+|                 | |       | | |    31 evaluations of jacobian
+|                 | |       | | |     1 error test failures
+|                 | |       | | |     0 convergence test failures
+|                 | |       | | | 2.0538e-05s time of jacobian evaluation
+LOG_SUCCESS       | info    | The simulation finished successfully.
+exit=0
+|                 | |       | | |     0 state events
+|                 | |       | | |     0 time events
+|                 | |       | | |    56 steps taken
+--- run HeatPortOpen 
+(no executable: the build failed, see above)
+--- run Rectifier 
+LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+|                 | |       | | timer
+|                 | |       | | |   0.00157284s          reading init.xml
+|                 | |       | | |  0.000249375s          reading info.xml
+|                 | |       | | |  0.000184062s [  0.7%] pre-initialization
+|                 | |       | | |  0.000129054s [  0.5%] initialization
+|                 | |       | | |    4.612e-06s [  0.0%] steps
+|                 | |       | | |   0.00190443s [  7.7%] solver (excl. callbacks)
+|                 | |       | | |  0.000916682s [  3.7%] creating output-file
+|                 | |       | | |    0.0110097s [ 44.2%] event-handling
+|                 | |       | | |   0.00080428s [  3.2%] overhead
+|                 | |       | | |   0.00993395s [ 39.9%] simulation
+|                 | |       | | |    0.0248868s [100.0%] total
+|                 | |       | | events
+|                 | |       | | |    60 state events
+|                 | |       | | |     0 time events
+|                 | |       | | solver: dassl
+|                 | |       | | |   955 steps taken
+|                 | |       | | |  1363 calls of functionODE
+|                 | |       | | |   501 evaluations of jacobian
+|                 | |       | | |    19 error test failures
+|                 | |       | | |     0 convergence test failures
+|                 | |       | | | 0.00124603s time of jacobian evaluation
+LOG_SUCCESS       | info    | The simulation finished successfully.
+exit=0
+|                 | |       | | |    60 state events
+|                 | |       | | |     0 time events
+|                 | |       | | |   955 steps taken
+--- run LimLoop 
+LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+|                 | |       | | timer
+|                 | |       | | |  0.000824329s          reading init.xml
+|                 | |       | | |  0.000140311s          reading info.xml
+|                 | |       | | |   0.00015561s [  3.1%] pre-initialization
+|                 | |       | | |   6.5141e-05s [  1.3%] initialization
+|                 | |       | | |    1.437e-06s [  0.0%] steps
+|                 | |       | | |  0.000769813s [ 15.5%] solver (excl. callbacks)
+|                 | |       | | |  0.000583132s [ 11.7%] creating output-file
+|                 | |       | | |  0.000345634s [  6.9%] event-handling
+|                 | |       | | |  0.000380928s [  7.6%] overhead
+|                 | |       | | |   0.00267791s [ 53.8%] simulation
+|                 | |       | | |   0.00497961s [100.0%] total
+|                 | |       | | events
+|                 | |       | | |     1 state events
+|                 | |       | | |     0 time events
+|                 | |       | | solver: dassl
+|                 | |       | | |   138 steps taken
+|                 | |       | | |   185 calls of functionODE
+|                 | |       | | |    58 evaluations of jacobian
+|                 | |       | | |     7 error test failures
+|                 | |       | | |     0 convergence test failures
+|                 | |       | | | 3.1533e-05s time of jacobian evaluation
+LOG_SUCCESS       | info    | The simulation finished successfully.
+exit=0
+|                 | |       | | |     1 state events
+|                 | |       | | |     0 time events
+|                 | |       | | |   138 steps taken
+
+################ B2: isValueChangeable of the parameters omct would set
+  OpenLoop     medium.rho                                 variability = "parameter" 
+  OpenLoop     medium.cp                                  variability = "parameter" 
+  OpenLoop     medium.cv                                  variability = "parameter" 
+  OpenLoop     pipe.medium.cp                             variability = "parameter" 
+  OpenLoop     pump.medium.cp                             variability = "parameter" 
+  OpenLoop     amb1.medium.cp                             variability = "parameter" 
+  OpenLoop     pipe.m                                     variability = "parameter" 
+  OpenLoop     pipe.T0                                    variability = "parameter" 
+  OpenLoop     pipe.T0fixed                               variability = "parameter" 
+  OpenLoop     pipe.V_flowLaminar                         variability = "parameter" 
+  OpenLoop     pipe.dpLaminar                             variability = "parameter" 
+  OpenLoop     pipe.V_flowNominal                         variability = "parameter" 
+  OpenLoop     pipe.dpNominal                             variability = "parameter" 
+  OpenLoop     pipe.h_g                                   variability = "parameter" 
+  OpenLoop     pipe.frictionLoss                          variability = "parameter" 
+  OpenLoop     pipe.tapT                                  variability = "parameter" 
+  OpenLoop     pump.constantVolumeFlow                    variability = "parameter" 
+  OpenLoop     amb1.constantAmbientPressure               variability = "parameter" 
+  OpenLoop     amb1.constantAmbientTemperature            variability = "parameter" 
+  OpenLoop     q.Q_flow                                   variability = "parameter" 
+  OpenLoop     pipe.k                                     variability = "parameter" isValueChangeable = "false" 
+  PumpCurve    pump.wNominal                              variability = "parameter" 
+  PumpCurve    pump.dp0                                   variability = "parameter" 
+  PumpCurve    pump.V_flow0                               variability = "parameter" 
+  PumpCurve    spd.w_fixed                                variability = "parameter" 
+  Dcpm         dcpm.VaNominal                             variability = "parameter" 
+  Dcpm         dcpm.IaNominal                             variability = "parameter" 
+  Dcpm         dcpm.wNominal                              variability = "parameter" 
+  Dcpm         dcpm.TaNominal                             variability = "parameter" 
+  Dcpm         dcpm.Ra                                    variability = "parameter" 
+  Dcpm         dcpm.TaRef                                 variability = "parameter" 
+  Dcpm         dcpm.alpha20a                              variability = "parameter" 
+  Dcpm         dcpm.La                                    variability = "parameter" 
+  Dcpm         dcpm.Jr                                    variability = "parameter" 
+  Dcpm         dcpm.Js                                    variability = "parameter" 
+  Dcpm         dcpm.TaOperational                         variability = "parameter" 
+  Dcpm         dcpm.frictionParameters.PRef               variability = "parameter" 
+  Dcpm         dcpm.frictionParameters.wRef               variability = "parameter" 
+  Dcpm         dcpm.frictionParameters.power_w            variability = "parameter" 
+  Dcpm         dcpm.coreParameters.PRef                   variability = "parameter" 
+  Dcpm         dcpm.coreParameters.VRef                   variability = "parameter" 
+  Dcpm         dcpm.strayLoadParameters.PRef              variability = "parameter" 
+  Dcpm         dcpm.strayLoadParameters.IRef              variability = "parameter" 
+  Dcpm         dcpm.brushParameters.V                     variability = "parameter" 
+  Dcpm         dcpm.brushParameters.ILinear               variability = "parameter" 
+  Dcpm         dcpm.turnsRatio                            variability = "parameter" 
+  Dcpm         dcpm.ViNominal                             variability = "parameter" 
+  Dcpm         dcpm.useThermalPort                        variability = "parameter" 
+  HeatPorts    r.R                                        variability = "parameter" 
+  HeatPorts    r.alpha                                    variability = "parameter" 
+  HeatPorts    r.T_ref                                    variability = "parameter" 
+  HeatPorts    d.d                                        variability = "parameter" 
+  Rectifier    dio.Ron                                    variability = "parameter" 
+  Rectifier    dio.Goff                                   variability = "parameter" 
+  Rectifier    dio.Vknee                                  variability = "parameter" 
+  LimLoop      lim.uMax                                   variability = "parameter" 
+  LimLoop      lim.uMin                                   variability = "parameter" 
+
+################ B3, B8: overrides (flow, medium cp, machine data) and their effect
+--- run OpenLoop -overrideFile=ov.txt -r=ov.mat
+LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+|                 | |       | | timer
+|                 | |       | | |    0.0164423s          reading init.xml
+|                 | |       | | |   0.00115519s          reading info.xml
+|                 | |       | | |   0.00039548s [  3.1%] pre-initialization
+|                 | |       | | |  0.000215879s [  1.7%] initialization
+|                 | |       | | |    1.555e-06s [  0.0%] steps
+|                 | |       | | |  0.000441006s [  3.5%] solver (excl. callbacks)
+|                 | |       | | |   0.00143418s [ 11.2%] creating output-file
+|                 | |       | | |   5.1997e-05s [  0.4%] event-handling
+|                 | |       | | |  0.000753252s [  5.9%] overhead
+|                 | |       | | |   0.00946731s [ 74.2%] simulation
+|                 | |       | | |    0.0127607s [100.0%] total
+|                 | |       | | events
+|                 | |       | | |     0 state events
+|                 | |       | | |     0 time events
+|                 | |       | | solver: dassl
+|                 | |       | | |    53 steps taken
+|                 | |       | | |    76 calls of functionODE
+|                 | |       | | |    20 evaluations of jacobian
+|                 | |       | | |     4 error test failures
+|                 | |       | | |     0 convergence test failures
+|                 | |       | | | 1.4322e-05s time of jacobian evaluation
+LOG_SUCCESS       | info    | The simulation finished successfully.
+exit=0
+|                 | |       | |   value specifies the Jacobian for Ipopt
+|                 | |       | |   select the calculation method of the Jacobian used only by ida and dassl solver.
+|                 | |       | |   [int list (at most 4 entries)] Number of steps before Jacobian is recomputed. Zero to skip phase.
+|                 | |       | |   [double] value specifies the absolute tolerance for the Jacobian derivative test.
+|                 | |       | |   [double] value specifies the relative tolerance for the Jacobian derivative test.
+|                 | |       | |   Value specifies how often the ODE Jacobian is recalculated (0 <= value < 1). Only valid for -gbnls=internal.
+--- run Dcpm -overrideFile=ov.txt -r=ov.mat
+LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+|                 | |       | | timer
+|                 | |       | | |   0.00708938s          reading init.xml
+|                 | |       | | |  0.000963617s          reading info.xml
+|                 | |       | | |  0.000486376s [  5.6%] pre-initialization
+|                 | |       | | |   9.3855e-05s [  1.1%] initialization
+|                 | |       | | |    1.634e-06s [  0.0%] steps
+|                 | |       | | |   0.00113901s [ 13.1%] solver (excl. callbacks)
+|                 | |       | | |    0.0024214s [ 27.9%] creating output-file
+|                 | |       | | |   0.00041596s [  4.8%] event-handling
+|                 | |       | | |  0.000715311s [  8.2%] overhead
+|                 | |       | | |   0.00340366s [ 39.2%] simulation
+|                 | |       | | |   0.00867721s [100.0%] total
+|                 | |       | | events
+|                 | |       | | |     1 state events
+|                 | |       | | |     0 time events
+|                 | |       | | solver: dassl
+|                 | |       | | |   407 steps taken
+|                 | |       | | |   545 calls of functionODE
+|                 | |       | | |    60 evaluations of jacobian
+|                 | |       | | |    13 error test failures
+|                 | |       | | |     0 convergence test failures
+|                 | |       | | | 7.5751e-05s time of jacobian evaluation
+LOG_SUCCESS       | info    | The simulation finished successfully.
+exit=0
+|                 | |       | |   value specifies the Jacobian for Ipopt
+|                 | |       | |   select the calculation method of the Jacobian used only by ida and dassl solver.
+|                 | |       | |   [int list (at most 4 entries)] Number of steps before Jacobian is recomputed. Zero to skip phase.
+|                 | |       | |   [double] value specifies the absolute tolerance for the Jacobian derivative test.
+|                 | |       | |   [double] value specifies the relative tolerance for the Jacobian derivative test.
+|                 | |       | |   Value specifies how often the ODE Jacobian is recalculated (0 <= value < 1). Only valid for -gbnls=internal.
+--- run ClosedLoop -overrideFile=ov.txt -r=zero.mat
+LOG_STDOUT        | warning | You are overriding Vf with a small value or zero.
+|                 | |       | This could lead to numerically dirty solutions or divisions by zero if not tearingStrictness=veryStrict.
+LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+|                 | |       | | timer
+|                 | |       | | |    0.0049676s          reading init.xml
+|                 | |       | | |   0.00111972s          reading info.xml
+|                 | |       | | |  0.000303394s [  3.9%] pre-initialization
+|                 | |       | | |  0.000112752s [  1.5%] initialization
+|                 | |       | | |    1.996e-06s [  0.0%] steps
+|                 | |       | | |  0.000391333s [  5.0%] solver (excl. callbacks)
+|                 | |       | | |   0.00194297s [ 25.0%] creating output-file
+|                 | |       | | |   2.6973e-05s [  0.3%] event-handling
+|                 | |       | | |  0.000751326s [  9.7%] overhead
+|                 | |       | | |    0.0042433s [ 54.6%] simulation
+|                 | |       | | |   0.00777404s [100.0%] total
+|                 | |       | | events
+|                 | |       | | |     0 state events
+|                 | |       | | |     0 time events
+|                 | |       | | solver: dassl
+|                 | |       | | |    21 steps taken
+|                 | |       | | |    21 calls of functionODE
+|                 | |       | | |    20 evaluations of jacobian
+|                 | |       | | |     0 error test failures
+|                 | |       | | |     0 convergence test failures
+|                 | |       | | | 3.3013e-05s time of jacobian evaluation
+LOG_SUCCESS       | info    | The simulation finished successfully.
+exit=0
+|                 | |       | |   value specifies the Jacobian for Ipopt
+|                 | |       | |   select the calculation method of the Jacobian used only by ida and dassl solver.
+|                 | |       | |   [int list (at most 4 entries)] Number of steps before Jacobian is recomputed. Zero to skip phase.
+|                 | |       | |   [double] value specifies the absolute tolerance for the Jacobian derivative test.
+|                 | |       | |   [double] value specifies the relative tolerance for the Jacobian derivative test.
+|                 | |       | |   Value specifies how often the ODE Jacobian is recalculated (0 <= value < 1). Only valid for -gbnls=internal.
+
+################ values (final; expected values from the closed forms)
+OpenLoop: expected T_out final 297.9592863086448 K; tau 5.0220972278023295 s
+  base       pipe.T                                       first 293.15           final 297.959303      
+  base       pipe.T_a                                     first 293.15           final 293.15          
+  base       pipe.T_b                                     first 293.15           final 297.959303      
+  base       pipe.dp                                      first 2000             final 2000            
+  base       pipe.V_flow                                  first 0.0001           final 0.0001          
+  base       pump.dp                                      first -2000            final -2000           
+  base       pipe.Q_flow                                  first 2000             final 2000            
+  base       pipe.heatPort.T                              first 293.15           final 297.959303      
+  base       pipe.flowPort_a.H_flow                       first 121909.98        final 121909.98       
+  base       pipe.flowPort_b.H_flow                       first -121909.98       final -123909.988     
+  base       amb2.flowPort.H_flow                         first 121909.98        final 123909.988      
+  base       medium.cp                                    first 4177             final 4177            
+  base       pipe.k                                       missing (KeyError: 'pipe.k')
+  override   pipe.T                                       first 293.15           final 298.17194       
+  override   pipe.dp                                      first 15370.3704       final 15370.3704      
+  override   pipe.V_flow                                  first 0.0002           final 0.0002          
+  override   medium.cp                                    first 2000             final 2000            
+  override   pipe.medium.cp                               first 2000             final 2000            
+  override   pipe.dpNominal                               first 4000             final 4000            
+  override expected (if cp and V_flow both apply): T_out 298.1720972278023
+ClosedLoop: expected steady cooler.T 298.15, heater.T 300.5546431543224
+  base       heater.T                                     first 293.15           final 300.554526      
+  base       cooler.T                                     first 293.15           final 298.149908      
+  base       tHot.y                                       first 293.15           final 300.554526      
+  base       pump.dp                                      first -4000            final -4000           
+  base       pref.flowPort.m_flow                         first 0                final 0               
+  base       cooler.heatPort.Q_flow                       first -0               final -999.981576     
+  base       g.Q_flow                                     first 0                final 999.981576      
+  Vf=0       heater.T                                     first 293.15           final 436.793763      
+  Vf=0       cooler.T                                     first 293.15           final 293.15          
+  Vf=0       pump.V_flow                                  first 0                final 0               
+  Vf=0       heater.V_flow                                first 0                final 0               
+PumpCurve: expected operating point V_flow 0.000231961289 m3/s, dp 8401.93556 Pa
+  base       pump.V_flow                                  first 0.000231961289   final 0.000231961289  
+  base       pump.dp                                      first -8401.93556      final -8401.93556     
+  base       pipe.dp                                      first 8401.93556       final 8401.93556      
+  base       spd.flange.tau                               first -0.00620362237   final -0.00620362237  
+  base       pump.flange_a.tau                            first 0.00620362237    final 0.00620362237   
+Dcpm: k = 0.636619772 V.s/rad; expected final (after the nominal load) w 149.225651, ia 100; no-load w 157.079633
+  base       dcpm.wMechanical                             first 0                final 149.225651      
+  base       dcpm.ia                                      first 0                final 100             
+  base       dcpm.va                                      first 100              final 100             
+  base       dcpm.tauElectrical                           first 0                final 63.6619772      
+  base       dcpm.tauShaft                                first -0               final 63.6619772      
+  base       dcpm.turnsRatio                              missing (KeyError: 'dcpm.turnsRatio')
+  base       dcpm.powerBalance.powerArmature              first 0                final 10000           
+  base       dcpm.powerBalance.powerMechanical            first -0               final 9500            
+  base       dcpm.powerBalance.lossPowerTotal             first 0                final 500             
+  base       dcpm.airGapDC.vai                            first 0                final 95              
+  base       dcpm.ra.R_actual                             first 0.05             final 0.05            
+  override   dcpm.wMechanical                             first 0                final 74.6128255      
+  override   dcpm.ia                                      first 0                final 50              
+  override   dcpm.turnsRatio                              missing (KeyError: 'dcpm.turnsRatio')
+  override   dcpm.VaNominal                               first 200              final 200             
+  override   dcpm.Ra                                      first 0.1              final 0.1             
+  override   dcpm.ra.R                                    first 0.1              final 0.1             
+  override: if turnsRatio follows VaNominal=200, Ra=0.1: k = 1.2732395447351625
+  losses     dcpm.wMechanical                             first 0                final 148.905559      
+  losses     dcpm.ia                                      first 0                final 103.989737      
+  losses     dcpm.powerBalance.powerArmature              first 0                final 10398.9737      
+  losses     dcpm.powerBalance.powerMechanical            first -0               final 9479.62231      
+  losses     dcpm.powerBalance.powerInertiaRotor          first -0               final -1.5107931e-07  
+  losses     dcpm.powerBalance.powerInertiaStator         first 0                final 0               
+  losses     dcpm.powerBalance.lossPowerTotal             first 57.8101515       final 919.351392      
+  losses     dcpm.powerBalance.lossPowerArmature          first 0                final 540.69327       
+  losses     dcpm.powerBalance.lossPowerCore              first 57.8101515       final 49.7857281      
+  losses     dcpm.powerBalance.lossPowerStrayLoad         first 0                final 21.5350465      
+  losses     dcpm.powerBalance.lossPowerFriction          first 0                final 99.3578734      
+  losses     dcpm.powerBalance.lossPowerBrush             first 0                final 207.979474      
+  power balance residual max |Parm - Pmech - Pinertia - Ploss| = 35020.10512470936 W
+  thermal    cap.T                                        first 293.15           final 362.156751      
+  thermal    dcpm.ra.R_actual                             first 0.05             final 0.0635253233    
+  thermal    dcpm.wMechanical                             first 0                final 146.999192      
+  thermal    dcpm.ia                                      first 0                final 101.021258      
+  thermal    dcpm.powerBalance.lossPowerTotal             first 0                final 743.885065      
+  thermal    g.Q_flow                                     first 0                final 690.067514      
+  thermal    dcpm.thermalPort.heatPortPermanentMagnet.Q_flow first 0                final 0               
+  DcpmThermalOne/m_res.mat: unreadable ([Errno 2] No such file or directory: '/home/nicola/omct_v2probe/DcpmThermalOne/m_res.mat')
+HeatPorts: r with alpha 0.004: steady T solves G (T - Ta) = V^2 / (R (1 + alpha (T - Ta)))
+  expected steady cr.T 311.764066 K (tau ~ 200 s; the run stops at 600 s); damper: 100 W into cd: cd.T(600) = 893.15 K
+  heat       cr.T                                         first 293.15           final 311.014072      
+  heat       r.R_actual                                   first 10               final 10.7145629      
+  heat       r.LossPower                                  first 10               final 9.33309189      
+  heat       r.heatPort.Q_flow                            first -10              final -9.33309189     
+  heat       cd.T                                         first 293.15           final 893.15          
+  heat       d.lossPower                                  first 100              final 100             
+  HeatPortOpen/m_res.mat: unreadable ([Errno 2] No such file or directory: '/home/nicola/omct_v2probe/HeatPortOpen/m_res.mat')
+  rect       c.v                                          first 0                final 2.16724971      
+  rect       dio.i                                        first 0                final -2.16724971e-05 
+  rect       dio.v                                        first 0                final -2.16724971     
+  rect       dio.off                                      first 1                final 1               
+  rect       rl.i                                         first 0                final 0.0216724971    
+  c.v over the last cycle: min 1.987391179018687 max 9.299997799775435 (peak ~ 10 - 0.7 = 9.3 V)
+  lim        plant.y                                      first 0                final 8.33333324      
+  lim        lim.y                                        first 0                final 8.33333378      
+  lim        lim.u                                        first 0                final 8.33333378      
+  LimLoop: saturated while 5 (10 - y) > 20, i.e. y < 6: y = 20 (1 - exp(-(t - 0.1))) until y = 6 at t = 0.4566749439387324 then y -> 10*5/6 = 8.333333333333334
+
+################ B17: build123d matrix of inertia (units, about the centre of mass, sign of the products)
+build123d 0.13.0
+box 100.0 10.0 20.0 volume 19999.999999999996 center (4.1744385725905893e-16, 7.105427357601004e-18, 0.0)
+  matrix_of_inertia [[833333.333, -0.0, 0.0], [-0.0, 17333333.333, -0.0], [0.0, -0.0, 16833333.333]]
+  expected (unit density, mm^5) Ixx 833333.3333333334 Iyy 17333333.333333332 Izz 16833333.333333332
+moved by (50, 20, 0): center (50.0, 20.0, 0.0) matrix [[833333.333, -0.0, 0.0], [-0.0, 17333333.333, 0.0], [0.0, 0.0, 16833333.333]]
+rotated 30 deg about Z: matrix [[4958333.333, -7144709.581, -0.0], [-7144709.581, 13208333.333, -0.0], [-0.0, -0.0, 16833333.333]]
+  expected tensor Ixx 4958333.333333332 Iyy 13208333.333333336 Ixy (tensor, = -integral xy) -7144709.581221618 ; integral xy itself 7144709.581221618
+cylinder r 20 h 50: Izz 12566370.614359247 expected 12566370.614359172
+principal_properties (box rotated) [((-0.5, 0.866025, -0.0), 17333333.333), ((-0.0, 0.0, 1.0), 16833333.333), ((0.866025, 0.5, 0.0), 833333.333)]
+
+################ done
+22M	/home/nicola/omct_v2probe
