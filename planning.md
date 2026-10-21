@@ -1,0 +1,373 @@
+# openmodelica-translator: context for a new session
+
+Session context for Claude (the project documentation will be README.md). Start a chat with: "Read planning.md and start."
+
+Version: 2026.10.20.1 (milestone 0: research and plan; no code yet).
+
+## What this is
+
+A deterministic **translator + checker** for system-level dynamics with OpenModelica and the Modelica Standard Library (MSL 4.0.0):
+
+1. **The LLM writes a study:** components from a curated MSL catalog with parameters, the connections between their ports, the outputs wanted, the analysis and expected values.
+2. **The translator does the rest:** writes the Modelica model, checks it, compiles it once (cached by structure), runs it with parameters set by override files (no recompiling), reads the results, computes engineering quantities, and checks everything.
+3. **A checker confirms each run:** balance, initialisation, solver, overrides read back, energy balance, an independent reference implementation for linear networks (`ref.py`), optional solver convergence, `expect`.
+4. **Errors come back as fixes.**
+
+It complements the other translators: they compute fields in one part; this one simulates a whole system over time (motors, drives, circuits, heat paths, controllers) and takes their results as lumped parameters.
+
+| Key | Repository | Backend |
+|---|---|---|
+| `b3dt` | build123d-translator | build123d (OpenCascade) |
+| `feat` | fea-translator | Gmsh + CalculiX |
+| `cfdt` | cfd-translator | Gmsh + OpenFOAM |
+| `lmpt` | lammps-translator | LAMMPS |
+| **`omct`** | **openmodelica-translator** | **OpenModelica 1.27.1 + MSL 4.0.0** |
+
+### Names
+
+| Thing | Value |
+|---|---|
+| Repository | `openmodelica-translator` (github.com/feranick/openmodelica-translator) |
+| Package | `openmodelica_translator` |
+| Key = CLI | `omct` |
+| MCP server | `omct-mcp` |
+| Settings prefix | `OMCT_` |
+| HTTP port | 8770 |
+| Output folder | `~/omct_runs` (`OMCT_OUT`) |
+| Build cache | `~/omct_runs/.cache/<hash>/` (`OMCT_CACHE`) |
+
+## Interconnections
+
+- **From feat:** static stiffness k = applied force / displacement of a probe or face (feat reports `applied_force` N and `probes.<p>.mean_u.<c>` mm, so k [N/m] = F / (u · 1e-3)); modal `frequencies` (Hz) and `mass_kg`; thermal conductance G = `heat_flow.<face>` / ΔT and capacitance m · c.
+- **From b3dt:** mass = volume (mm³ · 1e-9) × density. Inertia tensors: build123d has `matrix_of_inertia` on solids (unverified for b3dt's output; check in M7).
+- **From cfdt:** Δp against Q (hydraulic resistance, or a table) and pump head curves: version 2 fluid networks, or `table` blocks in version 1.
+- **From lmpt:** material properties (`feat_material`: E, nu, density, alpha).
+- **Chain inputs are values, never paths:** `{"value": 1234, "unit": "N/mm", "from": "feat", "what": "bracket tip stiffness"}`. The conversion and provenance go into the result (`inputs`).
+- **Its own interface keys** (stable, listed in the README): `outputs.<name>.{final,min,max,...}`, `derived.<name>.*`, `steady.<name>`, `linearization.{eigenvalues, modes, dc_gain, bode}`, `sweep.table`.
+- Imports of other translators are optional: a warning in validation, tests skip when missing. Servers may run on different machines: tools pass specs, `get_file` returns base64.
+
+## Conventions
+
+- Versions `YYYY.MM.DD.x` in `__init__.py`, `pyproject.toml`, every module docstring (`Version: ...`) and the README's version table. First version 2026.10.20.1.
+- Author: Nicola Ferralis <ferralis@generalflash.com>. Nicola commits and pushes from the Mac; mochi pulls through llm-translators (`llmt pin omct --commit --push`, then `llmt update` on mochi).
+- **Units: SI, as Modelica** (K for temperatures, rad/s, m, kg, N·m). This differs from feat/cfdt (mm, MPa, °C), so every non-SI value is converted explicitly and recorded (see "Units" in the format).
+- Dotted result paths; JSON in/out; result files written atomically.
+- Python ≥ 3.10; dependencies numpy, scipy, matplotlib; extras `[mcp, test]`; entry points `omct`, `omct-mcp`.
+- Answers concise, commands ready to paste with how long they take. Don't guess OpenModelica's behaviour: mark it unverified, give a mochi command, record the outcome here.
+- Git: avoid `git` in the connected folders from the sandbox (it leaves `.git/index.lock`).
+
+## Environment
+
+- **Mac** (Apple Silicon): development, Claude desktop app, commits. No OpenModelica, and there won't be.
+- **mochi** (Ubuntu, 40 hardware threads, 61.5 GB, SLURM on one node): the only machine with OpenModelica. The MCP server runs there; the Mac reaches it with `ssh nicola@mochi.mit.edu ~/Software/llm-translators/bin/mcp omct`. One shared venv `~/Software/llm-translators/.venv`.
+- **Sandbox** (aarch64 Ubuntu 22.04, no sudo): no OpenModelica (build.openmodelica.org is blocked by the proxy; no root for apt anyway). PyPI and github.com work: the MSL 4.0.0 sources (tag v4.0.0) and the OpenModelica v1.27.1 sources (sparse checkout) were read here for M0. Background processes die after ~3 min. So: the backend driver is developed against stored mochi output (fixtures) and fakes; `ref.py` runs here; long things run on mochi.
+
+## Measured facts (mochi, 2026-10-20, from Nicola)
+
+- `omc --version`: `OpenModelica 1.27.1~2-g6db4671`, official apt repository. gcc and clang in `/usr/bin`; omc compiles headless over ssh.
+- Libraries in `~/.openmodelica/libraries` (package manager, with `index.json`): `Modelica 3.2.3+maint.om`, `Modelica 4.0.0+maint.om`, `ModelicaServices 4.0.0+maint.om`, `Complex 4.0.0+maint.om`, `ModelicaReference 4.0.0+maint.om`, `ObsoleteModelica4 4.0.0+maint.om`. `/usr/lib/omlibrary` empty or absent. Plain `loadModel(Modelica)` loaded 4.0.0; pin it anyway: `loadModel(Modelica, {"4.0.0"})`.
+- `simulate(ChuaCircuit, stopTime=1e4, outputFormat="csv")`: a `SimulationResult` record with `resultFile`, `simulationOptions` (numberOfIntervals 50000, tolerance 1e-6, dassl, variableFilter `.*`), `messages` (`LOG_SUCCESS | info | The initialization finished successfully without homotopy method.` …), times: frontend 0.010, backend 0.021, simcode 0.005, templates 0.007, **compile 1.48**, **simulation 1.11**, total 2.63 s. Wall 4.3 s, user CPU 15.4 s (parallel C compile). ~60 files in the working folder. CSV with every variable, 50,043 lines (events add rows).
+- Rerun `./<Model> -override=stopTime=5000,L.L=20 -r=/tmp/chua_L20.csv`: 1.06 s wall, 3.8 s CPU (the simulation uses more than one core). `stopTime` in `-override` → `warning | simulation_input_xml.c: override variable name not found in model: stopTime`, run continues with the old stop time and reports success. `L.L=20` took effect (C1.v at t=398.8: −1.94377 → −2.68277).
+- The executable's `-help` lists `-override`, `-overrideFile`, `-stopTime`, `-tolerance`, `-stepSize`, `-outputPath`, `-inputPath`, `-iif`, `-steadyStateTol`, `-steps`, `-initialStepSize`, `-maxStepSize`, solver and homotopy options.
+
+## Found in the OpenModelica 1.27.1 and MSL 4.0.0 sources (sandbox, 2026-10-20)
+
+Read from `github.com/OpenModelica/OpenModelica` tag `v1.27.1` and `github.com/modelica/ModelicaStandardLibrary` tag `v4.0.0`. Each still needs the mochi probe (A-numbers below) before the code relies on it.
+
+- **Overrides** (`SimulationRuntime/c/simulation/simulation_input_xml.c`, `doOverride`/`singleOverride`): a name not in the model → `warning | simulation_input_xml.c: override variable name not found in model: X`. A variable whose `isValueChangeable` is false in `_init.xml` → `warning | It is not possible to override the following quantity: X / It seems to be structural, final, protected or evaluated or has a non-constant binding.` Both are only warnings: we treat them as errors. `-overrideFile` lines are `var=value`; it cannot be combined with `-override`. A value below 1e-6 for a Real parameter gives a "small value or zero" warning. So **`_init.xml`'s `isValueChangeable` tells before running which parameters can be overridden** (and parameters with a binding to other parameters cannot).
+- **`-steadyState`** (`perform_simulation.c.inc`): stops when max_i |dx_i/dt| / nominal(x_i) < `-steadyStateTol` (default 1e-3), logs `steady state reached at time = …`, else warns `Steady state has not been reached.` The test is in 1/s, not relative to the time scale: a 2 kg aluminium block heated by 50 W starts at dT/dt ≈ 0.028 K/s, /nominal(T) = 300 → 9e-5 < 1e-3, so it would stop at once. **We detect steady state ourselves** (and may pass a tolerance scaled by the time constant). Probe A12.
+- **Linearisation** (`linearization/linearize.cpp`, `Template/CodegenC.tpl`): the executable linearises with `-l=<time>` and writes `linearized_model.<ext>` into `-outputPath` (the file name no longer carries the model name). Modelica format: `parameter Integer n, m, p`, `x0`, `u0`, `A`, `B`, `C`, `D`, then `Real 'x_<state>' = x[i]`, `'u_<input>'`, `'y_<output>'`. Inputs and outputs are the model's top-level `input`/`output` variables. **In 1.27.1 `--linearizationDumpLanguage` defaults to `none`** (Flags.mo), and the `linearize()` API sets it to `modelica` before building: so we always build with `--linearizationDumpLanguage=modelica`, and any cached build can linearise without a rebuild. Size limit `--maxSizeLinearization` 1000 (states + inputs + outputs + algebraic variables); raise it for larger models. A symbolic Jacobian is used if generated, else numerical differences. Probe A13/A14.
+- **checkModel** (`CevalScriptBackend.mo`): `Check of <C> completed successfully.\nClass <C> has <N> equation(s) and <M> variable(s).\n<K> of these are trivial equation(s).` Under/over-determined: `Too few equations, under-determined system. The model has %s equation(s) and %s variable(s).` (Error.mo). `getMessagesStringInternal()` returns machine-readable error records (file, line, message, kind, level, id): better than parsing `getErrorString()`.
+- **buildModel** (ModelicaBuiltin.mo): `buildModel(className, startTime, stopTime, numberOfIntervals, tolerance, method, fileNamePrefix, options, outputFormat="mat", variableFilter=".*", cflags, simflags)` → `{executable, init.xml}`. `-n=N` / `--numProcs` (0 = auto) sets the parallel C compile.
+- **The executable's log** (`solver_main.c`): `The initialization finished successfully without homotopy method.` or `… with N [local ]homotopy steps.`; on failure `Error in initialization. Storing results and exiting.` and `simulation terminated by an assertion at initialization`; `Chattering detected around time …` (events.c); with `-lv=LOG_STATS` a `### STATISTICS ###` block with timers, `N state events`, `N time events`, `N steps taken`, error/convergence test failures. Runtime flags also exist for `-outputFormat`, `-variableFilter`, `-alarm=<s>`, `-emit_protected`, `-noEventEmit`, `-jacobianThreads`.
+- **MAT v4 results** (UsersGuide `technical_details.rst`, `simulation_result_mat4.cpp`): matrices `Aclass` (`binTrans` = stored transposed), `name`, `description`, `dataInfo` (n × 4: matrix 0/1/2, signed 1-based column, negative = negated alias), `data_1` (parameters: start and stop values), `data_2` (time series, time first). The variable filter applies to parameters too, so the filter must name every parameter we override (to read it back). A pure-Python reader of this layout is in `tools/m0_probe.sh` (tested on a synthetic binTrans file).
+- **MSL 4.0.0 names** checked against the sources: all classes of the catalog below exist; `Basic.EMF` is now `Basic.RotationalEMF` (k, useSupport); `Basic.HeatingResistor` is gone (Resistor has `useHeatPort`); there is no `SquareVoltage` (PulseVoltage with width 50 %); `Capacitor` has no `v0` (we write `v(start=…, fixed=true)`); `Thermal.HeatTransfer.Components.Convection` takes `Gc` as a **signal input**, not a parameter; `Blocks.Continuous.PI` uses `T` (not `Ti`); LimPID's `controllerType`, `withFeedForward`, `initType` and the blocks' `initType` are `Evaluate=true` (structural).
+
+## Assumptions about OpenModelica (each with the probe that catches it)
+
+`tools/m0_probe.sh` answers all of them in one run on mochi (1–3 min). Status: S = read in the source, M = measured on mochi, ? = unverified.
+
+| # | Assumption | Status | Caught by |
+|---|---|---|---|
+| A1 | `loadModel(Modelica, {"4.0.0"})` loads `4.0.0+maint.om` | ? | probe A1; `tool_status().msl` |
+| A2 | `getLoadedLibraries()` gives the MSL path and `getVersion(Modelica)` "4.0.0" | ? | probe A1 |
+| A3 | checkModel's message format (above), and balance = equations == variables | S | probe A3; tests on fixtures |
+| A4 | Error formats of unknown modifiers/classes, under-determined models | S/? | probe; `getMessagesStringInternal` fixtures |
+| A5 | A model without ground passes checkModel and fails at build or run (singular): our validation must require it | ? | probe A15 (`NoGround`) |
+| A6 | `_init.xml` lists `isValueChangeable` per variable and stores the variable filter | ? | probe A6 |
+| A7 | Log lines `LOG_x | level | text`; exit code 0 on success, non-zero on failure | ? | probe A7, A15 |
+| A8 | Override semantics: primary parameter applied; bound/Evaluate/final ones refused with the warning; unknown name warned; state start values (`C.v` with fixed=true) overridable; bound parameters recomputed from overridden primaries | S/? | probe A8 + MAT read-back (A17) |
+| A9 | `-stopTime`, `-tolerance`, `-stepSize` work without rebuilding | ? | probe A9 |
+| A10 | A build runs from another folder with only the cached files (exe, `_init.xml`, `_info.json`, `*.bin`) using `-inputPath`/`-outputPath` | ? | probe A10 |
+| A11 | `-variableFilter` at run time replaces the built-in filter | ? | probe A11 |
+| A12 | `-steadyState` stops on max\|dx/dt\|/nominal < tol (1/s), too early for slow systems | S | probe A12 |
+| A13 | Building with `--linearizationDumpLanguage=modelica` costs little and lets `-l=t` work on the same executable | S/? | probe A13–A14 |
+| A14 | `linearized_model.mo` format (names `x_…`, `u_…`, `y_…`, 16 digits) | S | probe A14; `ref.py` eigenvalues |
+| A15 | Failure messages (init, assert, chattering) and their exit codes | S/? | probe A15 |
+| A16 | Simulation threads: CPU > wall comes from OpenMP/BLAS; `OMP_NUM_THREADS=1` does not slow a run; `-n` controls compile parallelism | ? | probe A16 |
+| A17 | MAT layout binTrans; parameters in `data_1`; filter applies to parameters | S/? | probe A17 |
+| A18 | MSL component equations behave as documented (sign conventions: flow into the port positive; LossPower ≥ 0) | ? | benchmarks + energy balance |
+| A19 | dassl at tolerance 1e-6 reproduces closed forms to ~1e-4 relative on the output grid | ? | benchmarks; `converge` |
+
+## Scope, version 1 (proposal)
+
+**Domains** on a curated catalog of MSL 4.0.0 classes:
+
+| Domain | Package |
+|---|---|
+| Analog circuits | `Modelica.Electrical.Analog` (Basic, Sources, Sensors; Ideal: diode and op-amp only) |
+| DC motor | `dc_motor`: a small model built from MSL R, L, RotationalEMF, Inertia, Damper (see "DC motor") |
+| Translational mechanics | `Modelica.Mechanics.Translational` |
+| Rotational mechanics | `Modelica.Mechanics.Rotational` |
+| Heat transfer | `Modelica.Thermal.HeatTransfer` |
+| Signals and control | `Modelica.Blocks` (Sources, Continuous incl. PI/PID/LimPID, Math, Nonlinear limiters, CombiTimeTable) |
+
+**Analyses:** `transient`, `steady`, `linearize`; `sweep` applies to any of them (a grid or list of parameter sets on one compiled model).
+
+**Out of scope for v1:** Modelica.Fluid and Media (v2 could start with `Thermal.FluidHeatFlow` for coolant loops), MultiBody, FMU export, Modelica beyond the escape hatch, switching power electronics (ideal switches with Boolean control), electro-thermal coupling beyond `heat_port` on resistors and dampers.
+
+**Typical requests:**
+
+1. "Step response of this DC motor with a PI speed controller: rise time, overshoot, settling time, peak current." → `dc_motor`, `inertia` load, `pi` or `lim_pid`, `speed_sensor`, `feedback`, `step`; `derived: step` on speed, `outputs.i.max`.
+2. "How long does this 2 kg aluminium block take to reach 80 °C with 50 W and h = 10 W/m²K? And the steady temperature?" → `heat_capacitor {m: 2, cp: 900}`, `fixed_heat_flow`, `convection {h, A}`, `fixed_temperature`; `derived: crossing "80 degC"`; `steady`.
+3. "RLC filter: resonance, damping, and the response to a 1 kHz square wave." → `linearize` (modes, Bode) and a transient with `pulse_voltage` width 50 %, `derived: window` (amplitude, mean).
+4. "Two-mass drive with a compliant shaft: natural frequencies, then a torque step." → `linearize` then `transient`.
+5. "Sweep the PID gains and give me the overshoot table." → `sweep` → `sweep.table`.
+6. Chain: "The bracket's stiffness from feat and its mass from b3dt: is the first mode above 50 Hz? Simulate a shock." → `mass` + `spring_damper` from chain values; `linearize`; transient with `force_step`/`pulse`.
+7. Chain (v2, or tables in v1): pump curve and pipe losses from cfdt with a motor and controller here.
+
+## The study format (proposal)
+
+```json
+{
+ "components": {
+   "V":   {"kind": "step_voltage", "V": 12, "startTime": 0.001},
+   "R":   {"kind": "resistor", "R": 10},
+   "L":   {"kind": "inductor", "L": "10 mH", "i0": 0},
+   "C":   {"kind": "capacitor", "C": "100 uF", "v0": 0},
+   "gnd": {"kind": "ground"}
+ },
+ "connect": [["V.p", "R.p"], ["R.n", "L.p"], ["L.n", "C.p"], ["C.n", "gnd"], ["V.n", "gnd"]],
+ "outputs": {"v_C": "C.v", "i": "L.i"},
+ "analysis": {"kind": "transient", "stop_time": 0.05, "intervals": 2000, "tolerance": 1e-6},
+ "derived": [{"kind": "step", "signal": "v_C"}],
+ "expect": [{"quantity": "derived.v_C.final", "value": 12, "tol": 1e-3}],
+ "run": {"timeout_s": 600, "queue": false},
+ "images": true
+}
+```
+
+| Key | Meaning |
+|---|---|
+| `components` | `{name: {kind, <parameters>}}`. Names are Modelica identifiers (letters, digits, `_`; not Modelica keywords). `kind` is a catalog kind; `"msl": "<full class path>"` is accepted instead when that class is in the catalog. |
+| parameters | Catalog names, which are MSL's names where MSL has the parameter (`R`, `L`, `J`, `c`, `d`, `startTime`, `offset`, `f`…), plus convenience ones per kind: initial values (capacitor `v0`, inductor `i0`, mass `s0`/`v0`, inertia `phi0`/`w0`, heat capacitor `T0`, blocks `y_start`) and alternatives that the translator converts (`heat_capacitor`: `C` or `m` + `cp`; `thermal_conductor`: `G` or `k`, `A`, `L`; `convection`: `Gc` or `h`, `A`). Omitted parameters take the catalog default (MSL's, or ours where MSL has none). |
+| units | A number is SI. A string `"10 mH"`, `"80 degC"`, `"3000 rpm"`, `"50 mm"` is converted with a small unit table (prefixes p n u m k M G; degC, degF, rpm, mm, g, min, h, %…). An object `{"value": 1234, "unit": "N/mm", "from": "feat", "what": "..."}` is the same plus provenance (chains). Every conversion is listed in the result's `inputs`. |
+| `connect` | Pairs `"comp.port"`; a component with a single port can be named alone (`"gnd"`). Physical ports connect to the same connector type (pin–pin, translational flange–flange, rotational flange–flange, heat port–heat port); signals connect output → input(s). |
+| `outputs` | `{name: "comp.variable"}` or `"comp.port.variable"`, from each kind's listed variables (resistor `v, i, LossPower`; inertia `phi, w, a`; heat_capacitor `T, der_T`; port `p.v`, `flange_a.tau`, `port.Q_flow`…). |
+| `analysis` | `transient`: `stop_time`, `intervals` (500), `tolerance` (1e-6), `method` (`dassl` \| `ida`), `start_time` (0). `steady`: `max_time`, `rel_tol` (1e-6), optional `time_scale` hint. `linearize`: `at` (time, 0 = after initialisation), `inputs` `{name: "comp.input"}` (free signal inputs such as `Vs.v`, `tau.tau`; they become top-level inputs), outputs = the study's `outputs`, `bode` `{f_min, f_max, points}` or a list of Hz. |
+| `derived` | `step` (signal; optional `initial`, `final`, `band` 2 %, `rise` 10–90 %): rise time, overshoot %, peak, peak time, settling time, final, steady-state error vs `target`. `crossing` (signal, `level`, `direction`): first time it crosses. `window` (signal, `t0`, `t1`): mean, rms, min, max, peak-to-peak. `steady` (signal): value and time to within `band` of it. |
+| `sweep` | `{"params": {"PI.k": [1, 2, 4], "PI.T": [0.1, 0.2]}, "mode": "grid" \| "zip", "report": ["derived.w.overshoot_pct", ...]}` (default report: every `derived` and `outputs.*.final`). Only overridable parameters (validated against the catalog; read back from each run). |
+| `converge` | `true`: rerun at tolerance ÷ 10 and compare the outputs. |
+| `expect` | `[{quantity, value, tol}]` on dotted result paths. |
+| `run` | `{timeout_s, mem, procs, queue}` within `OMCT_MAX_*` (EXECUTION.md). `procs` = parallel sweep points. |
+| `images` | `true`: time plots of the outputs (one panel per unit), Bode plots for `linearize`, sweep plots. |
+| `modelica` | Escape hatch: `{"text": "...", "model": "Name"}`; still checked (balance, overrides, outputs, energy if it can) but no catalog checks and no reference. |
+
+**Validation before anything runs** (each error says the fix): known kinds and parameters; values in range (R ≥ 0, C > 0, m > 0, …) with units checked; known ports, each connected at most as its type allows; compatible connectors; every signal input driven exactly once (or declared a linearisation input); every electrical sub-network has a ground; every mechanical sub-network has a `fixed` or a prescribed motion where needed (or is free and says so: a warning, its position drifts); every thermal network has a temperature boundary or a capacitor; no unconnected required ports; outputs exist; sweep parameters exist and are overridable; `run` within the caps; analysis keys and ranges.
+
+### The catalog (proposal)
+
+Ports are named as in MSL. `*` = structural (changes the build).
+
+| Kind | MSL class | Ports | Parameters (SI) |
+|---|---|---|---|
+| `resistor` | Electrical.Analog.Basic.Resistor | p, n (+ heat_port with `heat_port: true`*) | R, T_ref, alpha |
+| `capacitor` | Basic.Capacitor | p, n | C, v0 |
+| `inductor` | Basic.Inductor | p, n | L, i0 |
+| `ground` | Basic.Ground | p | |
+| `emf` | Basic.RotationalEMF | p, n, flange | k |
+| `transformer` | Basic.Transformer | p1, n1, p2, n2 | L1, L2, M |
+| `constant_voltage` / `step_voltage` / `ramp_voltage` / `sine_voltage` / `pulse_voltage` | Analog.Sources.* | p, n | V, offset, startTime; ramp: duration; sine: f, phase; pulse: width (%), period, nperiod |
+| `signal_voltage` | Sources.SignalVoltage | p, n, v (in) | |
+| `constant_current` / `step_current` / `sine_current` / `signal_current` | Sources.* | p, n (, i in) | I, offset, startTime, f, phase |
+| `voltage_sensor` / `current_sensor` / `potential_sensor` | Analog.Sensors.* | p, n / p, n / p; out v or i or phi | |
+| `ideal_diode` | Analog.Ideal.IdealDiode | p, n | Ron, Goff, Vknee |
+| `opamp` | Analog.Ideal.IdealOpAmp3Pin | in_p, in_n, out | |
+| `dc_motor` | our composed model (below) | p, n, flange | R, L, k, J, d, i0, w0 |
+| `mass` | Mechanics.Translational.Components.Mass | flange_a, flange_b | m, s0, v0 |
+| `spring` / `damper` / `spring_damper` | Translational.Components.* | flange_a, flange_b | c, s_rel0 / d / c, d, s_rel0 |
+| `fixed` | Translational.Components.Fixed | flange | s0 |
+| `force` / `force_step` / `constant_force` | Translational.Sources.* | flange (, f in) | stepForce, offsetForce, startTime / f_constant |
+| `position_sensor` / `speed_sensor` / `acc_sensor` / `force_sensor` | Translational.Sensors.* | flange (or a, b); out | |
+| `inertia` | Mechanics.Rotational.Components.Inertia | flange_a, flange_b | J, phi0, w0 |
+| `rot_spring` / `rot_damper` / `rot_spring_damper` | Rotational.Components.* | flange_a, flange_b | c, phi_rel0 / d / c, d |
+| `rot_fixed` | Rotational.Components.Fixed | flange | phi0 |
+| `ideal_gear` | Rotational.Components.IdealGear | flange_a, flange_b | ratio |
+| `torque` / `torque_step` / `constant_torque` | Rotational.Sources.* | flange (, tau in) | stepTorque, offsetTorque, startTime / tau_constant |
+| `speed_load` | Rotational.Sources.QuadraticSpeedDependentTorque / LinearSpeedDependentTorque | flange | tau_nominal, w_nominal, law: linear\|quadratic* |
+| `angle_sensor` / `rot_speed_sensor` / `torque_sensor` / `rot_acc_sensor` | Rotational.Sensors.* | flange (or a, b); out | |
+| `heat_capacitor` | Thermal.HeatTransfer.Components.HeatCapacitor | port | C or m+cp, T0 |
+| `thermal_conductor` / `thermal_resistor` | Components.ThermalConductor / ThermalResistor | port_a, port_b | G or k+A+L / R |
+| `convection` | Components.Convection + Blocks.Sources.Constant (Gc) | solid, fluid | Gc or h+A |
+| `radiation` | Components.BodyRadiation | port_a, port_b | Gr (= ε·A, m²) |
+| `fixed_temperature` / `prescribed_temperature` | HeatTransfer.Sources.* | port (, T in) | T |
+| `fixed_heat_flow` / `prescribed_heat_flow` | HeatTransfer.Sources.* | port (, Q_flow in) | Q_flow |
+| `temperature_sensor` / `heat_flow_sensor` | HeatTransfer.Sensors.* | port / port_a, port_b; out | |
+| `constant` / `step` / `ramp` / `sine` / `pulse` | Blocks.Sources.* | y | k / height, offset, startTime / duration / amplitude, f, phase / width, period |
+| `table` | Blocks.Sources.CombiTimeTable | y[1] | table [[t, y], …]* (size structural; values overridable), smoothness* |
+| `gain` / `add` / `feedback` / `product` / `division` | Blocks.Math.* | u (u1, u2), y | k / k1, k2 |
+| `integrator` / `derivative` / `first_order` / `second_order` | Blocks.Continuous.* | u, y | k, y_start / k, T / k, T, y_start / k, w, D, y_start |
+| `transfer_function` | Blocks.Continuous.TransferFunction | u, y | b*, a* (lengths structural) |
+| `pi` / `pid` | Blocks.Continuous.PI / PID | u, y | k, T / k, Ti, Td, Nd |
+| `lim_pid` | Blocks.Continuous.LimPID | u_s, u_m, y | controllerType* (P, PI, PD, PID), k, Ti, Td, yMax, yMin, wp, wd, Ni, Nd |
+| `limiter` / `dead_zone` / `slew_rate_limiter` | Blocks.Nonlinear.* | u, y | uMax, uMin / Rising, Falling, Td |
+
+Blocks with states get `initType = InitialState` (or `InitialOutput` when `y_start` is given) so the initial state is never left to the tool's guess; the `ref.py` uses the same. Sensors are ideal.
+
+**DC motor.** Proposal: `dc_motor` is a small composed model written into the generated file: armature `Resistor(R)` + `Inductor(L)` + `RotationalEMF(k)` + rotor `Inertia(J)` + optional viscous `Damper(d)` to a fixed housing. Why not `Electrical.Machines.BasicMachines.DCMachines.DC_PermanentMagnet`: its parameters are nominal operating points (VaNominal, IaNominal, wNominal) from which the torque constant, temperature-corrected resistance and losses (friction, core, stray, brush) are derived with bindings, so they are not overridable without rebuilding and the reference implementation would have to copy every loss model. The composed motor takes datasheet values (R, L, k_t = k_e, J), is linear (so `ref.py` checks it exactly), exposes `i`, `w`, `tau`, `P_loss`, and costs nothing to sweep. `DC_PermanentMagnet` can come later as `dc_machine` for loss/thermal studies.
+
+### Results (one study)
+
+| Key | Content |
+|---|---|
+| `ok`, `reliable`, `unreliable_because`, `warnings`, `errors` | as in the other translators |
+| `model` | `{equations, variables, trivial, states, hash, cache_hit, build_s, omc, msl}` |
+| `inputs` | every converted value: `{"L.L": {"given": "10 mH", "si": 0.01, "unit": "H"}}`, with chain provenance |
+| `outputs` | per output: `unit`, `initial`, `final`, `min`, `max`, `t_min`, `t_max`, and `series` `{t, y}` downsampled (≤ 400 points, events kept) |
+| `derived` | per signal, the requested metrics (`rise_time_s`, `overshoot_pct`, `peak`, `peak_time_s`, `settling_time_s`, `final`, `crossing_time_s`, `mean`, `rms`…) |
+| `steady` | per output: value, `t_steady_s`, `reached`, remaining rate |
+| `linearization` | `states`, `inputs`, `outputs`, `A`, `B`, `C`, `D`, `eigenvalues` (re, im), `modes` (`f_n_Hz`, `zeta`, `tau_s`, dominant states), `dc_gain`, `bode` (per input→output: f, gain_dB, phase_deg) |
+| `sweep` | `table` (one row per point: parameters, reported values, `reliable`), `columns` |
+| `checks` | `balance`, `initialization` (homotopy?), `solver` (steps, state/time events, test failures), `overrides` (requested vs read back), `finite`, `energy`, `reference`, `converge` |
+| `expect`, `files` (model.mo, run.mos, override file, result .mat, logs, images), `seconds`, `execution` | as in cfdt |
+
+## Architecture
+
+```
+openmodelica_translator/
+  format.py      study_format(), validate(): the catalog (kinds, MSL class, ports + connector types,
+                 parameters with SI units, ranges, defaults, structural flags, variables), units table
+  catalog.py     the catalog data (kept apart from format.py so study_format stays ~10-12 kB)
+  units.py       "10 mH" / {"value","unit"} -> SI, recorded
+  modelica.py    study -> stable Modelica text (sorted declarations, quoted where needed, experiment
+                 annotation, top-level inputs/outputs for linearize); structural text for the hash
+  omc.py         the only module running omc: find it, version, MSL path; .mos scripts; checkModel and
+                 buildModel; message records; the build cache (hash, fcntl lock, prune .c/.o)
+  simrun.py      runs a cached executable: override file, flags, process group, timeout/cancel flag;
+                 log parsing (LOG_SUCCESS, homotopy, asserts, chattering, statistics)
+  matfile.py     MAT v4 reader (binTrans/binNormal, aliases, data_1 parameters)
+  post.py        outputs, derived metrics, steady detection, energy balance, override read-back
+  linear.py      linearized_model.mo parser; eigenvalues, modes, Bode, DC gain
+  ref.py         independent reference for linear networks (below)
+  render.py      time plots, Bode plots, sweep plots (matplotlib/Agg)
+  runner.py      run_study(name, study, folder, ...) end to end
+  sweep.py       points from grid/zip; local process pool inside one study
+  bench.py       benchmarks with closed forms
+  executor.py    from cfdt: local pool or one SLURM job per study (kind threads)
+  api.py, cli.py, mcp_server.py   as cfdt
+tests/  test_omct.py, test_ref.py, test_matfile.py, test_linear.py, test_slurm.py, fake_slurm.py,
+        fixtures/ (mochi outputs: logs, init.xml, .mat, linearized_model.mo, message records)
+tools/  m0_probe.sh (M0 probe), measure scripts for mochi
+```
+
+### Translation and running (deterministic)
+
+1. **Validate** (static).
+2. **Generate** `model.mo`: `model omct_model` with one declaration per component (sorted by name), modifiers in SI with full precision (`repr`), `connect` equations sorted, top-level `RealInput`/`RealOutput` for linearisation, `annotation(experiment(StartTime, StopTime, Interval, Tolerance))`. The structural hash uses the same text with every overridable parameter value replaced by a placeholder, plus the omc version, MSL version and build flags. A value change therefore never recompiles; every study's values are applied through the override file, even right after a build, and read back.
+3. **Build** (cache miss only), in `OMCT_CACHE/<hash>/` under an `fcntl.flock`: a `.mos` with `setCommandLineOptions("--linearizationDumpLanguage=modelica")`, `loadModel(Modelica, {"4.0.0"})`, `loadFile("model.mo")`, `checkModel(omct_model)`, `buildModel(omct_model, fileNamePrefix="omct_model", outputFormat="mat", variableFilter=<outputs + overridden parameters + what the checks need>)`, with `getMessagesStringInternal()` after each call. `omc -n=OMCT_COMPILE_PROCS`. Keep the executable, `_init.xml`, `_info.json`, `*.bin`, `.libs`; delete `.c`/`.o`/`.h`/`.makefile`. Read `isValueChangeable` from `_init.xml` and refuse a sweep or value of a parameter that cannot be overridden (rebuild with the value in the text only if the catalog marks it structural).
+4. **Run** from the study folder: `<cache>/omct_model -inputPath=<cache> -outputPath=<study> -overrideFile=params.txt -r=result.mat -stopTime -tolerance -stepSize -s=<method> -lv=LOG_STATS -alarm=<timeout>`, in its own process group, `OMP_NUM_THREADS=OMCT_OMP_THREADS`. Any override warning is an error. Linearisation: the same executable with `-l=<at>`.
+5. **Read** the MAT file: series, parameters read back (`data_1`) against what was asked (relative 1e-12), outputs finite.
+6. **Post-process**, check, render, write `<name>.json` atomically.
+
+## The checker
+
+**Every run:**
+
+- Balance: equations == variables from checkModel (an unbalanced model never builds; the message names the counts).
+- Initialisation succeeded; homotopy used → warning.
+- Solver finished (`LOG_SUCCESS … simulation finished`), no assertion, exit code 0.
+- Overrides: no "not found"/"not possible" warning, and each value read back from `data_1`.
+- Events: state events > 1000, or `Chattering detected` → warning (and the time).
+- Outputs finite.
+- **Energy balance** where the components expose power: ∫ boundary power dt (sources, prescribed temperatures/heat flows/motion; computed from port effort × flow) = Δ stored energy (½Li², ½Cv², ½mv², ½Jω², ½c·s_rel², C·T) + ∫ dissipation (resistor `LossPower`, damper `lossPower`, unless routed to a heat port). Integrated by trapezoid on the output grid (OpenModelica writes both sides of events); error relative to the largest term; judged at max(1e-3, error of the integration estimated by Simpson vs trapezoid). Reported, and `reliable: false` above 1 %.
+
+**Reference implementation (`ref.py`), like lmpt's `refcalc.py`:** builds a descriptor system E·ẋ = A·x + B·u(t), y = C·x + D·u from the study, not from the Modelica text: modified nodal analysis on each domain with the effort/flow analogy (pins v/i, flanges s/f and φ/τ, heat ports T/Q), capacitive elements as states (C, L, m, J, springs, heat capacitors), linear blocks as state-space (gain, add, feedback, integrator, first/second order, transfer function, PI, PID with its Nd filter), sources as functions of time (constant, step, ramp, sine, pulse; piecewise integration across breakpoints). Covered: linear kinds only; studies with `limiter`, `lim_pid`, `ideal_diode`, `radiation`, `table`, `dead_zone` are reported "not covered". It gives trajectories (`scipy.integrate.solve_ivp`, Radau, rtol 1e-10, or the matrix exponential for piecewise-constant inputs), the steady state (solve A·x = −B·u), and generalised eigenvalues. Compared with OpenModelica on the output grid: max |y_om − y_ref| / (range(y_ref) + atol) ≤ 1e-4 (OpenModelica at 1e-6), eigenvalues to 1e-6 relative. A mismatch makes the result unreliable. It runs in the sandbox, so it also tests the translation without omc (`OMCT_SOLVER=ref` runs studies with it alone, like cfdt's 2D solver).
+
+**`converge: true`:** rerun at tolerance ÷ 10; outputs differing by more than 10 × tolerance × range → unreliable.
+
+**Benchmarks (`bench.py`)**, each with tolerance and why:
+
+| Case | Closed form | Tolerance |
+|---|---|---|
+| `rc_step` | v(t) = V(1 − e^(−t/RC)); v(τ) = 63.21 % | 1e-4 rel (dassl 1e-6) |
+| `rlc_underdamped` | ω_d, overshoot = exp(−πζ/√(1−ζ²)); `linearize` poles | overshoot 0.5 % (grid), poles 1e-6 |
+| `msd_free` | ω_n, ζ, logarithmic decrement from peaks | 0.5 % |
+| `inertia_torque_step` | ω = τ t / J | 1e-6 rel |
+| `dc_motor` | ω_ss = kV/(k² + R d), electrical and mechanical time constants | 1e-4 |
+| `thermal_rc` | T∞ = T_amb + P/(hA), τ = C/(hA); `crossing` time | 1e-4; crossing 0.1 % |
+| `two_mass` | linearised eigenvalues vs the 2-DOF closed form | 1e-6 |
+| `pi_first_order` | closed-loop step response of PI on K/(τs+1) (2nd order, closed form) | 1e-4 |
+| `chua` | regression against a stored mochi run (chaotic: compare to t = 100 s only) | 1e-3 |
+| `sweep_rc` | a 3-point R sweep: τ per point; one compile | exact count of builds = 1 |
+| `steady_thermal` | steady T, detected time | 1e-5 |
+| `chain_feat_modal` | feat static cantilever (k = F/u) and its mass → ω ≈ √(k / (33/140 · m)) (Rayleigh; 1.46 % above the exact first bending frequency); compare with feat's modal `frequencies.0` | ratio 1.0146 ± 1 %; skip without feat |
+
+## Size, cost and SLURM
+
+- **Cost.** A compile is ~1.5 s wall (15 s CPU on many cores) for Chua; simulations take seconds. Studies are light; sweeps and `converge` multiply runs, not compiles.
+- **Estimates before submitting:** compile = 0 on a cache hit, else a + b · equations (a, b measured on mochi; equations ≈ catalog sum before checkModel); run = the cache entry's last measured seconds per interval × intervals (first run: a conservative guess from intervals × equations); a sweep = points × run / procs. Memory small: ~200 MB + the result file (intervals × variables × 8 bytes).
+- **Executor kind `threads`:** one job per study with `--cpus-per-task` = sweep processes (≤ points, ≤ `OMCT_PROCS`), and at least `OMCT_COMPILE_PROCS` when the cache misses. A sweep's points run in a local process pool inside the job (one study = one job). `OMCT_SLURM_MIN_MINUTES` (1) keeps single studies local.
+- Everything else as cfdt: states from files and the queue, `jobs`, `cancel` (flag file + scancel), process-group kills, `execution` with `limits`, per-study `run` with `OMCT_MAX_*`, `run_benchmarks` returns within ~30 s and `bench_status` collects.
+
+## Settings (all in `translators.json` `env` when it joins the umbrella)
+
+| Setting | Meaning (default) |
+|---|---|
+| `OMCT_OMC` | path to omc (`omc` on PATH) |
+| `OMCT_MSL_VERSION` | 4.0.0 |
+| `OMCT_OUT` | output folder (`~/omct_runs`) |
+| `OMCT_CACHE` | build cache (`$OMCT_OUT/.cache`) |
+| `OMCT_SOLVER` | `auto` \| `omc` \| `ref` (auto: omc when found) |
+| `OMCT_WORKERS` | local pool size (2) |
+| `OMCT_TIMEOUT` | seconds per study (600) |
+| `OMCT_PROCS` | parallel sweep points per study (1) |
+| `OMCT_COMPILE_PROCS` | parallel C compile, omc `-n` (4) |
+| `OMCT_OMP_THREADS` | threads inside one simulation (1) |
+| `OMCT_EXECUTOR`, `OMCT_SLURM_MIN_MINUTES` (1), `OMCT_SLURM_ARGS`, `OMCT_SLURM_MEM` (auto), `OMCT_SLURM_TIME` (timeout) | SLURM (EXECUTION.md) |
+| `OMCT_MAX_TIMEOUT`, `OMCT_MAX_MEM`, `OMCT_MAX_PROCS` | caps for a study's `run` |
+
+## Milestones (each: version bump, tests, README and planning.md updated)
+
+- **M0 Research and plan** (this file; `tools/m0_probe.sh`). Waiting for: Nicola's go-ahead on format and scope, and the probe report from mochi.
+- **M1 Format and translation, offline:** `catalog.py`, `units.py`, `format.py` (study_format ~10–12 kB, validate), `modelica.py`, `.mos` generation, `ref.py`, tests.
+- **M2 Backend driver:** `omc.py`, cache, `simrun.py`, `matfile.py`, log and result parsing, override verification; fixtures from mochi; tests that skip without omc.
+- **M3 Checks and benchmarks:** energy balance, `converge`, reliability, `bench.py`.
+- **M4 Interfaces:** `api.py`, `cli.py`, `mcp_server.py`, images.
+- **M5 Analyses:** sweeps, linearisation, steady.
+- **M6 SLURM:** `executor.py` from cfdt with sizing, caps, fake-SLURM tests; on mochi two sweeps from two conversations queue.
+- **M7 Chains:** `chain_feat_modal`, b3dt mass, cfdt tables.
+- **M8 Joining the umbrella:** submodule, `translators.json` (key `omct`, port 8770, `suggest: remote`, `executor: {prefix: OMCT, kind: threads, min_minutes: 1}`, backends `omc` and `msl`, every setting in `env`), `BACKENDS.md` (official apt repository, MSL 4.0.0 via the package manager, checks), README row, `llmt install/status/test/bench/tune/mcp test` on mochi, `llmt mcp setup` on the Mac.
+
+## Decisions for Nicola (before M1)
+
+1. **Units:** SI numbers, plus unit strings (`"10 mH"`, `"80 degC"`) and `{value, unit, from}` objects converted by the translator and recorded. (Alternative: SI only, the LLM converts.)
+2. **Parameter names:** MSL's own names (`startTime`, `stepTorque`, `R`) plus a few convenience ones (`v0`, `w0`, `T0`, `m`+`cp`, `h`+`A`). (Alternative: our own snake_case for everything.)
+3. **DC motor:** composed R + L + EMF + inertia (+ damper) now; `DC_PermanentMagnet` later.
+4. **Results:** MAT (not CSV) for every run, to read parameters back; JSON series downsampled to ≤ 400 points.
+5. **Analyses:** `sweep` as a key on any analysis rather than an analysis kind; `steady` detected by us.
+6. **Scope:** FluidHeatFlow, switches and MultiBody stay in v2.
+
+## State
+
+**2026.10.20.1 (M0)**: read the umbrella docs (create_new_translators.md, EXECUTION.md), cfdt (planning, executor, api, mcp_server, format), lmpt refcalc.py, feat's result keys. Read the OpenModelica v1.27.1 sources (overrides, steady state, linearisation, checkModel, buildModel, logs, MAT format) and the MSL 4.0.0 sources (class names, ports, parameters). Sandbox cannot install OpenModelica (proxy blocks build.openmodelica.org; no root). Wrote this plan and `tools/m0_probe.sh`.
+
+Next: run the probe on mochi (`ssh nicola@mochi.mit.edu 'bash -s' < tools/m0_probe.sh > tools/m0_report_mochi.txt 2>&1`, 1–3 min), record its answers in the assumptions table, then M1 after the go-ahead.
+
+## Open ideas
+
+- `dc_machine` (DC_PermanentMagnet) with losses and a thermal port; induction machines with `Machines` quasi-static models.
+- FluidHeatFlow coolant loops (v2), then Modelica.Fluid with cfdt pump/pipe tables.
+- Electro-thermal coupling everywhere (`heat_port` on R and dampers into thermal networks).
+- FMU export for co-simulation; parameter estimation from measured data (fit k, J, d).
+- Event-driven stops (`crossing` that ends the run), frequency sweeps by simulation for nonlinear systems.
+- `ref.py` for piecewise-linear elements (ideal diode, limiter) by event detection.
