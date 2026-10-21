@@ -1,0 +1,67 @@
+true
+""
+true
+""
+"4.0.0"
+{{"Modelica", "/home/nicola/.openmodelica/libraries/Modelica 4.0.0+maint.om"}, {"Complex", "/home/nicola/.openmodelica/libraries/Complex 4.0.0+maint.om"}, {"ModelicaServices", "/home/nicola/.openmodelica/libraries/ModelicaServices 4.0.0+maint.om"}}
+true
+""
+"Check of OmctProbe.RLC completed successfully.
+Class OmctProbe.RLC has 44 equation(s) and 44 variable(s).
+27 of these are trivial equation(s)."
+""
+"Check of OmctProbe.Under completed successfully.
+Class OmctProbe.Under has 1 equation(s) and 2 variable(s).
+1 of these are trivial equation(s)."
+{}
+""
+""
+{record OpenModelica.Scripting.ErrorMessage
+    info = record OpenModelica.Scripting.SourceInfo
+    filename = "/home/nicola/omct_probe/probe.mo",
+    readonly = false,
+    lineStart = 29,
+    columnStart = 49,
+    lineEnd = 29,
+    columnEnd = 53
+end OpenModelica.Scripting.SourceInfo;,
+    message = "Modified element Rx not found in class Resistor.",
+    kind = .OpenModelica.Scripting.ErrorKind.translation,
+    level = .OpenModelica.Scripting.ErrorLevel.error,
+    id = 214
+end OpenModelica.Scripting.ErrorMessage;}
+""
+""
+"[/home/nicola/omct_probe/probe.mo:32:5-32:49:writable] Error: Class Modelica.Electrical.Analog.Basic.Resistorr not found in scope BadClass.
+"
+"Check of OmctProbe.NoGround completed successfully.
+Class OmctProbe.NoGround has 21 equation(s) and 21 variable(s).
+14 of these are trivial equation(s)."
+""
+"/home/nicola/omct_probe/rlc"
+{"/home/nicola/omct_probe/rlc/omct_model", "omct_model_init.xml"}
+""
+"/home/nicola/omct_probe"
+"/home/nicola/omct_probe/nognd"
+{"", ""}
+"Error: Internal error Circular Equalities Detected for Variables:
+----------------------------------
+Error: Internal error IndexReduction.pantelidesIndexReduction failed! Found empty set of continuous equations. Use -d=bltdump to get more information.
+Error: Internal error Transformation Module PFPlusExt index Reduction Method Pantelides failed!
+"
+"/home/nicola/omct_probe"
+"/home/nicola/omct_probe/assert"
+{"/home/nicola/omct_probe/assert/OmctProbe.AssertFail", "OmctProbe.AssertFail_init.xml"}
+""
+"/home/nicola/omct_probe"
+"/home/nicola/omct_probe/init"
+{"/home/nicola/omct_probe/init/OmctProbe.InitFail", "OmctProbe.InitFail_init.xml"}
+""
+"/home/nicola/omct_probe"
+"/home/nicola/omct_probe/chatter"
+{"/home/nicola/omct_probe/chatter/OmctProbe.Chatter", "OmctProbe.Chatter_init.xml"}
+""
+"/home/nicola/omct_probe"
+"/home/nicola/omct_probe/thermal"
+{"/home/nicola/omct_probe/thermal/OmctProbe.Thermal", "OmctProbe.Thermal_init.xml"}
+""

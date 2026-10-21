@@ -1,0 +1,468 @@
+
+################ machine
+2026-10-21T04:41:45+00:00
+Linux mochi 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64 GNU/Linux
+40
+               total        used        free      shared  buff/cache   available
+Mem:              61           5          48           0           8          55
+/usr/bin/omc
+OpenModelica 1.27.1~2-g6db4671
+/usr/bin/gcc
+/usr/bin/clang
+gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+archive_uri-http_dl_openfoam_org_ubuntu-resolute.list
+bleedingedge-ubuntu-resolute-bleed-resolute.sources
+mongodb-org-8.2.list.disabled
+mongodb-org-9.0.list
+nvhpc.sources
+openmodelica.list
+ubuntu.sources
+# This file could not be automatically migrated to a .sources file during the upgrade.
+# Please see sources.list(5) (or https://manpages.ubuntu.com/manpages/man5/sources.list.5.html)
+# for details on how to migrate manually.
+
+deb [arch=amd64 signed-by=/usr/share/keyrings/openmodelica-keyring.gpg]   https://build.openmodelica.org/apt   resolute   stable
+Complex 4.0.0+maint.om
+Modelica 3.2.3+maint.om
+Modelica 4.0.0+maint.om
+ModelicaReference 4.0.0+maint.om
+ModelicaServices 4.0.0+maint.om
+ObsoleteModelica4 4.0.0+maint.om
+index.json
+{
+"libs": {
+"ADGenKinetics": {
+"git": "https://github.com/AtiyahElsheikh/ADGenKinetics.git",
+"versions": {
+"1.0.0+r23": {
+"path": "ADGenKinetics.mo",
+"sha": "cdfd50846c1a4ad8d8887bb4dd2a36e675c033a0",
+"support": "experimental",
+"uses": {
+"Modelica": "3.2.0"
+},
+"version": "1.0.0+r23",
+"zipfile": "https://github.com/AtiyahElsheikh/ADGenKinetics/archive/cdfd50846c1a4ad8d8887bb4dd2a36e675c033a0.zip"
+},
+"master": {
+"path": "ADGenKinetics.mo",
+"sha": "9bdfd968c5b85609956aa9929be8a6b8027b22cf",
+"support": "noSupport",
+"uses": {
+"Modelica": "3.2.0"
+},
+"version": "master",
+"zipfile": "https://github.co
+
+################ A1-A5, A13: omc script (load MSL pinned, check, build; error formats)
+true
+""
+true
+""
+"4.0.0"
+{{"Modelica", "/home/nicola/.openmodelica/libraries/Modelica 4.0.0+maint.om"}, {"Complex", "/home/nicola/.openmodelica/libraries/Complex 4.0.0+maint.om"}, {"ModelicaServices", "/home/nicola/.openmodelica/libraries/ModelicaServices 4.0.0+maint.om"}}
+true
+""
+"Check of OmctProbe.RLC completed successfully.
+Class OmctProbe.RLC has 44 equation(s) and 44 variable(s).
+27 of these are trivial equation(s)."
+""
+"Check of OmctProbe.Under completed successfully.
+Class OmctProbe.Under has 1 equation(s) and 2 variable(s).
+1 of these are trivial equation(s)."
+{}
+""
+""
+{record OpenModelica.Scripting.ErrorMessage
+    info = record OpenModelica.Scripting.SourceInfo
+    filename = "/home/nicola/omct_probe/probe.mo",
+    readonly = false,
+    lineStart = 29,
+    columnStart = 49,
+    lineEnd = 29,
+    columnEnd = 53
+end OpenModelica.Scripting.SourceInfo;,
+    message = "Modified element Rx not found in class Resistor.",
+    kind = .OpenModelica.Scripting.ErrorKind.translation,
+    level = .OpenModelica.Scripting.ErrorLevel.error,
+    id = 214
+end OpenModelica.Scripting.ErrorMessage;}
+""
+""
+"[/home/nicola/omct_probe/probe.mo:32:5-32:49:writable] Error: Class Modelica.Electrical.Analog.Basic.Resistorr not found in scope BadClass.
+"
+"Check of OmctProbe.NoGround completed successfully.
+Class OmctProbe.NoGround has 21 equation(s) and 21 variable(s).
+14 of these are trivial equation(s)."
+""
+"/home/nicola/omct_probe/rlc"
+{"/home/nicola/omct_probe/rlc/omct_model", "omct_model_init.xml"}
+""
+"/home/nicola/omct_probe"
+"/home/nicola/omct_probe/nognd"
+{"", ""}
+"Error: Internal error Circular Equalities Detected for Variables:
+----------------------------------
+Error: Internal error IndexReduction.pantelidesIndexReduction failed! Found empty set of continuous equations. Use -d=bltdump to get more information.
+Error: Internal error Transformation Module PFPlusExt index Reduction Method Pantelides failed!
+"
+"/home/nicola/omct_probe"
+"/home/nicola/omct_probe/assert"
+{"/home/nicola/omct_probe/assert/OmctProbe.AssertFail", "OmctProbe.AssertFail_init.xml"}
+""
+"/home/nicola/omct_probe"
+"/home/nicola/omct_probe/init"
+{"/home/nicola/omct_probe/init/OmctProbe.InitFail", "OmctProbe.InitFail_init.xml"}
+""
+"/home/nicola/omct_probe"
+"/home/nicola/omct_probe/chatter"
+{"/home/nicola/omct_probe/chatter/OmctProbe.Chatter", "OmctProbe.Chatter_init.xml"}
+""
+"/home/nicola/omct_probe"
+"/home/nicola/omct_probe/thermal"
+{"/home/nicola/omct_probe/thermal/OmctProbe.Thermal", "OmctProbe.Thermal_init.xml"}
+""
+  [time] 6.25 s wall, 27.40 s user, 4.40 s sys, 429768 kB max
+
+################ A6: files a build leaves (rlc/)
+total 480
+drwxrwxr-x 2 nicola nicola  4096 Oct 21 04:41 .
+drwxrwxr-x 8 nicola nicola  4096 Oct 21 04:41 ..
+-rwxrwxr-x 1 nicola nicola 75792 Oct 21 04:41 omct_model
+-rw-rw-r-- 1 nicola nicola 27895 Oct 21 04:41 omct_model.c
+-rw-rw-r-- 1 nicola nicola     0 Oct 21 04:41 omct_model.libs
+-rw------- 1 nicola nicola 10188 Oct 21 04:41 omct_model.log
+-rw-rw-r-- 1 nicola nicola  2552 Oct 21 04:41 omct_model.makefile
+-rw-rw-r-- 1 nicola nicola 45472 Oct 21 04:41 omct_model.o
+-rw-rw-r-- 1 nicola nicola   350 Oct 21 04:41 omct_model_01exo.c
+-rw-rw-r-- 1 nicola nicola  1168 Oct 21 04:41 omct_model_01exo.o
+-rw-rw-r-- 1 nicola nicola   240 Oct 21 04:41 omct_model_02nls.c
+-rw-rw-r-- 1 nicola nicola   688 Oct 21 04:41 omct_model_02nls.o
+-rw-rw-r-- 1 nicola nicola   220 Oct 21 04:41 omct_model_03lsy.c
+-rw-rw-r-- 1 nicola nicola   688 Oct 21 04:41 omct_model_03lsy.o
+-rw-rw-r-- 1 nicola nicola   328 Oct 21 04:41 omct_model_04set.c
+-rw-rw-r-- 1 nicola nicola   984 Oct 21 04:41 omct_model_04set.o
+-rw-rw-r-- 1 nicola nicola  2997 Oct 21 04:41 omct_model_05evt.c
+-rw-rw-r-- 1 nicola nicola  3024 Oct 21 04:41 omct_model_05evt.o
+-rw-rw-r-- 1 nicola nicola  5721 Oct 21 04:41 omct_model_06inz.c
+-rw-rw-r-- 1 nicola nicola  4088 Oct 21 04:41 omct_model_06inz.o
+-rw-rw-r-- 1 nicola nicola   252 Oct 21 04:41 omct_model_07dly.c
+-rw-rw-r-- 1 nicola nicola   992 Oct 21 04:41 omct_model_07dly.o
+-rw-rw-r-- 1 nicola nicola 14822 Oct 21 04:41 omct_model_08bnd.c
+-rw-rw-r-- 1 nicola nicola 15056 Oct 21 04:41 omct_model_08bnd.o
+-rw-rw-r-- 1 nicola nicola  1739 Oct 21 04:41 omct_model_09alg.c
+-rw-rw-r-- 1 nicola nicola  2312 Oct 21 04:41 omct_model_09alg.o
+-rw-rw-r-- 1 nicola nicola   281 Oct 21 04:41 omct_model_10asr.c
+-rw-rw-r-- 1 nicola nicola   992 Oct 21 04:41 omct_model_10asr.o
+-rw-rw-r-- 1 nicola nicola   231 Oct 21 04:41 omct_model_11mix.c
+-rw-rw-r-- 1 nicola nicola     0 Oct 21 04:41 omct_model_11mix.h
+-rw-rw-r-- 1 nicola nicola   688 Oct 21 04:41 omct_model_11mix.o
+-rw-rw-r-- 1 nicola nicola  4525 Oct 21 04:41 omct_model_12jac.c
+-rw-rw-r-- 1 nicola nicola  3382 Oct 21 04:41 omct_model_12jac.h
+-rw-rw-r-- 1 nicola nicola  4712 Oct 21 04:41 omct_model_12jac.o
+-rw-rw-r-- 1 nicola nicola  1789 Oct 21 04:41 omct_model_13opt.c
+-rw-rw-r-- 1 nicola nicola   693 Oct 21 04:41 omct_model_13opt.h
+-rw-rw-r-- 1 nicola nicola  2192 Oct 21 04:41 omct_model_13opt.o
+-rw-rw-r-- 1 nicola nicola  2556 Oct 21 04:41 omct_model_14lnz.c
+-rw-rw-r-- 1 nicola nicola  3192 Oct 21 04:41 omct_model_14lnz.o
+-rw-rw-r-- 1 nicola nicola  1234 Oct 21 04:41 omct_model_15syn.c
+-rw-rw-r-- 1 nicola nicola  2080 Oct 21 04:41 omct_model_15syn.o
+-rw-rw-r-- 1 nicola nicola   216 Oct 21 04:41 omct_model_16dae.c
+-rw-rw-r-- 1 nicola nicola    61 Oct 21 04:41 omct_model_16dae.h
+-rw-rw-r-- 1 nicola nicola   992 Oct 21 04:41 omct_model_16dae.o
+-rw-rw-r-- 1 nicola nicola   223 Oct 21 04:41 omct_model_17inl.c
+-rw-rw-r-- 1 nicola nicola   984 Oct 21 04:41 omct_model_17inl.o
+-rw-rw-r-- 1 nicola nicola   384 Oct 21 04:41 omct_model_18spd.c
+-rw-rw-r-- 1 nicola nicola  1112 Oct 21 04:41 omct_model_18spd.o
+-rw-rw-r-- 1 nicola nicola    36 Oct 21 04:41 omct_model_JacA.bin
+-rw-rw-r-- 1 nicola nicola     4 Oct 21 04:41 omct_model_external_functions.json
+-rw-rw-r-- 1 nicola nicola   175 Oct 21 04:41 omct_model_functions.c
+-rw-rw-r-- 1 nicola nicola   313 Oct 21 04:41 omct_model_functions.h
+-rw-rw-r-- 1 nicola nicola   688 Oct 21 04:41 omct_model_functions.o
+-rw-rw-r-- 1 nicola nicola     0 Oct 21 04:41 omct_model_includes.h
+-rw-rw-r-- 1 nicola nicola 23770 Oct 21 04:41 omct_model_info.json
+-rw-rw-r-- 1 nicola nicola 49131 Oct 21 04:41 omct_model_init.xml
+-rw-rw-r-- 1 nicola nicola    69 Oct 21 04:41 omct_model_literals.h
+-rw-rw-r-- 1 nicola nicola  6779 Oct 21 04:41 omct_model_model.h
+-rw-rw-r-- 1 nicola nicola   290 Oct 21 04:41 omct_model_records.c
+-rw-rw-r-- 1 nicola nicola   688 Oct 21 04:41 omct_model_records.o
+476K	rlc
+variableFilter = "time|R\.R|R\.i|R2\.R|C\.C|C\.v|L\.i|L\.v|y|u|Rv|Rdep|Rev|Rfin|V\.v|V\.i|R\.LossPower"
+67
+ name = "Rv" valueReference = "1032" description = "primary parameter" 
+
+ name = "Rdep" valueReference = "1029" description = "bound to another parameter" 
+
+ name = "Rev" valueReference = "1030" variability = "parameter" isDiscrete = "true" 
+
+ name = "Rfin" valueReference = "1031" variability = "parameter" isDiscrete = "true" 
+
+ name = "R.R" valueReference = "1021" description = "Resistance at temperature T_ref" 
+
+ name = "R2.R" valueReference = "1025" description = "Resistance at temperature T_ref" 
+
+ name = "C.C" valueReference = "1019" description = "Capacitance" 
+
+ name = "C.v" valueReference = "1000" description = "Voltage drop of the two pins (= p.v - n.v)" 
+
+ name = "L.i" valueReference = "1001" description = "Current flowing from pin p to pin n" 
+
+
+################ A7: plain run (-lv=LOG_STATS), exit code
+LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+LOG_STATS         | info    | ### STATISTICS ###
+|                 | |       | | timer
+|                 | |       | | |   0.00193536s          reading init.xml
+|                 | |       | | |  0.000254691s          reading info.xml
+|                 | |       | | |    0.0033888s [ 18.8%] pre-initialization
+|                 | |       | | |   0.00012095s [  0.7%] initialization
+|                 | |       | | |    1.654e-06s [  0.0%] steps
+|                 | |       | | |  0.000959965s [  5.3%] solver (excl. callbacks)
+|                 | |       | | |   0.00978327s [ 54.3%] creating output-file
+|                 | |       | | |  0.000388604s [  2.2%] event-handling
+|                 | |       | | |  0.000401765s [  2.2%] overhead
+|                 | |       | | |   0.00297667s [ 16.5%] simulation
+|                 | |       | | |    0.0180217s [100.0%] total
+|                 | |       | | events
+|                 | |       | | |     1 state events
+|                 | |       | | |     0 time events
+|                 | |       | | solver: dassl
+|                 | |       | | |   218 steps taken
+|                 | |       | | |   269 calls of functionODE
+|                 | |       | | |    39 evaluations of jacobian
+|                 | |       | | |     0 error test failures
+|                 | |       | | |     0 convergence test failures
+|                 | |       | | | 4.9538e-05s time of jacobian evaluation
+LOG_SUCCESS       | info    | The simulation finished successfully.
+  [time] 0.08 s wall, 1.31 s user, 0.01 s sys, 22676 kB max
+exit=0
+
+################ A8: -overrideFile: primary, bound, Evaluate, final, unknown, state starts
+LOG_STDOUT        | warning | It is not possible to override the following quantity: Rdep
+|                 | |       | It seems to be structural, final, protected or evaluated or has a non-constant binding.
+LOG_STDOUT        | warning | It is not possible to override the following quantity: Rev
+|                 | |       | It seems to be structural, final, protected or evaluated or has a non-constant binding.
+LOG_STDOUT        | warning | It is not possible to override the following quantity: Rfin
+|                 | |       | It seems to be structural, final, protected or evaluated or has a non-constant binding.
+LOG_STDOUT        | warning | simulation_input_xml.c: override variable name not found in model: nosuch
+LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+LOG_SUCCESS       | info    | The simulation finished successfully.
+exit=0
+
+################ A9: -stopTime -tolerance -stepSize from the command line
+LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+LOG_SUCCESS       | info    | The simulation finished successfully.
+exit=0
+
+################ A10: run from another folder with only the cache files (no .c/.o/.makefile)
+omct_model
+omct_model.libs
+omct_model.log
+omct_model_JacA.bin
+omct_model_info.json
+omct_model_init.xml
+LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+LOG_SUCCESS       | info    | The simulation finished successfully.
+exit=0
+res.mat
+
+################ A11: runtime -variableFilter
+LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+LOG_SUCCESS       | info    | The simulation finished successfully.
+exit=0
+
+################ A12: -steadyState (default tol and 1e-6) on the thermal block (tau = 3000 s, dT/dt ~ 0.028 K/s at t=0)
+LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+LOG_STDOUT        | info    | steady state reached at time = 9980
+|                 | |       |   * max(|d(x_i)/dt|/nominal(x_i)) = 0.000997739
+|                 | |       |   * relative tolerance = 0.001
+LOG_SUCCESS       | info    | The simulation finished successfully.
+exit=0
+LOG_STDOUT        | info    | Tolerance for steady state detection changed to 1e-06
+LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+LOG_STDOUT        | warning | Steady state has not been reached.
+|                 | |       | This may be due to too restrictive relative tolerance (1e-06) or short stopTime (20000).
+LOG_SUCCESS       | info    | The simulation finished successfully.
+exit=0
+
+################ A14: linearize from the same build: -l=0.05 and -l=0
+LOG_STDOUT        | info    | Linearization will be performed at point of time: 0.050000
+LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+LOG_SUCCESS       | info    | The simulation finished successfully.
+LOG_STDOUT        | info    | Linear model is created at /home/nicola/omct_probe/rlc/lin/linearized_model.mo
+LOG_STDOUT        | info    | The output format can be changed with the command line option --linearizationDumpLanguage.
+LOG_STDOUT        | info    | The options are: --linearizationDumpLanguage=none, modelica, matlab, julia, python.
+LOG_STDOUT        | info    | In OMEdit Simulation Setup->Linearize->Target language for linearized model.
+exit=0
+model linearized_model "omct_model"
+  parameter Integer n = 2 "number of states";
+  parameter Integer m = 1 "number of inputs";
+  parameter Integer p = 1 "number of outputs";
+
+  parameter Real x0[n] = {11.99500211661164, 0.0004997929496271882};
+  parameter Real u0[m] = {0};
+
+  parameter Real A[n, n] =
+	[-0.4166666585668932, 10000.00000000412;
+	-100.0000008240895, -1000.000000548096];
+
+  parameter Real B[n, m] =
+	[0;
+	99.99999880261984];
+
+  parameter Real C[p, n] =
+	[1.000000008240895, 0];
+
+  parameter Real D[p, m] =
+	[0];
+
+
+  Real x[n](start=x0);
+  input Real u[m](start=u0);
+  output Real y[p];
+
+  Real 'x_C.v' = x[1];
+  Real 'x_L.i' = x[2];
+  Real 'u_u' = u[1];
+  Real 'y_y' = y[1];
+equation
+  der(x) = A * x + B * u;
+  y = C * x + D * u;
+end linearized_model;
+exit=0
+linearized_model.mo
+omct_model_res.mat
+
+################ A15: failures: no ground, assert, initialisation, chattering (log + exit code)
+--- nognd
+(no executable: build failed, see above)
+--- assert
+LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+LOG_ASSERT        | info    | [/home/nicola/omct_probe/probe.mo:44:5-44:45:writable]
+|                 | |       | The following assertion has been violated at time 0.010000
+|                 | |       | ((time < 0.01)) --> "omct probe assert"
+LOG_ASSERT        | error   | No event found, but assert was triggered. Throwing now!
+exit=255
+--- init
+LOG_ASSERT        | debug   | OmctProbe.InitFail_06inz.c:34: Invalid root: (-1)^(0.5)
+LOG_ASSERT        | info    | simulation terminated by an assertion at initialization
+exit=255
+--- chatter
+LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+LOG_STDOUT        | info    | Chattering detected around time 1.0000000001..1.0000000199 (100 state events in a row with a total time delta less than the step size 0.006). This can be a performance bottleneck. Use -lv LOG_EVENTS for more information. The zero-crossing was: x > 0.0
+exit=124
+
+################ A16: threads and compile parallelism (ChuaCircuit)
+--- omc -n=1
+""
+  [time] 6.44 s wall, 8.83 s user, 1.04 s sys, 381232 kB max
+--- omc -n=4
+""
+  [time] 3.21 s wall, 11.06 s user, 1.22 s sys, 392024 kB max
+--- omc -n=0
+""
+  [time] 2.42 s wall, 11.50 s user, 1.49 s sys, 392936 kB max
+	liblapack.so.3 => /usr/lib/x86_64-linux-gnu/liblapack.so.3 (0x00007b7486800000)
+	libblas.so.3 => /usr/lib/x86_64-linux-gnu/libblas.so.3 (0x00007b7486f5b000)
+	libsundials_nvecserial.so.5 => /usr/bin/../lib/x86_64-linux-gnu/omc/libsundials_nvecserial.so.5 (0x00007b7486f50000)
+	libsundials_sunmatrixdense.so.3 => /usr/bin/../lib/x86_64-linux-gnu/omc/libsundials_sunmatrixdense.so.3 (0x00007b7486f49000)
+	libsundials_sunmatrixsparse.so.3 => /usr/bin/../lib/x86_64-linux-gnu/omc/libsundials_sunmatrixsparse.so.3 (0x00007b7486f3e000)
+	libsundials_sunlinsoldense.so.3 => /usr/bin/../lib/x86_64-linux-gnu/omc/libsundials_sunlinsoldense.so.3 (0x00007b7486f37000)
+	libsundials_sunlinsolklu.so.3 => /usr/bin/../lib/x86_64-linux-gnu/omc/libsundials_sunlinsolklu.so.3 (0x00007b7486f31000)
+	libsundials_sunlinsollapackdense.so.3 => /usr/bin/../lib/x86_64-linux-gnu/omc/libsundials_sunlinsollapackdense.so.3 (0x00007b7486f2c000)
+	libsundials_sunlinsolspbcgs.so.3 => /usr/bin/../lib/x86_64-linux-gnu/omc/libsundials_sunlinsolspbcgs.so.3 (0x00007b7486f23000)
+	libsundials_sunlinsolspfgmr.so.3 => /usr/bin/../lib/x86_64-linux-gnu/omc/libsundials_sunlinsolspfgmr.so.3 (0x00007b7486f18000)
+--- run with: defaults
+  [time] 0.23 s wall, 2.93 s user, 0.03 s sys, 22612 kB max
+  [time] 0.22 s wall, 2.99 s user, 0.03 s sys, 22820 kB max
+--- run with: OMP_NUM_THREADS=1
+  [time] 0.09 s wall, 0.06 s user, 0.02 s sys, 21056 kB max
+  [time] 0.13 s wall, 0.10 s user, 0.03 s sys, 20364 kB max
+--- run with: OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+  [time] 0.11 s wall, 0.07 s user, 0.03 s sys, 20844 kB max
+  [time] 0.13 s wall, 0.10 s user, 0.03 s sys, 20380 kB max
+--- 4 runs at once, OMP_NUM_THREADS=1
+  [time] 0.09 s wall, 0.07 s user, 0.02 s sys, 20476 kB max
+  [time] 0.14 s wall, 0.11 s user, 0.02 s sys, 20432 kB max
+  [time] 0.14 s wall, 0.11 s user, 0.03 s sys, 20336 kB max
+  [time] 0.14 s wall, 0.11 s user, 0.03 s sys, 20096 kB max
+
+################ A17: the MAT v4 result files (layout, parameters, read-back of overrides)
+== /home/nicola/omct_probe/rlc/base.mat | matrices [('Aclass', 4, 11), ('name', 13, 30), ('description', 91, 30), ('dataInfo', 4, 30), ('data_1', 20, 2), ('data_2', 8, 2004)] | Aclass ['Atrajectory', '1.1', '', 'binTrans']
+   variables 30 : ['time', 'C.v', 'L.i', 'L.v', 'R.LossPower', 'add.y', 'u', 'y', 'C.C', 'L.L', 'R.R', 'R.T', 'R.T_ref', 'R.alpha', 'R2.R', 'R2.T', 'R2.T_ref', 'R2.alpha', 'Rdep', 'Rev', 'Rfin', 'Rv', 'add.k1', 'add.k2', 'st.height', 'st.offset', 'st.startTime', 'R.i', 'V.i', 'V.v']
+   time points 2004 first 0.0 last 0.05
+   Rv           data_1 idx   15  first 10             last 10              (2 values)
+   Rdep         data_1 idx   12  first 20             last 20              (2 values)
+   Rev          data_1 idx   13  first 1              last 1               (2 values)
+   Rfin         data_1 idx   14  first 3              last 3               (2 values)
+   R.R          data_1 idx    4  first 10             last 10              (2 values)
+   R2.R         data_1 idx    8  first 24000          last 24000           (2 values)
+   C.C          data_1 idx    2  first 0.0001         last 0.0001          (2 values)
+   C.v          data_2 idx    2  first 0              last 11.995002       (2004 values)
+   L.i          data_2 idx    3  first 0              last 0.00049979295   (2004 values)
+   y            data_2 idx    8  first 0              last 11.995002       (2004 values)
+   R.LossPower  data_2 idx    5  first 0              last 2.4979299e-06   (2004 values)
+== /home/nicola/omct_probe/rlc/ov.mat | matrices [('Aclass', 4, 11), ('name', 13, 30), ('description', 91, 30), ('dataInfo', 4, 30), ('data_1', 20, 2), ('data_2', 8, 2004)] | Aclass ['Atrajectory', '1.1', '', 'binTrans']
+   variables 30 : ['time', 'C.v', 'L.i', 'L.v', 'R.LossPower', 'add.y', 'u', 'y', 'C.C', 'L.L', 'R.R', 'R.T', 'R.T_ref', 'R.alpha', 'R2.R', 'R2.T', 'R2.T_ref', 'R2.alpha', 'Rdep', 'Rev', 'Rfin', 'Rv', 'add.k1', 'add.k2', 'st.height', 'st.offset', 'st.startTime', 'R.i', 'V.i', 'V.v']
+   time points 2004 first 0.0 last 0.05
+   Rv           data_1 idx   15  first 20             last 20              (2 values)
+   Rdep         data_1 idx   12  first 40             last 40              (2 values)
+   Rev          data_1 idx   13  first 1              last 1               (2 values)
+   Rfin         data_1 idx   14  first 3              last 3               (2 values)
+   R.R          data_1 idx    4  first 20             last 20              (2 values)
+   R2.R         data_1 idx    8  first 44000          last 44000           (2 values)
+   C.C          data_1 idx    2  first 0.0002         last 0.0002          (2 values)
+   C.v          data_2 idx    2  first 1              last 11.99454        (2004 values)
+   L.i          data_2 idx    3  first 0.5            last 0.00027307049   (2004 values)
+   y            data_2 idx    8  first 1              last 11.99454        (2004 values)
+   R.LossPower  data_2 idx    5  first 5              last 1.4913498e-06   (2004 values)
+== /home/nicola/omct_probe/rlc/st.mat | matrices [('Aclass', 4, 11), ('name', 13, 30), ('description', 91, 30), ('dataInfo', 4, 30), ('data_1', 20, 2), ('data_2', 8, 2004)] | Aclass ['Atrajectory', '1.1', '', 'binTrans']
+   variables 30 : ['time', 'C.v', 'L.i', 'L.v', 'R.LossPower', 'add.y', 'u', 'y', 'C.C', 'L.L', 'R.R', 'R.T', 'R.T_ref', 'R.alpha', 'R2.R', 'R2.T', 'R2.T_ref', 'R2.alpha', 'Rdep', 'Rev', 'Rfin', 'Rv', 'add.k1', 'add.k2', 'st.height', 'st.offset', 'st.startTime', 'R.i', 'V.i', 'V.v']
+   time points 2004 first 0.0 last 0.02
+   Rv           data_1 idx   15  first 10             last 10              (2 values)
+   Rdep         data_1 idx   12  first 20             last 20              (2 values)
+   Rev          data_1 idx   13  first 1              last 1               (2 values)
+   Rfin         data_1 idx   14  first 3              last 3               (2 values)
+   R.R          data_1 idx    4  first 10             last 10              (2 values)
+   R2.R         data_1 idx    8  first 24000          last 24000           (2 values)
+   C.C          data_1 idx    2  first 0.0001         last 0.0001          (2 values)
+   C.v          data_2 idx    2  first 0              last 11.996009       (2004 values)
+   L.i          data_2 idx    3  first 0              last 0.00042950657   (2004 values)
+   y            data_2 idx    8  first 0              last 11.996009       (2004 values)
+   R.LossPower  data_2 idx    5  first 0              last 1.8447589e-06   (2004 values)
+== /home/nicola/omct_probe/rlc/vf.mat | matrices [('Aclass', 4, 11), ('name', 13, 21), ('description', 91, 21), ('dataInfo', 4, 21), ('data_1', 20, 2), ('data_2', 2, 2004)] | Aclass ['Atrajectory', '1.1', '', 'binTrans']
+   variables 21 : ['time', 'C.v', 'C.C', 'L.L', 'R.R', 'R.T', 'R.T_ref', 'R.alpha', 'R2.R', 'R2.T', 'R2.T_ref', 'R2.alpha', 'Rdep', 'Rev', 'Rfin', 'Rv', 'add.k1', 'add.k2', 'st.height', 'st.offset', 'st.startTime']
+   time points 2004 first 0.0 last 0.05
+   Rv           data_1 idx   15  first 10             last 10              (2 values)
+   Rdep         data_1 idx   12  first 20             last 20              (2 values)
+   Rev          data_1 idx   13  first 1              last 1               (2 values)
+   Rfin         data_1 idx   14  first 3              last 3               (2 values)
+   R.R          data_1 idx    4  first 10             last 10              (2 values)
+   R2.R         data_1 idx    8  first 24000          last 24000           (2 values)
+   C.C          data_1 idx    2  first 0.0001         last 0.0001          (2 values)
+   C.v          data_2 idx    2  first 0              last 11.995002       (2004 values)
+== /home/nicola/omct_probe/run1/res.mat | matrices [('Aclass', 4, 11), ('name', 13, 30), ('description', 91, 30), ('dataInfo', 4, 30), ('data_1', 20, 2), ('data_2', 8, 2004)] | Aclass ['Atrajectory', '1.1', '', 'binTrans']
+   variables 30 : ['time', 'C.v', 'L.i', 'L.v', 'R.LossPower', 'add.y', 'u', 'y', 'C.C', 'L.L', 'R.R', 'R.T', 'R.T_ref', 'R.alpha', 'R2.R', 'R2.T', 'R2.T_ref', 'R2.alpha', 'Rdep', 'Rev', 'Rfin', 'Rv', 'add.k1', 'add.k2', 'st.height', 'st.offset', 'st.startTime', 'R.i', 'V.i', 'V.v']
+   time points 2004 first 0.0 last 0.05
+   Rv           data_1 idx   15  first 10             last 10              (2 values)
+   Rdep         data_1 idx   12  first 20             last 20              (2 values)
+   Rev          data_1 idx   13  first 1              last 1               (2 values)
+   Rfin         data_1 idx   14  first 3              last 3               (2 values)
+   R.R          data_1 idx    4  first 10             last 10              (2 values)
+   R2.R         data_1 idx    8  first 24000          last 24000           (2 values)
+   C.C          data_1 idx    2  first 0.0001         last 0.0001          (2 values)
+   C.v          data_2 idx    2  first 0              last 11.995002       (2004 values)
+   L.i          data_2 idx    3  first 0              last 0.00049979295   (2004 values)
+   y            data_2 idx    8  first 0              last 11.995002       (2004 values)
+   R.LossPower  data_2 idx    5  first 0              last 2.4979299e-06   (2004 values)
+== /home/nicola/omct_probe/thermal/ss_default.mat | matrices [('Aclass', 4, 11), ('name', 17, 22), ('description', 73, 22), ('dataInfo', 4, 22), ('data_1', 7, 2), ('data_2', 8, 500)] | Aclass ['Atrajectory', '1.1', '', 'binTrans']
+   variables 22 : ['time', 'm.T', 'der(m.T)', 'hA.Q_flow', 'hA.dT', 'm.der_T', 'm.port.Q_flow', 'q.port.Q_flow', 'amb.T', 'hA.G', 'm.C', 'q.Q_flow', 'q.T_ref', 'q.alpha', 'amb.port.Q_flow', 'amb.port.T', 'hA.port_a.Q_flow', 'hA.port_a.T', 'hA.port_b.Q_flow', 'hA.port_b.T', 'm.port.T', 'q.port.T']
+   time points 500 first 0.0 last 9980.0
+   m.T          data_2 idx    2  first 293.15         last 373.49012       (500 values)
+== /home/nicola/omct_probe/thermal/ss_1e-6.mat | matrices [('Aclass', 4, 11), ('name', 17, 22), ('description', 73, 22), ('dataInfo', 4, 22), ('data_1', 7, 2), ('data_2', 8, 1002)] | Aclass ['Atrajectory', '1.1', '', 'binTrans']
+   variables 22 : ['time', 'm.T', 'der(m.T)', 'hA.Q_flow', 'hA.dT', 'm.der_T', 'm.port.Q_flow', 'q.port.Q_flow', 'amb.T', 'hA.G', 'm.C', 'q.Q_flow', 'q.T_ref', 'q.alpha', 'amb.port.Q_flow', 'amb.port.T', 'hA.port_a.Q_flow', 'hA.port_a.T', 'hA.port_b.Q_flow', 'hA.port_b.T', 'm.port.T', 'q.port.T']
+   time points 1002 first 0.0 last 20000.0
+   m.T          data_2 idx    2  first 293.15         last 376.37711       (1002 values)
+
+################ done
+650M	/home/nicola/omct_probe

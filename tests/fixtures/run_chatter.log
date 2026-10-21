@@ -1,0 +1,2 @@
+LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+LOG_STDOUT        | info    | Chattering detected around time 1.0000000001..1.0000000199 (100 state events in a row with a total time delta less than the step size 0.006). This can be a performance bottleneck. Use -lv LOG_EVENTS for more information. The zero-crossing was: x > 0.0

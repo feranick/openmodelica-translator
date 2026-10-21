@@ -16,7 +16,7 @@ It is part of [llm-translators](https://github.com/feranick/llm-translators), wi
 | Settings prefix | `OMCT_` |
 | Output folder | `~/omct_runs` (`OMCT_OUT`) |
 
-**Status (2026.10.21.1, milestone 1 of 8):** the study format, validation, the Modelica generation and the reference implementation work offline (173 tests). Running OpenModelica (M2), the checks and benchmarks (M3), the API, CLI `run` and MCP server (M4), sweeps and linearisation (M5), SLURM (M6) and chains (M7) are next; see `planning.md`.
+**Status (2026.10.21.2, milestone 2 of 8):** the study format, validation, Modelica generation and the reference implementation (M1), and the OpenModelica driver (M2: build cache, runs with override files, log and result reading, every value read back, linearisation) work; 187 tests pass without OpenModelica (a fake omc replays outputs recorded on mochi), and two more run with it. Next: derived quantities, the energy balance, the reference comparison and benchmarks (M3), the MCP server (M4), sweeps (M5), SLURM (M6), chains (M7); see `planning.md`.
 
 ## Install
 
@@ -28,7 +28,11 @@ OpenModelica and MSL 4.0.0 on the machine that runs the studies (mochi): the off
 omct format                              # the study format (kinds, parameters, analyses)
 omct validate examples/studies.json      # static checks: every error says the fix
 omct model examples/studies.json rlc_square_wave    # the generated model.mo, build.mos and params.txt
+omct status                              # omc, MSL, the C compiler, the build cache
+omct run examples/studies.json rlc_square_wave [--solver omc|ref]   # runs now; results in ~/omct_runs/run_*/
 ```
+
+A run writes `<OMCT_OUT>/run_<date>_<time>_<id>/<study>/`: `model.mo`, `params.txt` (every value), `sim.log`, `result.mat` (MAT v4), `linearized_model.mo` (linearize), and `<study>.json` (the result). Compiled models live in the build cache, `<OMCT_OUT>/.cache/<hash>/`, keyed by the model's structure: a study that changes only values reuses the build (one compile of ~1-2 s on mochi; a run of a small model takes ~0.1 s).
 
 ## A study
 
@@ -64,7 +68,7 @@ omct model examples/studies.json rlc_square_wave    # the generated model.mo, bu
 
 - **Validation** before anything runs: kinds, parameters and ranges, units, ports and connector types, a ground in every circuit, a reference or inertia in every mechanical system, a capacitor or a temperature boundary in every thermal network, every signal input driven once, outputs, analysis, sweep (only values that can be overridden), `expect`, `run` within the machine's caps; then the reference system finds singular models and initial values that are not free.
 - **Reference implementation** (`ref.py`), independent of the generated Modelica: it writes the MSL equations of each kind into a descriptor system A z + B ż + G F(t) = 0, reduces its index (shuffle algorithm), and integrates the consistent states between the sources' breakpoints (Radau, rtol 1e-10). It gives trajectories, steady states, eigenvalues and frequency responses of linear networks (R, L, C, transformers, op-amps, sources, sensors, masses, springs, dampers, inertias, gears, the DC motor, thermal capacitors, conductors and convection, linear blocks and PI/PID), and it chooses which initial values are fixed in the model. Tested against closed forms: RC (1e-9), RLC step and poles (1e-8, 1e-10), mass–spring–damper (1e-10), thermal RC (1e-7), DC motor speed and poles, PI on a first-order plant, two-mass eigenvalues and frequency response, index-2 networks.
-- **On every run** (from M2): balance, initialisation, solver, overrides read back from the result file, events, finite outputs, an energy balance, the reference comparison, `reliable` / `unreliable_because`.
+- **On every run** (M2): balance (omc's equation and variable counts; omc itself accepts an unbalanced model), initialisation (homotopy noted), the solver (assertions, exit code, statistics), every value refused or unknown to the compiled model (OpenModelica only warns and runs on), every applied value read back from the result file, events (chattering), finite outputs; `reliable` / `unreliable_because`. From M3: the energy balance and the reference comparison.
 
 ### Assumptions about OpenModelica
 
@@ -80,7 +84,11 @@ Listed in `planning.md` (A1–A19), each with the probe that checks it (`tools/m
 | `format.py` | `study_format()`, `validate()` |
 | `modelica.py` | the model text (stable, sorted), its structure (values as placeholders: the build cache key), the override file, the omc script |
 | `ref.py` | the reference implementation and the choice of fixed initial values |
-| `cli.py` | `omct format | validate | model` |
+| `omc.py` | the only module running omc: version, MSL, the build script and its printed values, errors mapped to declarations, the build cache (flock, atomic rename, pruned to 6 files) |
+| `simrun.py` | runs a cached model: override file, flags, process group, timeout and cancel flag, `OMP_NUM_THREADS=1`; reads the log (refused overrides, assertions, chattering, statistics) and reads values back |
+| `matfile.py`, `linear.py` | the MAT v4 result file; `linearized_model.mo` → A, B, C, D, modes, DC gain, Bode |
+| `post.py`, `runner.py`, `api.py`, `proc.py` | output statistics and downsampled series; one study end to end; the API; process groups |
+| `cli.py` | `omct status | format | validate | model | run` |
 
 ## Files
 
@@ -90,6 +98,7 @@ Listed in `planning.md` (A1–A19), each with the probe that checks it (`tools/m
 
 | Version | Changes |
 |---|---|
+| 2026.10.21.2 | M2: the OpenModelica driver (build cache, runs, logs, MAT results, read-back, linearisation), `omct status` and `omct run`, the mochi probe's answers in `planning.md`; 187 tests (+2 with omc) |
 | 2026.10.21.1 | M1: catalog (82 kinds), units, validation, Modelica generation with structure hash and override file, reference implementation, CLI `format`/`validate`/`model`; 173 tests (Modelica syntax checked with modparc) |
 | 2026.10.20.1 | M0: research and plan (`planning.md`, `tools/m0_probe.sh`) |
 

@@ -1,0 +1,7 @@
+LOG_STDOUT        | info    | Linearization will be performed at point of time: 0.050000
+LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+LOG_SUCCESS       | info    | The simulation finished successfully.
+LOG_STDOUT        | info    | Linear model is created at /home/nicola/omct_probe/rlc/lin/linearized_model.mo
+LOG_STDOUT        | info    | The output format can be changed with the command line option --linearizationDumpLanguage.
+LOG_STDOUT        | info    | The options are: --linearizationDumpLanguage=none, modelica, matlab, julia, python.
+LOG_STDOUT        | info    | In OMEdit Simulation Setup->Linearize->Target language for linearized model.

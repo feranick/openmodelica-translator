@@ -2,7 +2,7 @@
 
 Session context for Claude (the project documentation will be README.md). Start a chat with: "Read planning.md and start."
 
-Version: 2026.10.21.1 (milestone 1 done: format, validation, Modelica generation and reference implementation, offline).
+Version: 2026.10.21.2 (milestone 2 done in the sandbox: the OpenModelica driver; waiting for its first run on mochi).
 
 ## What this is
 
@@ -72,7 +72,7 @@ It complements the other translators: they compute fields in one part; this one 
 
 ## Found in the OpenModelica 1.27.1 and MSL 4.0.0 sources (sandbox, 2026-10-20)
 
-Read from `github.com/OpenModelica/OpenModelica` tag `v1.27.1` and `github.com/modelica/ModelicaStandardLibrary` tag `v4.0.0`. Each still needs the mochi probe (A-numbers below) before the code relies on it.
+Read from `github.com/OpenModelica/OpenModelica` tag `v1.27.1` and `github.com/modelica/ModelicaStandardLibrary` tag `v4.0.0`. The mochi probe (2026-10-21, `tools/m0_report_mochi.txt`) confirmed them; see the assumptions table.
 
 - **Overrides** (`SimulationRuntime/c/simulation/simulation_input_xml.c`, `doOverride`/`singleOverride`): a name not in the model → `warning | simulation_input_xml.c: override variable name not found in model: X`. A variable whose `isValueChangeable` is false in `_init.xml` → `warning | It is not possible to override the following quantity: X / It seems to be structural, final, protected or evaluated or has a non-constant binding.` Both are only warnings: we treat them as errors. `-overrideFile` lines are `var=value`; it cannot be combined with `-override`. A value below 1e-6 for a Real parameter gives a "small value or zero" warning. So **`_init.xml`'s `isValueChangeable` tells before running which parameters can be overridden** (and parameters with a binding to other parameters cannot).
 - **`-steadyState`** (`perform_simulation.c.inc`): stops when max_i |dx_i/dt| / nominal(x_i) < `-steadyStateTol` (default 1e-3), logs `steady state reached at time = …`, else warns `Steady state has not been reached.` The test is in 1/s, not relative to the time scale: a 2 kg aluminium block heated by 50 W starts at dT/dt ≈ 0.028 K/s, /nominal(T) = 300 → 9e-5 < 1e-3, so it would stop at once. **We detect steady state ourselves** (and may pass a tolerance scaled by the time constant). Probe A12.
@@ -85,29 +85,31 @@ Read from `github.com/OpenModelica/OpenModelica` tag `v1.27.1` and `github.com/m
 
 ## Assumptions about OpenModelica (each with the probe that catches it)
 
-`tools/m0_probe.sh` answers all of them in one run on mochi (1–3 min). Status: S = read in the source, M = measured on mochi, ? = unverified.
+`tools/m0_probe.sh` answered them on mochi on 2026-10-21 (`tools/m0_report_mochi.txt`). Status: S = read in the source, M = measured on mochi, ? = unverified.
 
 | # | Assumption | Status | Caught by |
 |---|---|---|---|
-| A1 | `loadModel(Modelica, {"4.0.0"})` loads `4.0.0+maint.om` | ? | probe A1; `tool_status().msl` |
-| A2 | `getLoadedLibraries()` gives the MSL path and `getVersion(Modelica)` "4.0.0" | ? | probe A1 |
-| A3 | checkModel's message format (above), and balance = equations == variables | S | probe A3; tests on fixtures |
-| A4 | Error formats of unknown modifiers/classes, under-determined models | S/? | probe; `getMessagesStringInternal` fixtures |
-| A5 | A model without ground passes checkModel and fails at build or run (singular): our validation must require it | ? | probe A15 (`NoGround`) |
-| A6 | `_init.xml` lists `isValueChangeable` per variable and stores the variable filter | ? | probe A6 |
-| A7 | Log lines `LOG_x | level | text`; exit code 0 on success, non-zero on failure | ? | probe A7, A15 |
-| A8 | Override semantics: primary parameter applied; bound/Evaluate/final ones refused with the warning; unknown name warned; state start values (`C.v` with fixed=true) overridable; bound parameters recomputed from overridden primaries | S/? | probe A8 + MAT read-back (A17) |
-| A9 | `-stopTime`, `-tolerance`, `-stepSize` work without rebuilding | ? | probe A9 |
-| A10 | A build runs from another folder with only the cached files (exe, `_init.xml`, `_info.json`, `*.bin`) using `-inputPath`/`-outputPath` | ? | probe A10 |
-| A11 | `-variableFilter` at run time replaces the built-in filter | ? | probe A11 |
-| A12 | `-steadyState` stops on max\|dx/dt\|/nominal < tol (1/s), too early for slow systems | S | probe A12 |
-| A13 | Building with `--linearizationDumpLanguage=modelica` costs little and lets `-l=t` work on the same executable | S/? | probe A13–A14 |
-| A14 | `linearized_model.mo` format (names `x_…`, `u_…`, `y_…`, 16 digits) | S | probe A14; `ref.py` eigenvalues |
-| A15 | Failure messages (init, assert, chattering) and their exit codes | S/? | probe A15 |
-| A16 | Simulation threads: CPU > wall comes from OpenMP/BLAS; `OMP_NUM_THREADS=1` does not slow a run; `-n` controls compile parallelism | ? | probe A16 |
-| A17 | MAT layout binTrans; parameters in `data_1`; filter applies to parameters | S/? | probe A17 |
-| A18 | MSL component equations behave as documented (sign conventions: flow into the port positive; LossPower ≥ 0) | ? | benchmarks + energy balance |
-| A19 | dassl at tolerance 1e-6 reproduces closed forms to ~1e-4 relative on the output grid | ? | benchmarks; `converge` |
+| A1 | `loadModel(Modelica, {"4.0.0"})` loads `4.0.0+maint.om` | **M ✓** | returns true; `getVersion(Modelica)` = "4.0.0" |
+| A2 | `getLoadedLibraries()` gives the MSL path | **M ✓** | `{{"Modelica", "/home/nicola/.openmodelica/libraries/Modelica 4.0.0+maint.om"}, {"Complex", ...}, {"ModelicaServices", ...}}` |
+| A3 | checkModel's message format | **M ✓**, but: **checkModel does not fail on an unbalanced model** (`Under`: "completed successfully ... 1 equation(s) and 2 variable(s)"): we compare the counts ourselves | probe A3; fixtures |
+| A4 | Error formats | **M ✓** `getErrorString()`: `[<file>:<l0>:<c0>-<l1>:<c1>:writable] Error: Class ... not found in scope BadClass.`; an unknown modifier makes checkModel return "" with `Modified element Rx not found in class Resistor.` (id 214). `getMessagesStringInternal()` consumes the messages (getErrorString is then ""). We use getErrorString and map the line to the declaration | fixtures |
+| A5 | A model without ground passes checkModel and fails at build | **M ✓** checkModel passes (21 = 21); buildModel returns `{"", ""}` with `Internal error Circular Equalities Detected ... IndexReduction.pantelidesIndexReduction failed!`: our validation must catch it (it does) | test_format |
+| A6 | `_init.xml` has `isValueChangeable` and the variable filter | partly: the filter is stored (`variableFilter = "..."`); the runtime refuses what isValueChangeable forbids (A8); the attribute itself was not printed by the probe: check when reading `_init.xml` in M2 | M2 test on mochi |
+| A7 | Log lines `LOG_x | level | text` (continuations `|  | |  | ...`); exit 0 on success | **M ✓** | fixtures |
+| A8 | Override semantics | **M ✓** primary `Rv=20` applied, and **bound parameters are recomputed** (Rdep 20→40, R2.R 24000→44000); `Rdep`, `Rev` (Evaluate), `Rfin` (final) refused with "It is not possible to override ..."; `nosuch` → "override variable name not found"; state starts with fixed=true (`C.v=1`, `L.i=0.5`) applied; exit 0 in every case (so we must read the log) | simrun fixtures |
+| A9 | `-stopTime`, `-tolerance`, `-stepSize` work without rebuilding | **M ✓** (last time 0.02) | |
+| A10 | A build runs from another folder with only exe, `_init.xml`, `_info.json`, `_JacA.bin`, `.libs`, `.log` via `-inputPath`/`-outputPath` | **M ✓** | |
+| A11 | `-variableFilter` at run time | **M ✓** it narrows the time series (C.v only); **parameters are always written** (all 20 in `data_1`), so read-back works whatever the filter | |
+| A12 | `-steadyState` stops too early for slow systems | **M ✓** default tol stopped the thermal block at t = 9980 s, T = 373.49 K, 2.9 K short of the final 376.38 K (tau 3000 s); 1e-6 never stopped. We detect steady state ourselves | |
+| A13 | `--linearizationDumpLanguage=modelica` at build, `-l=t` on the same executable | **M ✓** `linearized_model.mo` in `-outputPath`; log `Linear model is created at <path>` | |
+| A14 | `linearized_model.mo` format | **M ✓** 16 digits; numerical Jacobian: entries off by ~1e-8 relative (A[1,2] = 10000.00000000412, B[2] = 99.9999988); names `'x_C.v'`, `'u_u'`, `'y_y'` (u_/y_ + the top-level name). Compare eigenvalues at 1e-6 relative | ref |
+| A15 | Failures and exit codes | **M ✓** assert: `LOG_ASSERT | info | [file:l:c-l:c:writable] The following assertion has been violated at time 0.010000 ...`, `LOG_ASSERT | error | No event found, but assert was triggered. Throwing now!`, exit 255. Init failure: `LOG_ASSERT | debug | ..._06inz.c:34: Invalid root: (-1)^(0.5)`, `simulation terminated by an assertion at initialization`, exit 255. **Chattering: `LOG_STDOUT | info | Chattering detected around time 1.0000000001..1.0000000199 (100 state events ...)` and the run went on for 120 s (killed by timeout, exit 124)**: always pass `-alarm` and our own timeout | simrun |
+| A16 | Threads | **M ✓ OpenMP threads make a simulation slower**: Chua 0.22 s wall / 2.9 s CPU by default, 0.09-0.13 s / 0.06-0.10 s with `OMP_NUM_THREADS=1`; four at once 0.09-0.14 s each. So `OMCT_OMP_THREADS=1` always. Compile (omc + MSL load + C, Chua): `-n=1` 6.4 s, `-n=4` 3.2 s, `-n=0` (40) 2.4 s: `OMCT_COMPILE_PROCS` 4 | |
+| A17 | MAT layout | **M ✓** binTrans; `data_1` (n_par × 2: start, stop), `data_2` (n_var × n_times; 2004 columns for 2000 intervals: events add columns); aliases share columns | matfile tests |
+| A18 | MSL sign conventions (flow into the port positive; LossPower ≥ 0) | ? | benchmarks + energy balance (M3) |
+| A19 | dassl at tolerance 1e-6 reproduces closed forms to ~1e-4 relative on the output grid | ? | benchmarks; `converge` (M3) |
+
+Other facts from the probe (2026-10-21): mochi kernel 7.0.0, Ubuntu "resolute", gcc 15.2.0; apt source `deb [arch=amd64 signed-by=/usr/share/keyrings/openmodelica-keyring.gpg] https://build.openmodelica.org/apt resolute stable` (for BACKENDS.md). One build of the probe RLC: about 1 s inside a 6-build omc script (6.25 s wall, 27 s CPU). A run of the RLC (2000 intervals): 0.08 s wall. A build folder keeps ~60 files, 476 kB; the cache keeps 6.
 
 ## Scope, version 1 (proposal)
 
@@ -371,6 +373,18 @@ Made while building M1 (tell me if any is wrong):
 - Composites are flattened into elements `X__part` (no nested models, so every value is a direct override and no bound parameter has to be recomputed by OpenModelica).
 
 ## State
+
+**2026.10.21.2 (M2, sandbox)**: the probe report is in (`tools/m0_report_mochi.txt`, assumptions table updated: A1-A17 measured). New: `omc.py` (find omc, MSL status, the build script's 11 printed values parsed with a small tokenizer, checkModel counts compared, errors mapped to the declaration's line, the cache: flock on `<hash>.lock`, build in `.<hash>.<pid>.tmp`, prune to exe/_init.xml/_info.json/*.bin/.libs/.log + model.mo/build.mos/build.log/meta.json, atomic rename; failed builds kept in `.cache/.failed/`), `simrun.py` (flags, `-alarm`, `OMP_NUM_THREADS=1`, log parsing, refused/unknown overrides as errors, read-back), `matfile.py`, `linear.py`, `post.py` (output statistics, <= 400 points keeping events and extremes), `runner.py`, `api.py` (tool_status, run synchronously), `proc.py`, CLI `status` and `run`; the escape hatch builds too. Tests: 187 pass in the sandbox, from the mochi fixtures (`tests/fixtures/`: logs, the omc script output, linearized_model.mo) and `tests/fake_omc.py` (prints what omc printed on mochi; its executable simulates with the reference and writes a MAT file); 2 tests need omc (RC against the closed form at 1e-4; every example builds and runs). The reference reproduces the probe's thermal block: 376.37728 K at 20000 s against OpenModelica's 376.37711 K (5e-7).
+Not yet: the pool and pending results (M4), derived quantities / energy / reference comparison (M3), sweeps (M5: a sweep study is refused for now).
+Next on mochi (about 2 minutes, no install needed):
+```bash
+cd ~/Software && git clone git@github.com:feranick/openmodelica-translator.git   # or git pull in it
+cd ~/Software/openmodelica-translator
+PY=~/Software/llm-translators/.venv/bin/python
+$PY -m pytest -q tests/ 2>&1 | tail -5
+$PY -m openmodelica_translator.cli status
+$PY -m openmodelica_translator.cli run examples/studies.json > tools/m2_run_mochi.json; tail -c 3000 tools/m2_run_mochi.json
+```
 
 **2026.10.21.1 (M1, sandbox)**: `catalog.py`, `units.py`, `network.py`, `format.py`, `modelica.py`, `ref.py`, `cli.py` (format, validate, model); `examples/studies.json` (8 studies: the typical requests); 173 tests pass in the sandbox (`python3 -m pytest -q tests/`), including:
 - the catalog against the MSL 4.0.0 sources (`tools/check_catalog_msl.py`: every class, port, parameter, variable and start value exists; it caught `PulseVoltage.nperiod`);

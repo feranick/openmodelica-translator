@@ -1,0 +1,5 @@
+LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+LOG_STDOUT        | info    | steady state reached at time = 9980
+|                 | |       |   * max(|d(x_i)/dt|/nominal(x_i)) = 0.000997739
+|                 | |       |   * relative tolerance = 0.001
+LOG_SUCCESS       | info    | The simulation finished successfully.

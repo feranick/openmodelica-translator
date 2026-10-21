@@ -1,0 +1,2 @@
+LOG_ASSERT        | debug   | OmctProbe.InitFail_06inz.c:34: Invalid root: (-1)^(0.5)
+LOG_ASSERT        | info    | simulation terminated by an assertion at initialization

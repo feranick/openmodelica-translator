@@ -1,5 +1,5 @@
 """modelica.py — a study -> the Modelica model, the omc build script, and the values applied at run time.
-Version: 2026.10.21.1
+Version: 2026.10.21.2
 
 translate(study, name) -> Translation with
   text        model.mo: `model omct_model` with one declaration per element (sorted), every value in SI with
@@ -122,6 +122,7 @@ def translate(study: dict, name: str = "study", ref=None) -> Translation:
     lin = an.get("kind") == "linearize"
 
     tr = Translation()
+    tr.model = MODEL
     tr.net, tr.ref, tr.selected = net, ref, selected
     tr.outputs = {}
     for oname, oref in (study.get("outputs") or {}).items():
@@ -173,6 +174,17 @@ def translate(study: dict, name: str = "study", ref=None) -> Translation:
     return tr
 
 
+def escape_translation(study: dict) -> Translation:
+    """The escape hatch: the study's own Modelica text, its outputs as Modelica paths."""
+    tr = Translation()
+    m = study["modelica"]
+    tr.model, tr.text = m["model"], m["text"]
+    tr.structure = m["model"] + "\n" + m["text"]
+    tr.outputs = {k: ([(1.0, v)], "") for k, v in study["outputs"].items()}
+    tr.overrides, tr.fixed, tr.dependent, tr.missing, tr.net, tr.ref = {}, [], [], 0, None, None
+    return tr
+
+
 def structure_hash(structure: str, omc_version: str, msl_version: str, flags: str = BUILD_FLAGS) -> str:
     h = hashlib.sha256()
     for part in (structure, omc_version, msl_version, flags):
@@ -182,15 +194,16 @@ def structure_hash(structure: str, omc_version: str, msl_version: str, flags: st
 
 
 def build_mos(model_file: str = "model.mo", msl_version: str = "4.0.0", stop_time: float = 1.0,
-              intervals: int = 500, tolerance: float = 1e-6, method: str = "dassl") -> str:
-    """The omc script: load MSL (pinned), the model, check it, build it. getErrorString() after every call."""
+              intervals: int = 500, tolerance: float = 1e-6, method: str = "dassl", model: str = MODEL) -> str:
+    """The omc script: load MSL (pinned), the model, check it, build it. getErrorString() after every call.
+    It prints 11 values (omc.interpret_build reads them in this order). The executable is always omct_model."""
     return "\n".join([
         f'setCommandLineOptions("{BUILD_FLAGS}"); getErrorString();',
         f'loadModel(Modelica, {{"{msl_version}"}}); getErrorString();',
         'getVersion(Modelica);',
         f'loadFile("{model_file}"); getErrorString();',
-        f'checkModel({MODEL}); getErrorString();',
-        f'buildModel({MODEL}, startTime=0.0, stopTime={fmt(float(stop_time))}, numberOfIntervals={int(intervals)}, '
+        f'checkModel({model}); getErrorString();',
+        f'buildModel({model}, startTime=0.0, stopTime={fmt(float(stop_time))}, numberOfIntervals={int(intervals)}, '
         f'tolerance={fmt(float(tolerance))}, method="{method}", fileNamePrefix="{MODEL}", outputFormat="mat", '
         f'variableFilter=".*"); getErrorString();',
         ""])

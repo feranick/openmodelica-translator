@@ -1,0 +1,5 @@
+LOG_SUCCESS       | info    | The initialization finished successfully without homotopy method.
+LOG_ASSERT        | info    | [/home/nicola/omct_probe/probe.mo:44:5-44:45:writable]
+|                 | |       | The following assertion has been violated at time 0.010000
+|                 | |       | ((time < 0.01)) --> "omct probe assert"
+LOG_ASSERT        | error   | No event found, but assert was triggered. Throwing now!
