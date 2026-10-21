@@ -1,6 +1,6 @@
 """mcp_server.py — MCP server: lets LLM-based tools simulate systems (circuits, drives, heat paths, controllers)
 with OpenModelica and the Modelica Standard Library.
-Version: 2026.10.21.12
+Version: 2026.10.21.17
 
 Tools (all JSON):
   study_format      the study format: component kinds, ports, parameters, analyses, conventions. Read it first.
@@ -36,15 +36,16 @@ except ImportError:  # 1.x
 
 INSTRUCTIONS = """openmodelica-translator simulates whole systems over time with OpenModelica and the Modelica
 Standard Library 4.0.0: circuits (R, L, C, sources, op-amps, transformers), translational and rotational
-mechanics (masses, inertias, springs, dampers, gears, force/torque sources), DC motors, heat transfer
-(capacitors, conductors, convection, radiation, boundaries) and control blocks (PI, PID, LimPID, filters,
-limiters, tables). A study lists components (catalog kinds with parameters), connections between their ports,
+mechanics (masses, inertias, springs, dampers, gears, force/torque sources), DC motors and the MSL DC machine
+(losses, heat ports), heat transfer (capacitors, conductors, convection, radiation, boundaries), coolant loops
+(pumps, pipes, valves, ambients; Thermal.FluidHeatFlow) and control blocks (PI, PID, LimPID, limiters, tables). A study lists components (catalog kinds with parameters), connections between their ports,
 outputs, and an analysis: transient, steady or linearize (eigenvalues, modes, Bode); derived quantities (step
-metrics, crossing times, window statistics) and expect checks. It takes other translators' results as values.
+metrics, crossing times, window statistics) and expect checks. It takes other translators' results as values
+(a build123d-translator part result + density gives a mass or a moment of inertia: see study_format).
 Workflow: call study_format once and follow its conventions; validate_studies and fix every error;
 run_studies (studies that take longer come back 'pending': collect them with study_status). Before trusting
 numbers check warnings and checks: balance, initialization, solver, events, overrides (every value read back),
-energy (the energy balance), reference (an independent solver on linear networks); if 'reliable' is false, do
+energy (the energy balance), reference (an independent solver: linear, switching, coolant); if 'reliable' is false, do
 not report the numbers as results (fix what 'unreliable_because' says). For accuracy add "converge": true (a
 second run at tolerance/10). Units: SI everywhere (K, rad/s, m, kg, N.m); values may be strings with units
 ("10 mH", "80 degC", "3000 rpm") or {value, unit, from} for chained values. Initial values (v0, i0, s0, w0, T0)
@@ -107,8 +108,8 @@ def get_model(study: dict, name: str = "study") -> dict:
 def run_benchmarks(names: list[str] | None = None, solver: str = "auto", wait_s: float = 30) -> dict:
     """Runs the benchmark studies with closed-form answers (RC, RLC step and poles, mass-spring-damper, inertia,
     DC motor, thermal RC and steady state, two-mass drive, PI loop, a sweep) and reports pass or fail per check;
-    by name also the chains chain_feat_modal (runs fea-translator first) and chain_b3dt_mass (build123d-
-    translator). Returns after at most wait_s seconds; collect the rest with bench_status(bench)."""
+    by name also the chains chain_feat_modal (runs fea-translator first), chain_b3dt_mass and chain_b3dt_inertia
+    (build123d-translator). Returns after at most wait_s seconds; collect the rest with bench_status(bench)."""
     return api.bench(names, solver, wait_s=min(max(float(wait_s), 0.0), 50.0))
 
 

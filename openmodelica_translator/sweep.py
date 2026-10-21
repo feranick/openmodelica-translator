@@ -194,7 +194,7 @@ def _num(v):
     if isinstance(v, (int, float)):
         return float(v)
     if isinstance(v, dict):
-        return float(v.get("value"))
+        return float(v.get("value", "nan"))
     try:
         from .units import _NUM
         return float(_NUM.match(str(v)).group(1))

@@ -1,5 +1,5 @@
 """catalog.py — the curated MSL 4.0.0 components: kinds, ports, parameters (SI), variables, initial values.
-Version: 2026.10.21.1
+Version: 2026.10.21.16
 
 Every name below was checked against the MSL 4.0.0 sources (tag v4.0.0): class paths, port names, parameter
 names and defaults. A kind is either elementary (one MSL class) or composite (parts that are elementary kinds,
@@ -7,7 +7,9 @@ connected inside; e.g. dc_motor). The Modelica generator, the validation and the
 read this table.
 
 Port types: pin (electrical: v, i), flange_t (translational: s, f), flange_r (rotational: phi, tau),
-heat (thermal: T, Q_flow), in / out (Real signals). Flow into a component is positive (Modelica).
+heat (thermal: T, Q_flow), fluid (Thermal.FluidHeatFlow: p, m_flow; also h, H_flow), in / out (Real signals).
+Flow into a component is positive (Modelica). Conditional ports (cond_ports, e.g. a pipe's heatPort) exist only
+when the study connects them: connecting one sets its MSL switch (useHeatPort = true), which changes the build.
 
 Parameter spec P(unit, default, ...): default REQ = required; structural=True puts the value in the model text
 (it changes the build); every other value is applied with -overrideFile on each run.
@@ -24,6 +26,8 @@ PORT_TYPES = {
     "flange_t": {"domain": "translational", "potential": "s", "flow": "f", "units": {"s": "m", "f": "N"}},
     "flange_r": {"domain": "rotational", "potential": "phi", "flow": "tau", "units": {"phi": "rad", "tau": "N.m"}},
     "heat": {"domain": "thermal", "potential": "T", "flow": "Q_flow", "units": {"T": "K", "Q_flow": "W"}},
+    "fluid": {"domain": "fluid", "potential": "p", "flow": "m_flow", "extra": ("h", "H_flow"),
+              "units": {"p": "Pa", "m_flow": "kg/s", "h": "J/kg", "H_flow": "W"}},
     "in": {"domain": "signal"},
     "out": {"domain": "signal"},
 }
@@ -46,38 +50,50 @@ KINDS: dict[str, dict] = {}
 
 
 def kind(name, msl, ports, params=None, vars=None, inits=None, *, doc="", text=None, mods=None, rigid=(),
-         linear=True, islands=None, hidden=False, block_states=None, alternatives=None, domain=None):
+         linear=True, islands=None, hidden=False, block_states=None, alternatives=None, domain=None, cond_ports=None,
+         port_groups=None, var_paths=None):
     """text: fixed (structural) modifier text; mods: {msl_param: function(params) -> value} for parameters
     computed from the study's (alternatives such as m + cp -> C); rigid: port pairs at the same point
     (Mass, Inertia: L = 0); islands: groups of ports linked through the component (for the ground and
-    reference checks; default: all physical ports of one domain together)."""
+    reference checks; default: all physical ports of one domain together); cond_ports: {port: MSL Boolean} for
+    ports that exist only when connected (the Boolean is then set true in the model text); port_groups: {name:
+    [ports]}: connecting the name connects every port of the group (a machine's six heat ports at once);
+    var_paths: {var: Modelica path inside the component} for variables in records or subcomponents."""
     KINDS[name] = {"name": name, "msl": msl, "ports": ports, "params": params or {}, "vars": vars or {},
                    "inits": inits or {}, "doc": doc, "text": text or {}, "mods": mods or {}, "rigid": list(rigid),
                    "linear": linear, "islands": islands, "hidden": hidden, "parts": None,
-                   "block_states": block_states or {}, "alternatives": alternatives or [], "domain": domain}
+                   "block_states": block_states or {}, "alternatives": alternatives or [], "domain": domain,
+                   "cond_ports": cond_ports or {}, "port_groups": port_groups or {}, "var_paths": var_paths or {}}
 
 
 def composite(name, parts, ports, params, vars, inits=None, *, conns=(), doc="", linear=True, alternatives=None,
-              domain=None):
+              domain=None, port_groups=None):
     """parts: {part: (kind, {part_param: study_param name | function(params)})}; ports: {port: "part.port"};
     vars: {var: (expression over "part.var" names, unit)}; inits: {init: "part.init"}."""
     KINDS[name] = {"name": name, "msl": None, "parts": parts, "ports": ports, "params": params, "vars": vars,
                    "inits": inits or {}, "conns": list(conns), "doc": doc, "linear": linear, "hidden": False,
-                   "alternatives": alternatives or [], "domain": domain}
+                   "alternatives": alternatives or [], "domain": domain, "port_groups": port_groups or {},
+                   "cond_ports": {}, "var_paths": {}}
 
 
 EA = "Modelica.Electrical.Analog."
 MT = "Modelica.Mechanics.Translational."
 MR = "Modelica.Mechanics.Rotational."
 TH = "Modelica.Thermal.HeatTransfer."
+FHF = "Modelica.Thermal.FluidHeatFlow."
 BL = "Modelica.Blocks."
 PN = {"p": "pin", "n": "pin"}
 FAB_T = {"flange_a": "flange_t", "flange_b": "flange_t"}
 FAB_R = {"flange_a": "flange_r", "flange_b": "flange_r"}
 
 # ------------------------------------------------------------------------------------------- electrical
-kind("resistor", EA + "Basic.Resistor", PN, {"R": P("Ohm", min=0)},
-     {"v": "V", "i": "A", "LossPower": "W"}, doc="v = R*i")
+HP = {"heatPort": "useHeatPort"}
+kind("resistor", EA + "Basic.Resistor", {**PN, "heatPort": "heat"},
+     {"R": P("Ohm", min=0, doc="resistance at T_ref"), "T_ref": P("K", 300.15, gt=0, abs_T=True),
+      "alpha": P("1/K", 0.0, doc="R_actual = R (1 + alpha (T - T_ref))"),
+      "T": P("K", None, gt=0, abs_T=True, doc="device temperature without heat port (default T_ref)")},
+     {"v": "V", "i": "A", "LossPower": "W", "R_actual": "Ohm", "T_heatPort": "K"}, cond_ports=HP,
+     doc="v = R_actual*i; heatPort (when connected): LossPower flows out as heat, R_actual at the port's temperature")
 kind("capacitor", EA + "Basic.Capacitor", PN, {"C": P("F", gt=0)}, {"v": "V", "i": "A"},
      {"v0": I("v", "V", 0.0)}, doc="i = C*dv/dt")
 kind("inductor", EA + "Basic.Inductor", PN, {"L": P("H", gt=0)}, {"v": "V", "i": "A"},
@@ -119,9 +135,10 @@ kind("signal_current", EA + "Sources.SignalCurrent", {"p": "pin", "n": "pin", "i
 kind("voltage_sensor", EA + "Sensors.VoltageSensor", {"p": "pin", "n": "pin", "v": "out"}, doc="v = p.v - n.v (no current)")
 kind("current_sensor", EA + "Sensors.CurrentSensor", {"p": "pin", "n": "pin", "i": "out"}, doc="i from p to n (no voltage drop)")
 kind("potential_sensor", EA + "Sensors.PotentialSensor", {"p": "pin", "phi": "out"}, doc="phi = p.v")
-kind("ideal_diode", EA + "Ideal.IdealDiode", PN,
+kind("ideal_diode", EA + "Ideal.IdealDiode", {**PN, "heatPort": "heat"},
      {"Ron": P("Ohm", 1e-5, min=0), "Goff": P("S", 1e-5, min=0), "Vknee": P("V", 0.0, min=0)},
-     {"v": "V", "i": "A", "LossPower": "W"}, linear=False, doc="piecewise linear: Ron when conducting, Goff when blocking")
+     {"v": "V", "i": "A", "LossPower": "W"}, linear=False, cond_ports=HP,
+     doc="piecewise linear: Ron when conducting, Goff when blocking; heatPort (when connected) takes LossPower")
 kind("opamp", EA + "Ideal.IdealOpAmp3Pin", {"in_p": "pin", "in_n": "pin", "out": "pin"},
      islands=[["in_p", "in_n", "out"]], doc="ideal (nullor): in_p.v = in_n.v, no input currents; output referenced to ground")
 
@@ -131,13 +148,14 @@ kind("mass", MT + "Components.Mass", FAB_T, {"m": P("kg", gt=0)}, {"s": "m", "v"
      doc="m*a = flange_a.f + flange_b.f (length 0: both flanges at s)")
 kind("spring", MT + "Components.Spring", FAB_T, {"c": P("N/m", min=0), "s_rel0": P("m", 0.0)},
      {"s_rel": "m", "f": "N"}, {"s_rel_init": I("s_rel", "m", "s_rel0", 2)}, doc="f = c*(s_rel - s_rel0), s_rel = flange_b.s - flange_a.s")
-kind("damper", MT + "Components.Damper", FAB_T, {"d": P("N.s/m", min=0)},
+kind("damper", MT + "Components.Damper", {**FAB_T, "heatPort": "heat"}, {"d": P("N.s/m", min=0)},
      {"s_rel": "m", "v_rel": "m/s", "f": "N", "lossPower": "W"}, {"s_rel_init": I("s_rel", "m", 0.0, 2)},
-     doc="f = d*v_rel")
-kind("spring_damper", MT + "Components.SpringDamper", FAB_T,
+     cond_ports=HP, islands=[["flange_a", "flange_b"], ["heatPort"]], doc="f = d*v_rel; heatPort (when connected) takes lossPower")
+kind("spring_damper", MT + "Components.SpringDamper", {**FAB_T, "heatPort": "heat"},
      {"c": P("N/m", min=0), "d": P("N.s/m", min=0), "s_rel0": P("m", 0.0)},
      {"s_rel": "m", "v_rel": "m/s", "f": "N", "lossPower": "W"}, {"s_rel_init": I("s_rel", "m", "s_rel0", 2)},
-     doc="f = c*(s_rel - s_rel0) + d*v_rel")
+     cond_ports=HP, islands=[["flange_a", "flange_b"], ["heatPort"]],
+     doc="f = c*(s_rel - s_rel0) + d*v_rel; heatPort (when connected) takes lossPower")
 kind("fixed", MT + "Components.Fixed", {"flange": "flange_t"}, {"s0": P("m", 0.0)}, doc="flange.s = s0")
 kind("force", MT + "Sources.Force", {"flange": "flange_t", "f": "in"}, doc="pushes the flange with the input f [N] (housing fixed)")
 kind("force_step", MT + "Sources.ForceStep", {"flange": "flange_t"},
@@ -155,13 +173,14 @@ kind("inertia", MR + "Components.Inertia", FAB_R, {"J": P("kg.m2", gt=0)}, {"phi
      doc="J*a = flange_a.tau + flange_b.tau")
 kind("rot_spring", MR + "Components.Spring", FAB_R, {"c": P("N.m/rad", min=0), "phi_rel0": P("rad", 0.0)},
      {"phi_rel": "rad", "tau": "N.m"}, {"phi_rel_init": I("phi_rel", "rad", "phi_rel0", 2)}, doc="tau = c*(phi_rel - phi_rel0)")
-kind("rot_damper", MR + "Components.Damper", FAB_R, {"d": P("N.m.s/rad", min=0)},
+kind("rot_damper", MR + "Components.Damper", {**FAB_R, "heatPort": "heat"}, {"d": P("N.m.s/rad", min=0)},
      {"phi_rel": "rad", "w_rel": "rad/s", "tau": "N.m", "lossPower": "W"}, {"phi_rel_init": I("phi_rel", "rad", 0.0, 2)},
-     doc="tau = d*w_rel")
-kind("rot_spring_damper", MR + "Components.SpringDamper", FAB_R,
+     cond_ports=HP, islands=[["flange_a", "flange_b"], ["heatPort"]], doc="tau = d*w_rel; heatPort (when connected) takes lossPower")
+kind("rot_spring_damper", MR + "Components.SpringDamper", {**FAB_R, "heatPort": "heat"},
      {"c": P("N.m/rad", min=0), "d": P("N.m.s/rad", min=0), "phi_rel0": P("rad", 0.0)},
      {"phi_rel": "rad", "w_rel": "rad/s", "tau": "N.m", "lossPower": "W"},
-     {"phi_rel_init": I("phi_rel", "rad", "phi_rel0", 2)}, doc="tau = c*(phi_rel - phi_rel0) + d*w_rel")
+     {"phi_rel_init": I("phi_rel", "rad", "phi_rel0", 2)}, cond_ports=HP, islands=[["flange_a", "flange_b"], ["heatPort"]],
+     doc="tau = c*(phi_rel - phi_rel0) + d*w_rel; heatPort (when connected) takes lossPower")
 kind("rot_fixed", MR + "Components.Fixed", {"flange": "flange_r"}, {"phi0": P("rad", 0.0)}, doc="flange.phi = phi0")
 kind("ideal_gear", MR + "Components.IdealGear", FAB_R, {"ratio": P("1", gt=0)},
      doc="flange_a.phi = ratio*flange_b.phi; 0 = ratio*flange_a.tau + flange_b.tau (housing fixed)")
@@ -213,6 +232,117 @@ kind("prescribed_heat_flow", TH + "Sources.PrescribedHeatFlow", {"port": "heat",
 kind("temperature_sensor", TH + "Sensors.TemperatureSensor", {"port": "heat", "T": "out"}, doc="T = port.T [K]")
 kind("heat_flow_sensor", TH + "Sensors.HeatFlowSensor", {"port_a": "heat", "port_b": "heat", "Q_flow": "out"},
      doc="heat from port_a to port_b (same temperature)")
+
+
+# ------------------------------------------------------------------------------------------- coolant loops
+# Thermal.FluidHeatFlow: incompressible media with constant properties; p and h at the ports (h = cp T), mass and
+# enthalpy flows; T is a component's outlet temperature (upwind). One medium per loop (the ports share it).
+MEDIA = {   # name: (MSL record, rho [kg/m3], cp, cv [J/(kg.K)], lambda [W/(m.K)], nu [m2/s]) (MSL 4.0.0 sources)
+    "water": ("Water", 995.6, 4177.0, 4177.0, 0.615, 0.8e-6),
+    "water_10degC": ("Water_10degC", 999.7, 4192.0, 4192.0, 0.588, 1.307e-6),
+    "water_90degC": ("Water_90degC", 965.3, 4205.0, 4205.0, 0.676, 0.347e-6),
+    "air_30degC": ("Air_30degC", 1.149, 1007.0, 720.0, 0.0264, 16.3e-6),
+    "air_70degC": ("Air_70degC", 1.015, 1010.0, 723.0, 0.0293, 20.3e-6),
+    "glycol20_20degC": ("Gylcol20_20degC", 1028.0, 3910.0, 3910.0, 0.523, 1.69e-6),
+    "glycol50_20degC": ("Gylcol50_20degC", 1078.0, 3300.0, 3300.0, 0.405, 3.98e-6),
+    "mineral_oil": ("MineralOil", 868.0, 2010.0, 2010.0, 0.14, 81.8e-6),
+}
+MEDIUM_KEYS = ("rho", "cp", "cv", "lambda", "nu")
+
+
+def medium_props(v) -> dict:
+    """{rho, cp, cv, lambda, nu, name, msl} of a medium value (a MEDIA name or {rho, cp[, cv, lambda, nu]})."""
+    if isinstance(v, str):
+        rec, *vals = MEDIA[v]
+        return {"name": v, "msl": FHF + "Media." + rec + "()", **dict(zip(MEDIUM_KEYS, vals))}
+    d = dict(v)
+    d.setdefault("cv", d["cp"])
+    d.setdefault("lambda", 1.0)
+    d.setdefault("nu", 1.0)
+    args = ", ".join(f"{k}={float(d[k])!r}" for k in MEDIUM_KEYS)
+    return {"name": "custom", "msl": f"{FHF}Media.Medium({args})", **{k: float(d[k]) for k in MEDIUM_KEYS}}
+
+
+MED = {"medium": P("1", "water", structural=True, type="medium", msl=False,
+                   doc="one of " + ", ".join(MEDIA) + ", or {rho, cp, cv, lambda, nu} (SI; cv, lambda, nu optional)")}
+FAB_F = {"flowPort_a": "fluid", "flowPort_b": "fluid"}
+TP_VARS = {"T": "K", "T_a": "K", "T_b": "K", "dT": "K", "dp": "Pa", "V_flow": "m3/s", "Q_flow": "W"}
+TP_INIT = {"T0": I("T", "K", 293.15, abs_T=True)}
+MASS = {"m": P("kg", 0.0, min=0, doc="mass of medium inside (0: no storage, T follows at once)")}
+
+
+def _vl(p):
+    if p.get("V_flowLaminar") is not None:
+        return p["V_flowLaminar"]
+    return p["V_flowNominal"] * (0.5 if p["friction"] == "linear" else 0.1)
+
+
+def _dpl(p):
+    if p.get("dpLaminar") is not None:
+        return p["dpLaminar"]
+    return p["dpNominal"] * (0.5 if p["friction"] == "linear" else 0.01)
+
+
+kind("pipe", FHF + "Components.Pipe", {**FAB_F, "heatPort": "heat"},
+     {**MED, **MASS,
+      "V_flowNominal": P("m3/s", gt=0, doc="volume flow of the nominal point"),
+      "dpNominal": P("Pa", gt=0, doc="pressure drop at V_flowNominal"),
+      "friction": P("1", "quadratic", type="enum", choices=["quadratic", "linear"], msl=False,
+                    doc="quadratic: linear up to V_flowLaminar, then quadratic through the nominal point; linear: "
+                        "dp = dpNominal V / V_flowNominal everywhere"),
+      "V_flowLaminar": P("m3/s", None, gt=0, doc="end of the laminar range (default 0.1 x V_flowNominal)"),
+      "dpLaminar": P("Pa", None, gt=0, doc="pressure drop at V_flowLaminar (default 0.01 x dpNominal)"),
+      "h_g": P("m", 0.0, doc="height of flowPort_b over flowPort_a"),
+      "frictionLoss": P("1", 0.0, min=0, max=1, doc="part of the friction power that heats the medium")},
+     {**TP_VARS, "T_q": "K", "pressureDrop": "Pa", "Q_friction": "W"}, TP_INIT,
+     text={"T0": "293.15"}, mods={"V_flowLaminar": _vl, "dpLaminar": _dpl}, cond_ports={"heatPort": "useHeatPort"},
+     linear=False, domain="fluid",
+     doc="dp = friction(V_flow) + rho g h_g; m cv dT/dt = H_a + H_b + Q (heatPort, connected: heat exchange at the "
+         "outlet temperature T)")
+kind("valve", FHF + "Components.Valve", {**FAB_F, "y": "in"},
+     {**MED, **MASS, "Kv1": P("m3/s", gt=0, doc="flow at full opening y1 under dp0"),
+      "dp0": P("Pa", gt=0, doc="standard pressure drop of Kv1"),
+      "rho0": P("kg/m3", None, gt=0, doc="standard density of Kv1 (default: the medium's)"),
+      "y1": P("1", 1.0, gt=0, doc="full opening"), "kv0": P("1", 0.01, gt=0, max=0.999, doc="leakage flow / Kv1 at y = 0"),
+      "LinearCharacteristic": P("1", True, type="bool", doc="true: Kv linear in y; false: exponential"),
+      "frictionLoss": P("1", 0.0, min=0, max=1)},
+     TP_VARS, TP_INIT, text={"T0": "293.15"},
+     mods={"rho0": lambda p: p["rho0"] if p.get("rho0") is not None else medium_props(p["medium"])["rho"]},
+     linear=False, domain="fluid",
+     doc="dp = dp0 rho/rho0 (V_flow/Kv)|V_flow/Kv|, Kv = Kv1 (kv0 + (1 - kv0) y/y1) (linear); input y = opening")
+kind("volume_flow", FHF + "Sources.VolumeFlow", FAB_F,
+     {**MED, **MASS, "constantVolumeFlow": P("m3/s", doc="volume flow from flowPort_a to flowPort_b")},
+     TP_VARS, TP_INIT, text={"T0": "293.15"}, domain="fluid", doc="an ideal pump: V_flow = constantVolumeFlow")
+kind("signal_volume_flow", FHF + "Sources.VolumeFlow", {**FAB_F, "volumeFlow": "in"}, {**MED, **MASS},
+     TP_VARS, TP_INIT, text={"T0": "293.15", "useVolumeFlowInput": "true"}, linear=False, domain="fluid",
+     doc="an ideal pump: V_flow = input volumeFlow [m3/s]")
+kind("pressure_increase", FHF + "Sources.PressureIncrease", FAB_F,
+     {**MED, **MASS, "constantPressureIncrease": P("Pa", doc="p_b - p_a")},
+     TP_VARS, TP_INIT, text={"T0": "293.15"}, domain="fluid", doc="an ideal pump: p_b - p_a = constantPressureIncrease")
+kind("signal_pressure_increase", FHF + "Sources.PressureIncrease", {**FAB_F, "pressureIncrease": "in"}, {**MED, **MASS},
+     TP_VARS, TP_INIT, text={"T0": "293.15", "usePressureIncreaseInput": "true"}, linear=False, domain="fluid",
+     doc="an ideal pump: p_b - p_a = input pressureIncrease [Pa]")
+kind("ideal_pump", FHF + "Sources.IdealPump", {**FAB_F, "flange_a": "flange_r"},
+     {**MED, **MASS, "wNominal": P("rad/s", gt=0, doc="nominal speed"),
+      "dp0": P("Pa", gt=0, doc="pressure rise at zero flow and wNominal"),
+      "V_flow0": P("m3/s", gt=0, doc="flow at zero pressure rise and wNominal")},
+     {**TP_VARS, "w": "rad/s"}, TP_INIT, text={"T0": "293.15"}, linear=False, domain="fluid",
+     islands=[["flowPort_a", "flowPort_b"], ["flange_a"]],
+     doc="driven by its flange: p_b - p_a = dp0 (w/wN)^2 (1 - V_flow/(V_flow0 w/wN)); flange torque from tau w = dp V")
+kind("ambient", FHF + "Sources.Ambient", {"flowPort": "fluid"},
+     {**MED, "constantAmbientPressure": P("Pa", 0.0, doc="pressure (the loop's reference)"),
+      "constantAmbientTemperature": P("K", 293.15, gt=0, abs_T=True, doc="temperature of medium flowing in")},
+     {"T_port": "K"}, domain="fluid",
+     doc="an open boundary: fixes p; medium flows in at its temperature, out at the port's")
+kind("pressure_reference", FHF + "Sources.AbsolutePressure", {"flowPort": "fluid"},
+     {**MED, "p": P("Pa", 0.0, doc="pressure at the port")}, domain="fluid",
+     doc="sets the pressure level of a closed loop (no flow, no heat)")
+kind("fluid_temperature_sensor", FHF + "Sensors.TemperatureSensor", {"flowPort": "fluid", "y": "out"}, MED,
+     domain="fluid", doc="y = temperature at the port [K] (h/cp; mixed at junctions)")
+kind("fluid_pressure_sensor", FHF + "Sensors.PressureSensor", {"flowPort": "fluid", "y": "out"}, MED,
+     domain="fluid", doc="y = pressure at the port [Pa]")
+kind("volume_flow_sensor", FHF + "Sensors.VolumeFlowSensor", {**FAB_F, "y": "out"}, MED, {"V_flow": "m3/s"},
+     domain="fluid", doc="y = volume flow from flowPort_a to flowPort_b [m3/s] (no pressure drop)")
 
 # ------------------------------------------------------------------------------------------- signals
 SIG = {"offset": P("*", 0.0), "startTime": P("s", 0.0)}
@@ -279,11 +409,49 @@ kind("slew_rate_limiter", BL + "Nonlinear.SlewRateLimiter", {"u": "in", "y": "ou
      mods={"Falling": lambda p: -p["Rising"] if p.get("Falling") is None else p["Falling"]},
      doc="dy/dt = clip((u - y)/Td, Falling, Rising) (Falling default -Rising)")
 
+# ------------------------------------------------------------------------------------------- machines
+DCPM_HEAT = ["heatPortArmature", "heatPortCore", "heatPortStrayLoad", "heatPortFriction", "heatPortBrush",
+             "heatPortPermanentMagnet"]
+MACH = "Modelica.Electrical.Machines."
+kind("dc_machine", MACH + "BasicMachines.DCMachines.DC_PermanentMagnet",
+     {"pin_ap": "pin", "pin_an": "pin", "flange": "flange_r", **{h: "heat" for h in DCPM_HEAT}},
+     {"VaNominal": P("V", gt=0, doc="nominal armature voltage"), "IaNominal": P("A", doc="nominal armature current (> 0 motor)"),
+      "wNominal": P("rad/s", gt=0, doc="nominal speed"), "TaNominal": P("K", 293.15, gt=0, abs_T=True),
+      "Ra": P("Ohm", gt=0, doc="armature resistance at TaRef"), "TaRef": P("K", 293.15, gt=0, abs_T=True),
+      "alpha20a": P("1/K", 0.0, doc="temperature coefficient of Ra at 20 degC (copper 3.9e-3)"),
+      "La": P("H", gt=0, doc="armature inductance"), "Jr": P("kg.m2", gt=0, doc="rotor inertia"),
+      "TaOperational": P("K", 293.15, gt=0, abs_T=True, doc="armature temperature without heat ports"),
+      "PRef_friction": P("W", 0.0, min=0, msl="frictionParameters.PRef", doc="friction loss at wRef_friction"),
+      "wRef_friction": P("rad/s", None, gt=0, msl="frictionParameters.wRef", doc="default wNominal"),
+      "power_w_friction": P("1", 2.0, gt=0, msl="frictionParameters.power_w", doc="friction torque ~ w^(power_w - 1)"),
+      "PRef_core": P("W", 0.0, min=0, msl="coreParameters.PRef", doc="core loss at VRef_core"),
+      "VRef_core": P("V", None, gt=0, msl="coreParameters.VRef", doc="default the nominal induced voltage"),
+      "PRef_strayLoad": P("W", 0.0, min=0, msl="strayLoadParameters.PRef", doc="stray-load loss at IRef, wRef"),
+      "IRef_strayLoad": P("A", None, gt=0, msl="strayLoadParameters.IRef", doc="default IaNominal"),
+      "wRef_strayLoad": P("rad/s", None, gt=0, msl="strayLoadParameters.wRef", doc="default wNominal"),
+      "power_w_strayLoad": P("1", 1.0, gt=0, msl="strayLoadParameters.power_w"),
+      "V_brush": P("V", 0.0, min=0, msl="brushParameters.V", doc="brush voltage drop above ILinear_brush"),
+      "ILinear_brush": P("A", None, gt=0, msl="brushParameters.ILinear", doc="default 0.01 IaNominal")},
+     {"va": "V", "ia": "A", "wMechanical": "rad/s", "phiMechanical": "rad", "tauElectrical": "N.m", "tauShaft": "N.m",
+      "Ta": "K", "Ra_actual": "Ohm", "powerArmature": "W", "powerMechanical": "W", "lossPowerTotal": "W",
+      "lossPowerArmature": "W", "lossPowerCore": "W", "lossPowerStrayLoad": "W", "lossPowerFriction": "W",
+      "lossPowerBrush": "W"},
+     {"ia0": I("ia", "A", 0.0), "w0": I("wMechanical", "rad/s", 0.0), "phi0": I("phiMechanical", "rad", 0.0)},
+     cond_ports={h: "useThermalPort" for h in DCPM_HEAT}, port_groups={"heatPort": DCPM_HEAT},
+     var_paths={"Ta": "ra.T_heatPort", "Ra_actual": "ra.R_actual",
+                **{v: "powerBalance." + v for v in ("powerArmature", "powerMechanical", "lossPowerTotal",
+                                                    "lossPowerArmature", "lossPowerCore", "lossPowerStrayLoad",
+                                                    "lossPowerFriction", "lossPowerBrush")}},
+     islands=[["pin_ap", "pin_an"], ["flange"], DCPM_HEAT], linear=False,
+     doc="MSL DC_PermanentMagnet: k = (VaNominal - Ra IaNominal)/wNominal; losses 0 unless given; heatPort (all "
+         "losses at one node) or all six heatPort* when connected (Ra then at the armature port's T), else Ta = TaOperational")
+
 # ------------------------------------------------------------------------------------------- composites
 composite("dc_motor",
           {"Ra": ("resistor", {"R": "R"}), "La": ("inductor", {"L": "L"}), "emf": ("emf", {"k": "k"}),
            "rotor": ("inertia", {"J": "J"}), "fric": ("rot_damper", {"d": "d"}), "housing": ("rot_fixed", {})},
-          {"p": "Ra.p", "n": "emf.n", "flange": "rotor.flange_b"},
+          {"p": "Ra.p", "n": "emf.n", "flange": "rotor.flange_b", "heatPort_R": "Ra.heatPort",
+           "heatPort_friction": "fric.heatPort"},
           {"R": P("Ohm", gt=0, doc="armature resistance"), "L": P("H", gt=0, doc="armature inductance"),
            "k": P("N.m/A", gt=0, doc="torque constant = back-emf constant (V.s/rad)"),
            "J": P("kg.m2", gt=0, doc="rotor inertia"), "d": P("N.m.s/rad", 0.0, min=0, doc="viscous friction")},
@@ -292,8 +460,9 @@ composite("dc_motor",
           {"i0": "La.i0", "w0": "rotor.w0", "phi0": "rotor.phi0"},
           conns=[("Ra.n", "La.p"), ("La.n", "emf.p"), ("emf.flange", "rotor.flange_a"),
                  ("fric.flange_a", "rotor.flange_a"), ("fric.flange_b", "housing.flange")],
+          port_groups={"heatPort": ["heatPort_R", "heatPort_friction"]},
           doc="permanent-magnet DC motor: armature R + L + emf (k), rotor J, viscous friction d to the housing; "
-              "flange = shaft; tau = electrical torque k*i")
+              "flange = shaft; tau = electrical torque k*i; heatPort (or heatPort_R, heatPort_friction) takes the losses")
 composite("convection",
           {"conv": ("convection_core", {}), "Gc": ("constant", {"k": lambda p: p["Gc"] if p.get("Gc") is not None else p["h"] * p["A"]})},
           {"solid": "conv.solid", "fluid": "conv.fluid"},
@@ -308,8 +477,9 @@ OUT_UNITS = {("voltage_sensor", "v"): "V", ("current_sensor", "i"): "A", ("poten
              ("position_sensor", "s"): "m", ("speed_sensor", "v"): "m/s", ("acc_sensor", "a"): "m/s2",
              ("force_sensor", "f"): "N", ("angle_sensor", "phi"): "rad", ("rot_speed_sensor", "w"): "rad/s",
              ("rot_acc_sensor", "a"): "rad/s2", ("torque_sensor", "tau"): "N.m", ("temperature_sensor", "T"): "K",
-             ("heat_flow_sensor", "Q_flow"): "W"}
-PORT_PATHS = {("table", "y"): "y[1]"}
+             ("heat_flow_sensor", "Q_flow"): "W", ("fluid_temperature_sensor", "y"): "K",
+             ("fluid_pressure_sensor", "y"): "Pa", ("volume_flow_sensor", "y"): "m3/s"}
+PORT_PATHS = {("table", "y"): "y[1]", **{("dc_machine", h): "thermalPort." + h for h in DCPM_HEAT}}
 
 
 # ------------------------------------------------------------------------------------------- helpers
@@ -330,15 +500,25 @@ def domain_of(port_type: str) -> str:
     return PORT_TYPES[port_type]["domain"]
 
 
+def var_path(kind_name: str, v: str) -> str:
+    """The Modelica path of a variable inside a component (most are the name itself)."""
+    return KINDS[kind_name].get("var_paths", {}).get(v, v)
+
+
 def port_types(kind_name: str) -> dict:
-    """{port: port type} for elementary and composite kinds."""
+    """{port: port type} for elementary and composite kinds (port groups: the type of their members)."""
     k = KINDS[kind_name]
     if k.get("parts") is None:
-        return dict(k["ports"])
+        out = dict(k["ports"])
+        for g, members in k.get("port_groups", {}).items():
+            out[g] = k["ports"][members[0]]
+        return out
     out = {}
     for port, target in k["ports"].items():
         part, p = target.split(".", 1)
         out[port] = KINDS[k["parts"][part][0]]["ports"][p]
+    for g, members in k.get("port_groups", {}).items():
+        out[g] = out[members[0]]
     return out
 
 

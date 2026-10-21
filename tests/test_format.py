@@ -1,5 +1,5 @@
 """test_format.py — the study format and validation: every error names its fix.
-Version: 2026.10.21.1
+Version: 2026.10.21.14
 """
 import json
 
@@ -16,7 +16,7 @@ def errors(st):
 
 def test_format_is_compact_and_lists_every_kind():
     sf = study_format()
-    assert len(json.dumps(sf)) < 16000
+    assert len(json.dumps(sf)) < 22000
     listed = {k for d in sf["kinds"].values() for k in d}
     assert listed == set(C.public_kinds())
 
@@ -87,7 +87,7 @@ def test_reference_rules():
     assert "neither a mass nor a fixed point" in errors(s)
     s = {"components": {"G": {"kind": "thermal_conductor", "G": 1}, "q": {"kind": "fixed_heat_flow", "Q_flow": 1}},
          "connect": [["q.port", "G.port_a"]], "outputs": {"d": "G.dT"}, "analysis": {"kind": "transient", "stop_time": 1}}
-    assert "no heat capacitor and no fixed or prescribed" in errors(s)
+    assert "no heat capacitor, no fixed or prescribed" in errors(s)
 
 
 def test_alternatives_and_units():

@@ -1,8 +1,8 @@
 """bench.py — benchmark studies with closed-form answers: is the toolchain right?
-Version: 2026.10.21.10
+Version: 2026.10.21.17
 
 Each case is a study plus checks [(result path, expected, tolerance, why)]; tolerances are relative unless
-written {"abs": x}. Chains (chain_feat_modal, chain_b3dt_mass) run the other translator first and only when named; they are skipped
+written {"abs": x}. Chains (chain_feat_modal, chain_b3dt_mass, chain_b3dt_inertia) run the other translator first and only when named; they are skipped
 when it is not installed. A case passes when the run is ok and reliable (balance, initialisation, solver, values read
 back, energy, reference) and every check holds. The expected values are computed here from the closed forms.
 """
@@ -152,13 +152,232 @@ def _sweep_rc():
     return st, checks
 
 
+RHO_W, CP_W = 995.6, 4177.0             # MSL FluidHeatFlow.Media.Water
+
+
+def _pipe(**kw):
+    d = {"kind": "pipe", "m": 0.5, "V_flowNominal": 1e-4, "dpNominal": 2000, "V_flowLaminar": 1e-5, "dpLaminar": 100}
+    d.update(kw)
+    return d
+
+
+def _coolant_open():
+    """Water from an ambient through a pump (0.1 l/s) and a pipe heated with 2 kW to an ambient: the outlet
+    temperature rises as a first-order lag, tau = m cv / (m_flow cp) = 5.0 s, to T_in + Q / (m_flow cp)."""
+    V, Q, m = 1e-4, 2000.0, 0.5
+    mf = RHO_W * V
+    dT, tau = Q / (mf * CP_W), m * CP_W / (mf * CP_W)
+    st = {"components": {"a1": {"kind": "ambient", "constantAmbientTemperature": "20 degC"},
+                         "pump": {"kind": "volume_flow", "constantVolumeFlow": "0.1 l/s"}, "pipe": _pipe(m=m),
+                         "a2": {"kind": "ambient"}, "q": {"kind": "fixed_heat_flow", "Q_flow": Q}},
+          "connect": [["a1.flowPort", "pump.flowPort_a"], ["pump.flowPort_b", "pipe.flowPort_a"],
+                      ["pipe.flowPort_b", "a2.flowPort"], ["q.port", "pipe.heatPort"]],
+          "outputs": {"T": "pipe.T", "dp": "pipe.dp"}, "analysis": {"kind": "transient", "stop_time": 40, "intervals": 4000},
+          "derived": [{"kind": "crossing", "signal": "T", "level": 293.15 + dT * (1 - math.exp(-1))}]}
+    sl, VL = 100 / 1e-5, 1e-5
+    k = (2000 - sl * 1e-4) / (1e-4 - VL) ** 2
+    return st, [("derived.T.crossing_time_s", tau, 1e-4, "tau = m cv / (m_flow cp): 63.2 % of the rise at t = tau"),
+                ("outputs.T.final", 293.15 + dT * (1 - math.exp(-40 / tau)), 1e-5, "T(40 s), first-order lag"),
+                ("outputs.dp.final", sl * V + k * (V - VL) ** 2, 1e-9, "the friction curve through the nominal point")]
+
+
+def _coolant_loop():
+    """A closed water loop (pressure reference, pump 0.1 l/s), a heater (1 kW) and a cooler (200 W/K to 20 degC):
+    steady cooler outlet T_amb + Q/G = 25 degC, heater outlet + Q / (m_flow cp)."""
+    V, Q, G = 1e-4, 1000.0, 200.0
+    st = {"components": {"pref": {"kind": "pressure_reference", "p": "1 bar"},
+                         "pump": {"kind": "volume_flow", "constantVolumeFlow": V}, "heater": _pipe(), "cooler": _pipe(),
+                         "q": {"kind": "fixed_heat_flow", "Q_flow": Q}, "g": {"kind": "thermal_conductor", "G": G},
+                         "amb": {"kind": "fixed_temperature", "T": "20 degC"}, "tHot": {"kind": "fluid_temperature_sensor"}},
+          "connect": [["pump.flowPort_b", "heater.flowPort_a"], ["heater.flowPort_b", "cooler.flowPort_a"],
+                      ["cooler.flowPort_b", "pump.flowPort_a"], ["pref.flowPort", "pump.flowPort_a"],
+                      ["q.port", "heater.heatPort"], ["cooler.heatPort", "g.port_a"], ["g.port_b", "amb.port"],
+                      ["tHot.flowPort", "heater.flowPort_b"]],
+          "outputs": {"T_hot": "tHot.y", "T_cool": "cooler.T"},
+          "analysis": {"kind": "steady", "max_time": 3000}}
+    Tc = 293.15 + Q / G
+    return st, [("steady.T_cool.value", Tc, 1e-5, "T_amb + Q/G"),
+                ("steady.T_hot.value", Tc + Q / (RHO_W * V * CP_W), 1e-5, "+ Q / (m_flow cp)")]
+
+
+def _coolant_hydraulics():
+    """A pressure source (5 kPa) driving water through a pipe (quadratic friction) and a half-open valve between
+    two ambients: the operating point solves dp_source = friction(V) + dp0 (V/Kv)^2 (a quadratic in V)."""
+    dps, VN, dpN, Kv1, dp0 = 5000.0, 1e-4, 2000.0, 2e-4, 1e5
+    VL, dpL = 0.1 * VN, 0.01 * dpN
+    sl = dpL / VL
+    k = (dpN - sl * VN) / (VN - VL) ** 2
+    Kv = Kv1 * (0.01 + 0.99 * 0.5)
+    a = dp0 / Kv ** 2
+    A, B, Cq = k + a, sl - 2 * k * VL, k * VL * VL - dps          # V > VL
+    V = (-B + math.sqrt(B * B - 4 * A * Cq)) / (2 * A)
+    st = {"components": {"a1": {"kind": "ambient"}, "src": {"kind": "pressure_increase", "constantPressureIncrease": dps},
+                         "pipe": {"kind": "pipe", "V_flowNominal": VN, "dpNominal": dpN},
+                         "v": {"kind": "valve", "Kv1": Kv1, "dp0": dp0}, "y": {"kind": "constant", "k": 0.5},
+                         "a2": {"kind": "ambient"}},
+          "connect": [["a1.flowPort", "src.flowPort_a"], ["src.flowPort_b", "pipe.flowPort_a"],
+                      ["pipe.flowPort_b", "v.flowPort_a"], ["v.flowPort_b", "a2.flowPort"], ["y.y", "v.y"]],
+          "outputs": {"V": "pipe.V_flow", "dp_valve": "v.dp"}, "analysis": {"kind": "transient", "stop_time": 1}}
+    return st, [("outputs.V.final", V, 1e-7, "root of (k + dp0/Kv^2) V^2 + (dpL/VL - 2 k VL) V + k VL^2 = dp_source"),
+                ("outputs.dp_valve.final", a * V * V, 1e-7, "dp0 (V/Kv)^2")]
+
+
+DCPM = {"kind": "dc_machine", "VaNominal": 100, "IaNominal": 100, "wNominal": "1425 rpm", "Ra": 0.05, "La": 0.0015,
+        "Jr": 0.15}                       # MSL's DcPermanentMagnetData
+
+
+def _dcpm(losses: bool):
+    """The MSL DC_PermanentMagnet (example data) at 100 V; nominal load torque from t = 1 s. Without losses:
+    no-load speed Va/k, then wNominal at IaNominal (k = (VaNominal - Ra IaNominal)/wNominal). With linear
+    friction (power_w 1, 100 W at wNominal) and core losses (50 W at the nominal induced voltage): the steady
+    state of the linear equations."""
+    wN = 1425 * 2 * math.pi / 60
+    Va, R, IaN = 100.0, 0.05, 100.0
+    k = (Va - R * IaN) / wN
+    TL = k * IaN
+    m = dict(DCPM)
+    st = {"components": {"V": {"kind": "constant_voltage", "V": Va}, "g": {"kind": "ground"}, "M": m,
+                         "load": {"kind": "torque_step", "stepTorque": -TL, "startTime": 1}},
+          "connect": [["V.p", "M.pin_ap"], ["M.pin_an", "V.n"], ["V.n", "g"], ["M.flange", "load.flange"]],
+          "outputs": {"w": "M.wMechanical", "i": "M.ia", "P_loss": "M.lossPowerTotal", "tau": "M.tauShaft"}}
+    if not losses:
+        st["analysis"] = {"kind": "transient", "stop_time": 2, "intervals": 2000}
+        st["derived"] = [{"kind": "window", "signal": "w", "t0": 0.8, "t1": 0.99}]
+        return st, [("derived.w.mean", Va / k, 1e-4, "no load: w = Va / k (mechanical time constant Jr R / k^2 = 18.5 ms)"),
+                    ("outputs.w.final", wN, 1e-5, "nominal load at nominal voltage: wNominal"),
+                    ("outputs.i.final", IaN, 1e-4, "IaNominal"),
+                    ("outputs.P_loss.final", R * IaN ** 2, 1e-4, "Ra IaNominal^2")]
+    m.update({"PRef_friction": 100.0, "power_w_friction": 1.0, "PRef_core": 50.0})
+    st["analysis"] = {"kind": "steady", "max_time": 5}
+    cf = 100.0 / wN ** 2
+    Gc = 50.0 / (Va - R * IaN) ** 2
+    w = (k * Va / R - TL) / (k * k * (1 + R * Gc) / R + cf)
+    ila = (Va - k * w * (1 + R * Gc)) / R
+    ia = ila + Gc * k * w
+    loss = R * ia ** 2 + Gc * (k * w) ** 2 + cf * w ** 2
+    return st, [("steady.w.value", w, 1e-5, "steady speed of the linear machine equations"),
+                ("steady.i.value", ia, 1e-5, "armature current = airgap + core current"),
+                ("steady.P_loss.value", loss, 1e-5, "Ra ia^2 + Gc (k w)^2 + cf w^2"),
+                ("steady.tau.value", TL, 1e-5, "shaft torque = the load")]
+
+
+def _self_heating():
+    """A 10 ohm resistor on 10 V heats a 100 J/K capacitor through its heatPort, cooled by 0.5 W/K to 20 degC:
+    T = T_amb + P/G (1 - exp(-t G/C)), tau = C/G = 200 s, steady + 20 K (one way: alpha = 0)."""
+    P, G, Cth = 10.0, 0.5, 100.0
+    st = {"components": {"v": {"kind": "constant_voltage", "V": 10}, "g": {"kind": "ground"}, "r": {"kind": "resistor", "R": 10},
+                         "cr": {"kind": "heat_capacitor", "C": Cth}, "gr": {"kind": "thermal_conductor", "G": G},
+                         "amb": {"kind": "fixed_temperature", "T": "20 degC"}},
+          "connect": [["v.p", "r.p"], ["r.n", "v.n"], ["v.n", "g"], ["r.heatPort", "cr.port"], ["cr.port", "gr.port_a"],
+                      ["gr.port_b", "amb.port"]],
+          "outputs": {"T": "cr.T", "T_r": "r.T_heatPort"}, "analysis": {"kind": "transient", "stop_time": 1000, "intervals": 1000},
+          "derived": [{"kind": "crossing", "signal": "T", "level": 293.15 + P / G * (1 - math.exp(-1))}]}
+    return st, [("derived.T.crossing_time_s", Cth / G, 1e-4, "tau = C/G"),
+                ("outputs.T.final", 293.15 + P / G * (1 - math.exp(-1000 * G / Cth)), 1e-5, "T(1000 s)"),
+                ("outputs.T_r.final", 293.15 + P / G * (1 - math.exp(-1000 * G / Cth)), 1e-5, "the resistor at its port's T")]
+
+
+def _damper_heating():
+    """A flywheel (1 kg m2, 100 rad/s) spins down through a rotational damper (0.5 N m s/rad) whose heatPort feeds a
+    1 kJ/K capacitor: w = w0 exp(-d t/J); the capacitor gains J w0^2 / 2 (1 - exp(-2 d t / J))."""
+    J, w0, d, Cth = 1.0, 100.0, 0.5, 1000.0
+    st = {"components": {"J": {"kind": "inertia", "J": J, "w0": w0}, "d": {"kind": "rot_damper", "d": d},
+                         "f": {"kind": "rot_fixed"}, "c": {"kind": "heat_capacitor", "C": Cth}},
+          "connect": [["J.flange_b", "d.flange_a"], ["d.flange_b", "f.flange"], ["d.heatPort", "c.port"]],
+          "outputs": {"T": "c.T", "w": "J.w"}, "analysis": {"kind": "transient", "stop_time": 4, "intervals": 2000}}
+    return st, [("outputs.T.final", 293.15 + J * w0 ** 2 / 2 * (1 - math.exp(-2 * d * 4 / J)) / Cth, 1e-5,
+                 "the kinetic energy lost, as heat"),
+                ("outputs.w.final", w0 * math.exp(-d * 4 / J), 1e-4, "w0 exp(-d t / J)")]
+
+
+def _dcpm_heating():
+    """The MSL DC machine at nominal load with its heatPort on a 2 kJ/K capacitor cooled by 10 W/K to 20 degC:
+    every loss (here Ra IaNominal^2 = 500 W) heats it: steady T = T_amb + 500/10 = 70 degC, and so is Ta."""
+    st, _ = _dcpm(False)
+    st["components"].update({"cap": {"kind": "heat_capacitor", "C": 2000}, "gth": {"kind": "thermal_conductor", "G": 10},
+                             "amb": {"kind": "fixed_temperature", "T": 293.15}})
+    st["connect"] += [["M.heatPort", "cap.port"], ["cap.port", "gth.port_a"], ["gth.port_b", "amb.port"]]
+    st["outputs"].update({"T": "cap.T", "Ta": "M.Ta"})
+    st["analysis"] = {"kind": "steady", "max_time": 5000}
+    st.pop("derived", None)
+    return st, [("steady.T.value", 293.15 + 500 / 10, 1e-5, "T_amb + Ra IaNominal^2 / G"),
+                ("steady.Ta.value", 293.15 + 500 / 10, 1e-5, "the armature at the heat port's T"),
+                ("steady.w.value", 1425 * 2 * math.pi / 60, 1e-5, "alpha20a = 0: the speed does not depend on T")]
+
+
+def _limiter_loop():
+    """P control (k = 5) of a first-order plant (T = 1 s) through a limiter (+-20): saturated until 5 (10 - y) = 20,
+    i.e. y = 6, reached at t = 0.1 - ln(1 - 6/20); then y -> 50/6 with tau = 1/6 s (events in the reference)."""
+    st = {"components": {"sp": {"kind": "step", "height": 10, "startTime": 0.1}, "fb": {"kind": "feedback"},
+                         "kp": {"kind": "gain", "k": 5}, "lim": {"kind": "limiter", "uMax": 20},
+                         "plant": {"kind": "first_order", "k": 1, "T": 1}},
+          "connect": [["sp.y", "fb.u1"], ["fb.y", "kp.u"], ["kp.y", "lim.u"], ["lim.y", "plant.u"], ["plant.y", "fb.u2"]],
+          "outputs": {"y": "plant.y"}, "analysis": {"kind": "transient", "stop_time": 2, "intervals": 4000},
+          "derived": [{"kind": "crossing", "signal": "y", "level": 6.0}]}
+    tc = 0.1 - math.log(1 - 6 / 20)
+    return st, [("derived.y.crossing_time_s", tc, 1e-4, "the end of saturation: 20 (1 - exp(-(t - 0.1))) = 6"),
+                ("outputs.y.final", 50 / 6 + (6 - 50 / 6) * math.exp(-(2 - tc) * 6), 1e-5, "then the linear loop")]
+
+
+def _rectifier():
+    """Half-wave rectifier (IdealDiode, Vknee 0.7 V, Ron = Goff = 1e-5) on 10 V 50 Hz into 100 ohm: the mean
+    current over a period from MSL's characteristic (it switches at vs = Vknee (1 + R Goff))."""
+    V, Vk, R, Ron, Goff = 10.0, 0.7, 100.0, 1e-5, 1e-5
+    th = math.asin(Vk * (1 + R * Goff) / V)
+    a = Vk * (1 - Ron * Goff)
+    mean = (2 * V * math.cos(th) - a * (math.pi - 2 * th)) / (2 * math.pi * (R + Ron)) \
+        - Goff * 2 * V * math.cos(th) / (2 * math.pi * (1 + R * Goff))
+    st = {"components": {"vs": {"kind": "sine_voltage", "V": V, "f": 50}, "d": {"kind": "ideal_diode", "Vknee": Vk},
+                         "rl": {"kind": "resistor", "R": R}, "g": {"kind": "ground"}},
+          "connect": [["vs.p", "d.p"], ["d.n", "rl.p"], ["rl.n", "g"], ["vs.n", "g"]],
+          "outputs": {"i": "d.i"}, "analysis": {"kind": "transient", "stop_time": 0.04, "intervals": 4000},
+          "derived": [{"kind": "window", "signal": "i", "t0": 0.02, "t1": 0.04}]}
+    return st, [("derived.i.mean", mean, 1e-3, "mean of (vs - Vknee)/(R + Ron) over the conduction angle"),
+                ("outputs.i.max", (V - a) / (R + Ron), 1e-4, "peak (V - Vknee)/(R + Ron)")]
+
+
+def _slew():
+    """A unit step through a slew-rate limiter (Rising 2/s, Td 1 ms): a ramp of 2/s until (u - y)/Td = 2, i.e.
+    y = 1 - 2 Td, then an exponential with Td."""
+    Ri, Td = 2.0, 1e-3
+    t1 = 0.1 + (1 - Ri * Td) / Ri
+    st = {"components": {"u": {"kind": "step", "height": 1, "startTime": 0.1},
+                         "s": {"kind": "slew_rate_limiter", "Rising": Ri, "Td": Td}},
+          "connect": [["u.y", "s.u"]], "outputs": {"y": "s.y"},
+          "analysis": {"kind": "transient", "stop_time": 0.6, "intervals": 6000},
+          "derived": [{"kind": "crossing", "signal": "y", "level": 0.5}]}
+    return st, [("derived.y.crossing_time_s", 0.1 + 0.5 / Ri, 1e-4, "on the ramp"),
+                ("outputs.y.final", 1 - Ri * Td * math.exp(-(0.6 - t1) / Td), 1e-6, "after the ramp")]
+
+
+def _dcpm_brush():
+    """The DC machine with a 2 V brush drop (above ILinear = 1 A) at nominal load: k = (Va - Ra IaN - 2)/wNominal;
+    steady ia = TL / k, w = (Va - 2 - Ra ia) / k (the brush in its constant-drop mode)."""
+    st, _ = _dcpm(False)
+    st["components"]["M"].update({"V_brush": 2.0, "ILinear_brush": 1.0})
+    st["analysis"] = {"kind": "steady", "max_time": 5}
+    st.pop("derived", None)
+    wN = 1425 * 2 * math.pi / 60
+    TL = (100 - 5) / wN * 100
+    k = (100 - 5 - 2) / wN
+    ia = TL / k
+    return st, [("steady.i.value", ia, 1e-5, "ia = TL / k"), ("steady.w.value", (100 - 2 - 0.05 * ia) / k, 1e-5,
+                                                               "w = (Va - V_brush - Ra ia) / k")]
+
+
 def cases() -> dict:
     out = {}
     for name, fn in (("rc_step", _rc), ("rlc_step", lambda: _rlc("step")), ("rlc_poles_bode", lambda: _rlc("lin")),
                      ("msd_modes", lambda: _msd("modes")), ("msd_free", lambda: _msd("free")),
                      ("inertia_torque_step", _inertia), ("dc_motor_steady", _dc_motor),
                      ("thermal_rc", lambda: _thermal("rc")), ("thermal_steady", lambda: _thermal("steady")),
-                     ("two_mass", _two_mass), ("pi_first_order", _pi_loop), ("sweep_rc", _sweep_rc)):
+                     ("two_mass", _two_mass), ("pi_first_order", _pi_loop), ("sweep_rc", _sweep_rc),
+                     ("coolant_open_step", _coolant_open), ("coolant_loop_steady", _coolant_loop),
+                     ("coolant_hydraulics", _coolant_hydraulics), ("dc_machine_nominal", lambda: _dcpm(False)),
+                     ("dc_machine_losses", lambda: _dcpm(True)), ("resistor_self_heating", _self_heating),
+                     ("damper_heating", _damper_heating), ("dc_machine_heating", _dcpm_heating),
+                     ("limiter_loop", _limiter_loop), ("rectifier_mean", _rectifier), ("slew_rate_ramp", _slew),
+                     ("dc_machine_brush", _dcpm_brush)):
         st, checks = fn()
         out[name] = {"study": st, "checks": checks}
     return out
@@ -208,8 +427,32 @@ def _chain_b3dt_mass():
                     "f = sqrt(k/m) / (2 pi)")]
 
 
+def _chain_b3dt_inertia():
+    """Two build123d-translator steel discs (r 50 mm, h 20 mm) on one shaft, one about its own axis and one about
+    a parallel axis 30 mm away, on a torsion spring: J = m r^2 / 2 and J + m d^2; f = sqrt(c / J_total) / (2 pi)."""
+    from . import chains as CH
+    rho, r, h, d = 7850.0, 50.0, 20.0, 30.0
+    goal = {"features": [{"kind": "base_cyl", "params": {"r": r, "h": h}}]}
+    J1 = CH.b3dt_inertia(goal, rho, (0, 0, 1), None, "b3dt disc r 50 h 20 mm, steel, about its axis")
+    J2 = CH.b3dt_inertia(goal, rho, (0, 0, 1), (d, 0, 0), "the same disc about a parallel axis 30 mm away")
+    c = 1.0e4
+    study = {"components": {"d1": {"kind": "inertia", "J": J1}, "d2": {"kind": "inertia", "J": J2},
+                            "k": {"kind": "rot_spring", "c": c}, "base": {"kind": "rot_fixed"}, "T": {"kind": "torque"}},
+             "connect": [["base.flange", "k.flange_a"], ["k.flange_b", "d1.flange_a"], ["d1.flange_b", "d2.flange_a"],
+                         ["T.flange", "d2.flange_b"]],
+             "outputs": {"phi": "d1.phi"}, "analysis": {"kind": "linearize", "inputs": {"tau": "T.tau"}}}
+    m = rho * math.pi * r * r * h * 1e-9
+    j1 = m * (r * 1e-3) ** 2 / 2
+    j2 = j1 + m * (d * 1e-3) ** 2
+    return study, [("inputs.d1.J.si", j1, 1e-9, "m r^2 / 2"),
+                   ("inputs.d2.J.si", j2, 1e-9, "m r^2 / 2 + m d^2 (parallel axes)"),
+                   ("linearization.natural_frequencies_Hz.0", math.sqrt(c / (j1 + j2)) / (2 * math.pi), 1e-5,
+                    "f = sqrt(c / (J1 + J2)) / (2 pi)")]
+
+
 CHAINS = {"chain_feat_modal": {"needs": "fea_translator", "prepare": _chain_feat_modal},
-          "chain_b3dt_mass": {"needs": "build123d_translator", "prepare": _chain_b3dt_mass}}
+          "chain_b3dt_mass": {"needs": "build123d_translator", "prepare": _chain_b3dt_mass},
+          "chain_b3dt_inertia": {"needs": "build123d_translator", "prepare": _chain_b3dt_inertia}}
 
 
 def prepare(names) -> tuple[dict, dict, dict]:

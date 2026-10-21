@@ -1,5 +1,5 @@
 """test_units.py — value strings and objects to SI.
-Version: 2026.10.21.1
+Version: 2026.10.21.13
 """
 import math
 
@@ -57,3 +57,24 @@ def test_untyped_signal_values():
     assert to_si("2000 rpm", "*")[0] == pytest.approx(2000 * math.pi / 30)
     assert to_si("80 degC", "*")[0] == pytest.approx(353.15)
     assert to_si(3, "*")[0] == 3.0
+
+
+def test_b3dt_mass_properties_as_values():
+    """{"b3dt": <part result>, "density", "axis", "point"}: mass (kg) or moment of inertia (kg.m2), parallel axes."""
+    import math
+    V = math.pi * 50 ** 2 * 20
+    props = {"volume": V, "center_of_mass": [0, 0, 10],
+             "inertia_mm5": [[V * (3 * 2500 + 400) / 12, 0, 0], [0, V * (3 * 2500 + 400) / 12, 0], [0, 0, V * 2500 / 2]]}
+    m = 7850 * V * 1e-9
+    J, rec = to_si({"b3dt": props, "density": 7850}, "kg.m2")
+    assert J == pytest.approx(m * 0.05 ** 2 / 2, rel=1e-12) and rec["from"] == "b3dt" and rec["unit"] == "kg.m2"
+    J, _ = to_si({"b3dt": props, "density": "7.85 g/cm3", "point": [30, 0, 0]}, "kg.m2")
+    assert J == pytest.approx(m * 0.05 ** 2 / 2 + m * 0.03 ** 2, rel=1e-12)
+    J, _ = to_si({"b3dt": props, "density": 7850, "axis": [2, 0, 0], "point": [0, 0, 0]}, "kg.m2")
+    assert J == pytest.approx(m * (3 * 0.05 ** 2 + 0.02 ** 2) / 12 + m * 0.01 ** 2, rel=1e-12)
+    assert to_si({"b3dt": props, "density": 7850}, "kg")[0] == pytest.approx(m, rel=1e-12)
+    for bad, unit in (({"b3dt": props}, "kg"), ({"b3dt": props, "density": 1, "x": 1}, "kg"),
+                      ({"b3dt": {"volume": 1}, "density": 1}, "kg.m2"), ({"b3dt": props, "density": 1}, "N/m"),
+                      ({"b3dt": props, "density": 1, "axis": [0, 0, 0]}, "kg.m2")):
+        with pytest.raises(UnitError):
+            to_si(bad, unit)

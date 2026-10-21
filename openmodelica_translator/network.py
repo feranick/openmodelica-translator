@@ -1,13 +1,16 @@
 """network.py — a study's components, values and connections, resolved: the common ground of validation, the
 Modelica generator and the reference implementation.
-Version: 2026.10.21.1
+Version: 2026.10.21.14
 
 build(study) -> Net, with net.errors (each says the fix) and net.warnings. It
   - resolves kinds (or "msl" class paths) and parameter values to SI (units.to_si), with defaults;
   - expands composite kinds into elementary ones: component X, part p -> element "X__p";
   - maps study ports ("X.p"), variables ("X.i", "X.p.v") and initial values to elements and Modelica paths;
   - joins physical ports into nodes (union-find; rigid pairs such as a mass's two flanges join too) and signal
-    outputs to their inputs.
+    outputs to their inputs;
+  - switches on conditional ports that are connected (elems[e]["enabled"]: a pipe's or a resistor's heatPort);
+  - checks each network's reference (ground, fixed point, temperature, a coolant loop's pressure) and that every
+    fluid port of a loop has the same medium.
 Nothing here depends on OpenModelica.
 """
 from __future__ import annotations
@@ -77,25 +80,25 @@ class Net:
                         part, pv = t.strip().split(".", 1)
                         terms += self.var_expr_elem(f"{comp}__{part}", pv)[0]
                     return terms, unit
-                return [(1.0, f"{comp}.{v}")], k["vars"][v]
+                return [(1.0, f"{comp}.{C.var_path(kname, v)}")], k["vars"][v]
             if v in pts and pts[v] in ("in", "out"):
                 ep = self.elem_port(comp, v)
                 e, p = ep.split(".", 1)
                 return [(1.0, self.mpath(ep))], C.OUT_UNITS.get((self.elems[e]["kind"], p), "1")
         if len(parts) == 3 and parts[1] in pts and pts[parts[1]] not in ("in", "out"):
             pt = C.PORT_TYPES[pts[parts[1]]]
-            if parts[2] in (pt["potential"], pt["flow"]):
+            if parts[2] in (pt["potential"], pt["flow"], *pt.get("extra", ())):
                 ep = self.elem_port(comp, parts[1])
                 return [(1.0, self.mpath(ep) + "." + parts[2])], pt["units"][parts[2]]
         raise KeyError(f"'{ref}': {kname} has variables {sorted(k['vars'])}, signal ports "
                        f"{sorted(p for p, t in pts.items() if t in ('in', 'out'))} and physical ports "
                        f"{sorted(p for p, t in pts.items() if t not in ('in', 'out'))} (port.v / port.i, "
-                       f"port.s / port.f, port.phi / port.tau, port.T / port.Q_flow)")
+                       f"port.s / port.f, port.phi / port.tau, port.T / port.Q_flow, port.p / port.m_flow / port.h / port.H_flow)")
 
     def var_expr_elem(self, elem: str, v: str):
         k = C.KINDS[self.elems[elem]["kind"]]
         if v in k["vars"]:
-            return [(1.0, f"{elem}.{v}")], k["vars"][v]
+            return [(1.0, f"{elem}.{C.var_path(self.elems[elem]['kind'], v)}")], k["vars"][v]
         if "." in v:
             p, q = v.split(".", 1)
             return [(1.0, self.mpath(f"{elem}.{p}") + "." + q)], ""
@@ -120,6 +123,20 @@ def _value(spec, v, where, rec_key, net):
         if not isinstance(v, list) or not v or not all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in v):
             raise UnitError(f"{where}: a non-empty list of numbers")
         return [float(x) for x in v]
+    if typ == "medium":
+        if isinstance(v, str):
+            if v not in C.MEDIA:
+                raise UnitError(f"{where}: unknown medium '{v}' (media: {', '.join(C.MEDIA)}, or {{rho, cp, cv, lambda, nu}})")
+            return v
+        if isinstance(v, dict):
+            bad = set(v) - set(C.MEDIUM_KEYS)
+            if bad or not {"rho", "cp"} <= set(v):
+                raise UnitError(f"{where}: a medium object has rho [kg/m3] and cp [J/(kg.K)], optionally cv, lambda, nu "
+                                f"(SI numbers){'; unknown ' + str(sorted(bad)) if bad else ''}")
+            if not all(isinstance(x, (int, float)) and not isinstance(x, bool) and x > 0 for x in v.values()):
+                raise UnitError(f"{where}: medium properties are positive numbers (SI)")
+            return {k: float(x) for k, x in sorted(v.items())}
+        raise UnitError(f"{where}: a medium name ({', '.join(C.MEDIA)}) or {{rho, cp, cv, lambda, nu}}")
     if typ == "table":
         ok = isinstance(v, list) and len(v) >= 1 and all(isinstance(r, list) and len(r) == 2 and all(
             isinstance(x, (int, float)) and not isinstance(x, bool) for x in r) for r in v)
@@ -253,7 +270,8 @@ def build(study: dict) -> Net:
                     if tp == part and ci in inits_given:
                         pinit_given[ti] = inits_given[ci]
                 inits = resolve_inits(pk, pinit_given, pk_params, f"{w}.{part}", net, name)
-                net.elems[ename] = {"kind": pk, "params": pk_params, "inits": inits, "comp": name, "part": part}
+                net.elems[ename] = {"kind": pk, "params": pk_params, "inits": inits, "comp": name, "part": part,
+                                    "enabled": set()}
             for a, b in k["conns"]:
                 pa, qa = a.split(".", 1)
                 pb, qb = b.split(".", 1)
@@ -261,11 +279,44 @@ def build(study: dict) -> Net:
         else:
             inits = resolve_inits(kname, spec, params, w, net, name)
             net.comps[name] = {"kind": kname, "params": params, "given": set(spec) & set(k["params"])}
-            net.elems[name] = {"kind": kname, "params": params, "inits": inits, "comp": name, "part": None}
+            net.elems[name] = {"kind": kname, "params": params, "inits": inits, "comp": name, "part": None,
+                               "enabled": set()}
+    _kind_checks(net)
     _connections(study, net)
     if not net.errors:
         _topology(study, net)
     return net
+
+
+def dcpm_vi_nominal(p) -> float:
+    """MSL DC_PermanentMagnet's ViNominal = VaNominal - Ra(TaNominal) IaNominal - brush drop(IaNominal)."""
+    a20 = p.get("alpha20a") or 0.0
+    alpha = a20 / (1 + a20 * (p["TaRef"] - 293.15))
+    ra = p["Ra"] * (1 + alpha * (p["TaNominal"] - p["TaRef"]))
+    ia = p["IaNominal"]
+    V, IL = p.get("V_brush") or 0.0, p.get("ILinear_brush") or 0.01 * abs(ia)
+    brush = 0.0 if V <= 0 else (V if ia > IL else -V if ia < -IL else V * ia / IL)
+    return p["VaNominal"] - ra * ia - brush
+
+
+def _kind_checks(net):
+    """Parameter combinations the MSL classes assert on (at initialisation): caught here with the fix."""
+    for name, d in net.comps.items():
+        p = d["params"]
+        if d["kind"] == "dc_machine" and None not in (p.get("VaNominal"), p.get("IaNominal"), p.get("Ra")):
+            vi = dcpm_vi_nominal(p)
+            if vi <= 0:
+                net.errors.append(f"components.{name}: VaNominal must exceed the armature and brush drops at "
+                                  f"IaNominal (induced voltage {vi:g} V <= 0)")
+        if d["kind"] == "pipe" and None not in (p.get("V_flowNominal"), p.get("dpNominal")):
+            VL, dpL = C.KINDS["pipe"]["mods"]["V_flowLaminar"](p), C.KINDS["pipe"]["mods"]["dpLaminar"](p)
+            if not VL < p["V_flowNominal"]:
+                net.errors.append(f"components.{name}: V_flowLaminar ({VL:g}) must be < V_flowNominal "
+                                  f"({p['V_flowNominal']:g})")
+            elif p["dpNominal"] < dpL / VL * p["V_flowNominal"] * (1 - 1e-12):
+                net.errors.append(f"components.{name}: dpNominal ({p['dpNominal']:g} Pa) must be >= dpLaminar / "
+                                  f"V_flowLaminar x V_flowNominal ({dpL / VL * p['V_flowNominal']:g} Pa): the curve "
+                                  f"cannot fall below the laminar line; lower dpLaminar or raise V_flowLaminar")
 
 
 def _connections(study, net):
@@ -331,9 +382,33 @@ def _connections(study, net):
         if (ca, pa) == (cb, pb):
             net.errors.append(f"{w}: a port connected to itself")
             continue
-        a, b = net.elem_port(ca, pa), net.elem_port(cb, pb)
+        ga = C.KINDS[net.comps[ca]["kind"]].get("port_groups", {}).get(pa)
+        gb = C.KINDS[net.comps[cb]["kind"]].get("port_groups", {}).get(pb)
+        if ga and gb:
+            net.errors.append(f"{w}: connect the port group {ca}.{pa} to one port, not to another group")
+            continue
         net.study_conns.append((f"{ca}.{pa}", f"{cb}.{pb}"))
-        net.conns.append((a, b))
+        pairs = [(net.elem_port(ca, m), net.elem_port(cb, pb)) for m in ga] if ga else \
+            [(net.elem_port(ca, pa), net.elem_port(cb, m)) for m in gb] if gb else [(net.elem_port(ca, pa), net.elem_port(cb, pb))]
+        for a, b in pairs:
+            net.conns.append((a, b))
+            for ep in (a, b):
+                e, p = ep.split(".", 1)
+                if p in C.KINDS[net.elems[e]["kind"]]["cond_ports"]:
+                    net.elems[e]["enabled"].add(p)
+    # conditional ports that share one switch go together (a machine's heat ports)
+    for e, d in net.elems.items():
+        k = C.KINDS[d["kind"]]
+        flags = {}
+        for port, flag in k["cond_ports"].items():
+            flags.setdefault(flag, []).append(port)
+        for flag, ports in flags.items():
+            on = [p for p in ports if p in d["enabled"]]
+            if on and len(on) < len(ports):
+                grp = next((g for g, m in k.get("port_groups", {}).items() if set(m) == set(ports)), None)
+                net.errors.append(f"{d['comp']}: heat ports {sorted(set(ports) - set(on))} are not connected: connect "
+                                  + (f"{d['comp']}.{grp} (every loss into one node) or " if grp else "") +
+                                  f"all of {ports}")
 
 
 class _UF:
@@ -360,6 +435,8 @@ def _topology(study, net):
     for e, d in net.elems.items():
         k = C.KINDS[d["kind"]]
         for p, t in k["ports"].items():
+            if p in k["cond_ports"] and p not in d["enabled"]:
+                continue
             ep = f"{e}.{p}"
             (sig_in if t == "in" else sig_out if t == "out" else phys).append(ep)
             uf.find(ep)
@@ -418,6 +495,7 @@ def _topology(study, net):
                 if t not in ("in", "out"):
                     by_dom.setdefault(C.domain_of(t), []).append(p)
             groups = list(by_dom.values())
+        groups = [[p for p in g if f"{e}.{p}" in net.node_of] for g in groups]
         for g in groups:
             for p in g[1:]:
                 isl.union(net.node_of[f"{e}.{g[0]}"], net.node_of[f"{e}.{p}"])
@@ -435,12 +513,25 @@ def _topology(study, net):
         if dom == "translational" and not kinds & {"fixed", "mass"}:
             net.errors.append(f"the translational system of {label} has neither a mass nor a fixed point: its position "
                               f"is undetermined; add a fixed (or a mass)")
-        if dom == "rotational" and not kinds & {"rot_fixed", "inertia"}:
+        if dom == "rotational" and not kinds & {"rot_fixed", "inertia", "dc_machine"}:
             net.errors.append(f"the rotational system of {label} has neither an inertia nor a rot_fixed: its angle is "
                               f"undetermined; add a rot_fixed (or an inertia)")
-        if dom == "thermal" and not kinds & {"fixed_temperature", "prescribed_temperature", "heat_capacitor"}:
-            net.errors.append(f"the thermal network of {label} has no heat capacitor and no fixed or prescribed "
-                              f"temperature: its temperatures are undetermined")
+        if dom == "thermal" and not kinds & {"fixed_temperature", "prescribed_temperature", "heat_capacitor", "pipe"}:
+            net.errors.append(f"the thermal network of {label} has no heat capacitor, no fixed or prescribed "
+                              f"temperature and no coolant pipe: its temperatures are undetermined")
+        if dom == "fluid":
+            if not kinds & {"ambient", "pressure_reference"}:
+                net.errors.append(f"the coolant loop of {label} has no pressure reference: add a pressure_reference "
+                                  f"(closed loop) or ambients (open ends) and connect it")
+            media = {}
+            for x in ports:
+                e = x.split(".")[0]
+                mv = net.elems[e]["params"].get("medium")
+                media.setdefault(repr(mv), []).append(net.elems[e]["comp"])
+            if len(media) > 1:
+                desc = "; ".join(f"{m} ({', '.join(sorted(set(c))[:4])})" for m, c in media.items())
+                net.errors.append(f"the coolant loop of {label} mixes media ({desc}): give every component of a loop "
+                                  f"the same medium")
     # unconnected physical ports
     connected = {x for c in net.conns for x in c}
     for x in phys:
@@ -451,6 +542,9 @@ def _topology(study, net):
             ref = _study_port(net, x)
             if t == "pin":
                 net.errors.append(f"{ref} is not connected (an open terminal carries no current): connect it")
+            elif t == "fluid":
+                net.errors.append(f"{ref} is not connected (an open fluid port is a closed end: no flow): connect it, "
+                                  f"or end the line in an ambient")
             elif t == "heat" and kname not in ("heat_capacitor",):
                 net.warnings.append(f"{ref} is not connected: no heat flows through it (adiabatic)")
             elif t in ("flange_t", "flange_r") and kname not in ("mass", "inertia"):

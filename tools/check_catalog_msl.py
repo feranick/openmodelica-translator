@@ -1,6 +1,6 @@
 """check_catalog_msl.py — checks catalog.py against the MSL 4.0.0 sources (a checkout of
 github.com/modelica/ModelicaStandardLibrary at tag v4.0.0): class paths, ports, parameters, variables, inits.
-Version: 2026.10.21.1
+Version: 2026.10.21.14
 Usage: python tools/check_catalog_msl.py /path/to/ModelicaStandardLibrary
 """
 import re
@@ -71,15 +71,19 @@ def check(root) -> list[str]:
         if not t:
             out.append(f"MISSING CLASS {k}: {v['msl']}")
             continue
-        names = set(v["ports"])
+        names = {C.PORT_PATHS.get((k, p), p).split(".")[0].split("[")[0] for p in v["ports"]}
         for p, spec in v["params"].items():
             if spec.get("msl") is not False:
-                names.add(spec.get("msl") or p)
-        names |= set(v["mods"]) | set(v["text"]) | set(v["vars"])
+                names.add((spec.get("msl") or p).split(".")[0])
+        names |= set(v["mods"]) | set(v["text"])
+        names |= {C.var_path(k, x).split(".")[0] for x in v["vars"]}
         names |= {i["var"] for i in v["inits"].values()}
         names |= {s_.split(".")[0] for s_ in v.get("block_states", {})}
+        names |= set(v.get("cond_ports", {}).values())
+        if "medium" in v["params"]:
+            names.add("medium")
         for n in sorted(names):
-            if not re.search(r"\b" + re.escape(n) + r"\b\s*(\(|=|;|\[|\"|$|annotation)", t, re.M):
+            if not re.search(r"\b" + re.escape(n) + r"\b\s*(\(|=|;|\[|\"|$|annotation|if\b)", t, re.M):
                 out.append(f"{k}: '{n}' not declared in {v['msl']} or its bases")
     return out
 

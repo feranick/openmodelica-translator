@@ -1,5 +1,5 @@
 """modelica.py — a study -> the Modelica model, the omc build script, and the values applied at run time.
-Version: 2026.10.21.2
+Version: 2026.10.21.15
 
 translate(study, name) -> Translation with
   text        model.mo: `model omct_model` with one declaration per element (sorted), every value in SI with
@@ -52,6 +52,19 @@ class Translation:
     pass
 
 
+def media(net) -> dict:
+    """{repr(medium value): top-level parameter name}: one Medium record per distinct medium (coolant loops)."""
+    if getattr(net, "media_names", None) is None:
+        vals = sorted({repr(d["params"]["medium"]) for d in net.elems.values() if "medium" in C.KINDS[d["kind"]]["params"]
+                       and d["params"].get("medium") is not None})
+        net.media_names = {v: f"omct_medium_{i + 1}" for i, v in enumerate(vals)}
+        net.media_values = {}
+        for d in net.elems.values():
+            if "medium" in C.KINDS[d["kind"]]["params"] and d["params"].get("medium") is not None:
+                net.media_values[repr(d["params"]["medium"])] = d["params"]["medium"]
+    return net.media_names
+
+
 def element_values(net, e: str, selected: set):
     """(structural modifiers {name: text}, overridable modifiers {name: value}, start modifiers {var: (value,
     fixed)}) of one element."""
@@ -81,6 +94,11 @@ def element_values(net, e: str, selected: set):
             values[mname] = float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else v
     for mname, text in k["text"].items():
         structural[mname] = text
+    if "medium" in k["params"] and p.get("medium") is not None:
+        structural["medium"] = media(net)[repr(p["medium"])]
+    for port, flag in k.get("cond_ports", {}).items():
+        if port in d.get("enabled", ()):
+            structural[flag] = "true"
     starts = {}
     for iname, spec in k["inits"].items():
         if (e, iname) in selected:
@@ -93,12 +111,17 @@ def _decl(net, e, selected, placeholder: bool):
     d = net.elems[e]
     k = C.KINDS[d["kind"]]
     structural, values, starts = element_values(net, e, selected)
-    mods = []
+    mods, nested = [], {}
     for name in sorted(set(structural) | set(values)):
-        if name in structural:
-            mods.append(f"{name}={structural[name]}")
+        text = structural[name] if name in structural else (PLACEHOLDER if placeholder else fmt(values[name]))
+        if "." in name:                        # a record's field: frictionParameters(PRef=...)
+            rec, field = name.split(".", 1)
+            nested.setdefault(rec, []).append(f"{field}={text}")
         else:
-            mods.append(f"{name}={PLACEHOLDER if placeholder else fmt(values[name])}")
+            mods.append(f"{name}={text}")
+    for rec in sorted(nested):
+        mods.append(f"{rec}({', '.join(nested[rec])})")
+    mods.sort(key=lambda m: m.split("(")[0].split("=")[0])
     for var in sorted(starts):
         mods.append(f"{var}(start={PLACEHOLDER if placeholder else fmt(starts[var])}, fixed=true)")
     m = "(" + ", ".join(mods) + ")" if mods else ""
@@ -130,6 +153,9 @@ def translate(study: dict, name: str = "study", ref=None) -> Translation:
 
     def body(placeholder: bool):
         lines = []
+        for rv, mname in sorted(media(net).items(), key=lambda x: x[1]):
+            lines.append(f"  parameter Modelica.Thermal.FluidHeatFlow.Media.Medium {mname} = "
+                         f"{C.medium_props(net.media_values[rv])['msl']} \"coolant medium\";")
         for e in sorted(net.elems):
             lines.append(_decl(net, e, selected, placeholder))
         if lin:

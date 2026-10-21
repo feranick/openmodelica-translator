@@ -1,5 +1,5 @@
 """runner.py — one study end to end: validate, translate, build (or reuse), run, read, check, write the result.
-Version: 2026.10.21.9
+Version: 2026.10.21.17
 
 run_study(name, study, folder, solver, timeout, cancel) -> the result dict, also written atomically to
 <folder>/<name>.json. solver: "omc" (OpenModelica) or "ref" (the reference implementation only: linear
@@ -184,8 +184,10 @@ def _reference(out, study, tr, t, vals, tol):
 
 def _ref_eigen(out, tr):
     r = tr.ref
-    if r is None or not r.exact:
-        out["checks"]["reference"] = {"ok": True, "covered": False, "why": "nonlinear or escape hatch"}
+    if r is None or not r.exact or getattr(r, "events", None):
+        out["checks"]["reference"] = {"ok": True, "covered": False,
+                                      "why": "piecewise-linear elements (the linearisation depends on their mode)"
+                                      if r is not None and getattr(r, "events", None) else "nonlinear or escape hatch"}
         return
     om = [complex(*e) for e in out["linearization"]["eigenvalues"]]
     rf = list(r.eigenvalues())
@@ -377,6 +379,9 @@ def _run_ref(study, tr, out, units) -> dict:
     an = study["analysis"]
     t0, t1, n, tol, method = _times(an)
     out["checks"]["reference_only"] = {"ok": True, "note": "solver ref: no OpenModelica run"}
+    if an["kind"] == "linearize" and r.events:
+        out.update({"ok": False, "why": "the reference does not linearise piecewise-linear elements: use OpenModelica"})
+        return out
     if an["kind"] == "linearize":
         from .linear import bode_freqs, modes
         ev = r.eigenvalues()

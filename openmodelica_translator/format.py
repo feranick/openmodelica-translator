@@ -1,5 +1,5 @@
 """format.py — the study format (study_format) and the static checks (validate, validate_study).
-Version: 2026.10.21.6
+Version: 2026.10.21.16
 
 validate_study(study) -> {ok, errors, warnings}: nothing runs (no omc). It resolves the network (network.build),
 checks outputs, analysis, derived quantities, sweep, expect, run (against the OMCT_MAX_* caps) and images, then
@@ -52,7 +52,10 @@ DERIVED = {
 CONVENTIONS = [
     "Units: SI everywhere (K, rad/s, m, kg, N.m, W, F, H). A value may be a number (SI), a string '10 mH', "
     "'80 degC', '3000 rpm', '50 %', or {value, unit, from, what} (chained values from other translators, e.g. "
-    "{\"value\": 1200, \"unit\": \"N/mm\", \"from\": \"feat\"}); every conversion is listed in the result's inputs. "
+    "{\"value\": 1200, \"unit\": \"N/mm\", \"from\": \"feat\"}); a mass (kg) or a moment of inertia (kg.m2) can be "
+    "{\"b3dt\": <the part's build123d-translator check_goals or build_parts result>, \"density\": 7850, \"axis\": [0, 0, 1], "
+    "\"point\": [x, y, z] (mm; default: the centre of mass)} (parallel axes applied); every conversion is listed in the "
+    "result's inputs. "
     "Hz and rad/s are never converted into each other.",
     "Sign conventions (MSL): flow into a component's port is positive; a current source drives i from p through "
     "the source to n; force/torque sources push their flange in the positive direction.",
@@ -62,6 +65,16 @@ CONVENTIONS = [
     "Blocks start from their y_start (states 0).",
     "Each electrical circuit needs a ground; each translational/rotational system a fixed point or a mass/inertia; "
     "each thermal network a capacitor or a fixed/prescribed temperature. Every signal input is driven by one output.",
+    "Coolant loops (Thermal.FluidHeatFlow, incompressible, constant properties): fluid ports flowPort_a/flowPort_b "
+    "(flow a -> b positive); every loop has one medium (all its components: medium = a name in 'media' or {rho, cp, "
+    "cv, lambda, nu}) and a pressure reference (pressure_reference in a closed loop, ambients at open ends). Pumps: "
+    "volume_flow, pressure_increase (or their signal_ forms), ideal_pump (driven by its flange). Pipes: give "
+    "V_flowNominal and dpNominal (the operating point), m (kg of medium inside) for temperature dynamics, and "
+    "connect heatPort to a thermal network for heat exchange (at the outlet temperature T; connecting it switches "
+    "it on). T of a component is its outlet temperature; at junctions streams mix.",
+    "Heat ports: resistors, ideal diodes, dampers, dc_motor (heatPort = both losses) and dc_machine (heatPort = all "
+    "six) put their losses into a thermal network when their heatPort is connected (a resistor's R then follows the "
+    "port's temperature with alpha); unconnected, the losses leave the model.",
     "Results: outputs.<name>: unit, initial, final, min, max, t_min, t_max, series {t, y} (<= 400 points); "
     "derived.<name>.*; steady.<name>.*; linearization.*; sweep.table; checks (balance, initialization, solver, "
     "overrides read back, events, finite, energy, reference); reliable / unreliable_because: if reliable is false, "
@@ -91,7 +104,9 @@ def _kind_line(name: str) -> str:
     for p, s in k["params"].items():
         d = s["default"]
         tag = "*" if s["structural"] else ""
-        if s["type"] in ("enum",):
+        if s["type"] == "medium":
+            ps.append(f"{p}*={d}")
+        elif s["type"] in ("enum",):
             ps.append(f"{p}{tag}={'|'.join(s['choices'])}" + (f"({d})" if d is not C.REQ and d is not None else ""))
         elif d is C.REQ:
             ps.append(f"{p}{tag}[{s['unit']}]")
@@ -116,11 +131,11 @@ def _kind_line(name: str) -> str:
 
 def study_format() -> dict:
     domains = {
-        "electrical": [], "translational": [], "rotational": [], "thermal": [], "signals": []}
+        "electrical": [], "translational": [], "rotational": [], "thermal": [], "fluid": [], "signals": []}
     for name in C.public_kinds():
         pts = C.port_types(name).values()
         doms = {C.domain_of(t) for t in pts}
-        d = next((x for x in ("electrical", "translational", "rotational", "thermal") if x in doms), "signals")
+        d = next((x for x in ("fluid", "electrical", "translational", "rotational", "thermal") if x in doms), "signals")
         if name == "dc_motor":
             d = "electrical"
         domains[d].append(name)
@@ -130,7 +145,8 @@ def study_format() -> dict:
             "kinds": kinds,
             "kinds_legend": "ports (in/out = signals) | parameters [SI unit]=default (no default: required; "
                             "name* structural; [*] a signal value: any unit, converted to SI) | vars (outputs: comp.var; ports: comp.port.v/i, .s/.f, .phi/.tau, "
-                            ".T/.Q_flow) | init (initial values) | equation",
+                            ".T/.Q_flow, .p/.m_flow/.h/.H_flow) | init (initial values) | equation",
+            "media": {n: {"rho": v[1], "cp": v[2], "cv": v[3], "lambda": v[4], "nu": v[5]} for n, v in C.MEDIA.items()},
             "example": EXAMPLE}
 
 

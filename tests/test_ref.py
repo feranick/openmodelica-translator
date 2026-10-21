@@ -1,5 +1,5 @@
 """test_ref.py — the reference implementation against closed forms (it runs without OpenModelica).
-Version: 2026.10.21.1
+Version: 2026.10.21.17
 """
 import math
 
@@ -189,7 +189,12 @@ def test_singular_and_nonlinear():
     st["components"]["d"] = {"kind": "ideal_diode"}
     st["connect"] = [["V.p", "d.p"], ["d.n", "R.p"], ["R.n", "C.p"], ["C.n", "g"], ["V.n", "g"]]
     r = Ref(build(st))
-    assert not r.exact and "diode" in r.not_exact[0]
+    assert r.exact and r.events == ["d"]           # piecewise linear: events (V2.5)
+    st["components"]["rad"] = {"kind": "radiation", "Gr": 1e-3}
+    st["components"].update({"h1": {"kind": "heat_capacitor", "C": 1}, "h2": {"kind": "fixed_temperature", "T": 300}})
+    st["connect"] += [["h1.port", "rad.port_a"], ["rad.port_b", "h2.port"]]
+    r = Ref(build(st))
+    assert not r.exact and "radiation" in r.not_exact[0]
 
 
 def test_dc_pi_runs():

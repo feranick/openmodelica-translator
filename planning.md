@@ -374,6 +374,16 @@ Made while building M1 (tell me if any is wrong):
 
 ## State
 
+**2026.10.21.17 (V2.5, sandbox, 2026-10-21)**: events in the reference. Piecewise-linear kinds stamp per mode (`c.mode(default)`; the base system, used by validation, keeps the neutral stand-ins) and register guards (f z + c crossing 0 upwards or downwards -> the next mode): ideal_diode off/on with MSL's s-parametrisation (switches at v = Vknee in off and at i = Goff Vknee in on), limiter and dead_zone low/mid/high, slew_rate_limiter free/rising/falling on (u - y)/Td, lim_pid rewritten from the MSL source (P on wp u_s - u_m, D on wd u_s - u_m, I on u_s - u_m + (y - yu)/(k Ni): the old stand-in put wp on the integrator), the DC machine's brush (low/mid/high on ia). `Ref.mode_ref(modes)` builds a system per mode set (same variables, mapped to the base order), `_consistent` switches violated guards at the start and after each event (an event iteration), `_simulate_events` integrates with solve_ivp events (or brentq on the sources when there are no states), carries the storage values, records `switches`; products (losses) come from the active mode; steady states iterate modes; linearisation is refused (OpenModelica alone). Found: the brush's constant-drop loss V|ia| needed a constant variable 'one' in every mode (the mode systems must have the same variables). Checked against independent integrations of the MSL equations: rectifier with capacitor (1e-6 over two periods), LimPID windup (1e-6), dead zone exact; benchmarks limiter_loop (2.6e-7), rectifier_mean (2.9e-7), slew_rate_ramp (4e-13), dc_machine_brush (7e-14). 272 tests pass. **All five v2 items are implemented; none has run with OpenModelica yet.** Next on mochi: tools/v2_probe.sh (B1-B16), then `omct bench` of the 17 new cases and the chain.
+
+**2026.10.21.16 (V2.4, sandbox, 2026-10-21)**: heat ports on resistor (now with T_ref 300.15 (MSL), alpha, T; vars R_actual, T_heatPort), ideal_diode, damper, spring_damper, rot_damper, rot_spring_damper (cond_ports, islands split so the heat port is its own domain), dc_motor (port group heatPort = Ra + friction) and dc_machine (the six, from V2.3). Reference: `Cascade` sources (flow(heatPort) = -loss as a time function): simulate runs once with them at 0 (the electrical/mechanical part does not see them), keeps the dense solution, then runs again with q(t) and q'(t) from it (z' = P F' + V w'); steady: the same with frozen values; exact only one way (alpha = 0) and when the thermal part needs no second derivative of q (checked on P and Gz). Energy: losses with a connected heat port are internal; the balance's scale is now the largest single term (a flywheel heating a capacitor sums to ~0 and gave error_rel 1). Benchmarks resistor_self_heating (5e-11), damper_heating (3e-15), dc_machine_heating (2e-9) pass with the reference; 263 tests. Not yet run with OpenModelica (B10-B14).
+
+**2026.10.21.15 (V2.3, sandbox, 2026-10-21)**: `dc_machine` = MSL DC_PermanentMagnet. Parameters: the nominal data and the loss records as flat names (PRef_friction -> frictionParameters.PRef, ...; None = the MSL binding, e.g. wRef = wNominal); the model text groups record fields (`frictionParameters(PRef=..., power_w=...)`), the override file keeps dotted paths (`M.frictionParameters.PRef`: changeable? B2). Heat ports are conditional ports with one switch (useThermalPort): none, the group `heatPort` (one connection = six), or all six; some only is an error. Variables in records/subcomponents via `var_paths` (lossPowerTotal -> powerBalance.lossPowerTotal, Ta -> ra.T_heatPort). Reference: the MSL structure (strayLoad v = 0 in series, ra, X; la + airgap (vai = k w) parallel to the core conductance Gc = PRef/VRef^2; brush; rotor with friction torque PRef/wRef^2 w for power_w = 1); not covered: stray load, friction power_w != 1, brush drop (V2.5), heat ports (V2.4). Benchmarks dc_machine_nominal and dc_machine_losses pass with the reference (1e-7 and 1e-13); 259 tests. Not yet run with OpenModelica (B6-B11).
+
+**2026.10.21.14 (V2.2, sandbox, 2026-10-21)**: coolant loops. Catalog: port type `fluid` (p, m_flow; h, H_flow), 12 kinds (pipe, valve, volume_flow, signal_volume_flow, pressure_increase, signal_pressure_increase, ideal_pump, ambient, pressure_reference, three sensors), MEDIA from the MSL sources, `cond_ports` (a port exists when connected; sets useHeatPort). Model text: one top-level `parameter ...Media.Medium omct_medium_<i> = ...Media.Water()` per distinct medium, `medium=omct_medium_<i>` on every fluid component (as the probe's models do: structural, so a medium change rebuilds); pipe laminar point defaults 0.1 V_flowNominal / 0.01 dpNominal (friction "linear": half the nominal point each, so k = 0). Validation: pressure reference per loop, one medium per loop, open fluid ports, the SimpleFriction assert (dpNominal >= dpLaminar/V_flowLaminar V_flowNominal). Reference: `ref.hydraulics` (Newton, central-difference Jacobian, on the MSL relations; constant sources; stand-ins and covered = False for signal-driven sources, flange-driven pumps and components without flow), then temperatures in the linear system (semiLinear by the known flow sign, H balance at junctions). Found: the constraint solution lost 5e-7 relative on flows (1e-5) next to enthalpies (1e6): rows are now scaled before the reduction and the constraint solve is repeated with columns scaled by the variables' sizes (exact to 1e-15). Energy: pipes and valves lose V dp - Q_friction, pumps put in -dp V, ambients -(H_flow + p m_flow/rho), storage m cv T. Benchmarks coolant_open_step (tau 3.3e-7), coolant_loop_steady (2e-13), coolant_hydraulics (1.4e-15) pass with the reference; 251 tests pass. **Not yet run with OpenModelica: needs B1-B5 from tools/v2_probe.sh, then `omct bench coolant_open_step coolant_loop_steady coolant_hydraulics` on mochi.** Next: V2.3.
+
+**2026.10.21.13 (V2.1, sandbox, 2026-10-21)**: Nicola chose: inertia added to b3dt; DC machine thermal modes none/one/separate; heat ports switched on by connecting them; reference = piecewise-linear events + one-way electrical->thermal + constant-flow coolant loops. build123d-translator 2026.10.21.1 (in llm-translators/build123d-translator, for Nicola to commit): `translate.mass_properties`, `describe()` adds `center_of_mass` and `inertia_mm5` (so check_goals and build_parts return them); MCP docs; test `test_mass_properties_exact` (box turned 30° and moved, cylinder); 107 b3dt tests pass in the sandbox (build123d 0.12.0 installed there). omct: `chains.inertia_from_props` / `b3dt_inertia` (density x (n^T I n + V d^2) x 1e-15), study values `{"b3dt": <part result>, "density", "axis", "point"}` for kg and kg.m2 parameters (units.to_si), benchmark `chain_b3dt_inertia` (two discs, one about a parallel axis 30 mm off, on a torsion spring: passes with the reference and the real b3dt in the sandbox, J 2.5e-10, f 1.8e-10). 230 tests pass. `tools/v2_probe.sh` written (B1-B17). Next: the probe report from mochi, then V2.2.
+
 **2026.10.21.12 (first end-to-end request, Claude app, 2026-10-21)**: the DC motor PI step response from the Claude app ran right (rise 46.4 ms, overshoot 5.9 %, settling 174 ms, peak current 19.6 A, 2000 rpm, reliable, converge same), but Nicola saw no picture: the model said "the image in the step above". Checked in Cowork: `get_image` returns the PNG and the model sees it, but it stays inside the collapsed tool result, so the user doesn't see it there. Fix: INSTRUCTIONS and the get_image docstring say so and tell the model to chart `outputs.<name>.series` (already in every result) with its own tools; the series are rounded to 6 significant digits (about half the tokens). The same holds for cfdt's get_image (not changed). To verify: the same request in the Claude app shows a chart drawn by the model.
 
 **2026.10.21.11 on the Mac (2026-10-21)**: `llmt mcp setup` + `llmt mcp test`: omct over ssh to mochi: ok, openmodelica-translator, 12 tools, started in 1.9 s (b3dt, feat, cfdt, lmpt ok too). **M8 done: omct is part of llm-translators.** Next: an end-to-end request in the Claude app (the DC motor PI step response; a chain with feat), then the open ideas below.
@@ -460,11 +470,100 @@ Not verified (no omc in the sandbox): that OpenModelica accepts the generated te
 
 **2026.10.20.1 (M0)**: read the umbrella docs (create_new_translators.md, EXECUTION.md), cfdt (planning, executor, api, mcp_server, format), lmpt refcalc.py, feat's result keys. Read the OpenModelica v1.27.1 sources (overrides, steady state, linearisation, checkModel, buildModel, logs, MAT format) and the MSL 4.0.0 sources (class names, ports, parameters). Sandbox cannot install OpenModelica (proxy blocks build.openmodelica.org; no root). Wrote this plan and `tools/m0_probe.sh`.
 
+## Version 2 (proposal, 2026-10-21)
+
+Nicola's order: (V2.1) rotational chains from build123d-translator moments of inertia; (V2.2) coolant loops with
+Thermal.FluidHeatFlow; (V2.3) the library's DC machine with losses and a thermal port; (V2.4) heat from resistors and
+dampers into the thermal network; (V2.5) the diode and limiters in the reference check. Each step: version bump,
+tests, benchmarks with closed forms, README, this file. Facts below are from the MSL 4.0.0 sources (tag v4.0.0,
+read in the sandbox); OpenModelica behaviour is unverified until `tools/v2_probe.sh` runs on mochi (B1-B17).
+
+### V2.1 Rotational chains (build123d-translator inertia)
+
+build123d-translator 2026.10.20.1 reports volume, area, bbox: **no centre of mass, no inertia**. build123d 0.12 has
+`Shape.matrix_of_inertia` (OCCT `GProp_GProps.MatrixOfInertia`, unit density, about the centre of mass, mm^5) and
+`center()`. Proposal: b3dt's `describe()` adds `center_of_mass` [mm] and `inertia_mm5` (3x3 about the centre of
+mass, unit density; OCCT's sign of the products checked by B17). omct `chains.b3dt_inertia(goal, density, axis,
+point)`: J = density x n^T I n x 1e-15 + m d^2 (parallel axes; d = distance from the centre of mass to the axis);
+`{value, unit "kg.m2", from "b3dt", what}`. Benchmark `chain_b3dt_inertia`: a steel disc (r, h) on a torsion spring:
+J = m r^2 / 2 exact, f = sqrt(c/J)/2pi.
+
+### V2.2 Coolant loops (Modelica.Thermal.FluidHeatFlow)
+
+MSL facts: connector FlowPort {p, flow m_flow, h, flow H_flow} with a `medium` record parameter (rho, cp, cv,
+lambda, nu; final in the ports, so every port of a component shares its medium). TwoPort: mass m (0 = no storage),
+T0, T0fixed, tapT; `m cv der(T) = H_a + H_b + Q_flow`, `H = semiLinear(m_flow, port.h, h)` (upwind, mixing at
+nodes). Media: Water (30 degC), Water_10degC, Water_90degC, Air_30degC, Air_70degC, Gylcol20_20degC (sic),
+Gylcol50_20degC, MineralOil. Pipe: SimpleFriction (laminar V_flowLaminar/dpLaminar, quadratic to
+V_flowNominal/dpNominal; k computed at initialisation), h_g, frictionLoss, useHeatPort (heat port at T_q). Sources:
+Ambient (p, T; inputs optional), AbsolutePressure (p only), VolumeFlow, PressureIncrease (constant or input),
+IdealPump (rotational flange: dp = dp0 (w/wN)^2 (1 - V/(V0 w/wN))). Valve (opening y input), OneWayValve, OpenTank,
+Cylinder; sensors (T, p, V_flow, m_flow, H_flow, relative T and p).
+
+Kinds (new port type `fluid`: potential p, flow m_flow; h is carried by the connector): `pipe` (heat port when
+connected), `valve`, `volume_flow`, `pressure_increase` (constant or signal), `ideal_pump` (flange), `ambient`,
+`pressure_reference`, fluid sensors. Medium: one per loop, by name or {rho, cp, cv, lambda, nu}; the validator
+checks every connected fluid port has the same medium and that each loop has a pressure reference (ambient or
+pressure_reference), as it checks grounds. Energy balance: storage m cv T per pipe; heat ports, friction fed to the
+medium, and the H_flow of ambients. Reference: the hydraulics solved first (algebraic; quadratic friction by Newton)
+for constant flow and pressure sources, then the temperatures as a linear system with the known flows (upwind),
+piecewise between source breakpoints; signal-driven pumps or valves, IdealPump driven by a machine: not covered.
+
+### V2.3 DC machine (Electrical.Machines DC_PermanentMagnet)
+
+MSL facts: nominal data VaNominal, IaNominal, wNominal, TaNominal, Ra (at TaRef), alpha20a, La, Jr, Js (useSupport),
+TaOperational; k = ViNominal / wNominal with ViNominal = VaNominal - Ra(TaNominal) IaNominal - brush drop(IaNominal);
+loss records frictionParameters (PRef, wRef = wNominal, power_w = 2), coreParameters (PRef, VRef = ViNominal, wRef),
+strayLoadParameters (PRef, IRef = IaNominal, wRef, power_w = 1), brushParameters (V, ILinear = 0.01 IaNominal);
+`powerBalance` record (powerArmature, powerMechanical, powerInertiaRotor/Stator, lossPower*). useThermalPort=true
+gives thermalPort with heatPortArmature, Core, StrayLoad, Friction, Brush, PermanentMagnet; false keeps the armature
+at TaOperational. Kind `dc_machine` (ports p, n, flange; heat ports by choice), outputs w, i, v, tau, the losses.
+Energy balance: the machine's own powerBalance as a cross-check. Reference: exact when the losses are linear (no
+stray load, friction power_w = 1, no alpha with a thermal port), brush drop by events (V2.5); otherwise not covered.
+
+### V2.4 Heat ports on resistors and dampers
+
+MSL facts: Resistor (R at T_ref, alpha; ConditionalHeatPort: useHeatPort, T fixed device temperature otherwise),
+IdealDiode (ConditionalHeatPort), Translational/Rotational Damper and SpringDamper
+(PartialElementaryConditionalHeatPortWithoutT: lossPower out of the port). Kinds get a `heat` port that turns
+useHeatPort on when connected (resistor also T_ref, alpha, T); dc_motor's `heat` takes Ra and friction losses. The
+energy balance moves those losses from "lost" to heat into the thermal network. Reference: electrical -> thermal
+one way (alpha = 0): the electrical part first, then the thermal part with R i^2 as a known source; two-way
+(alpha != 0) not covered.
+
+### V2.5 Events in the reference (ideal diode, limiters)
+
+Piecewise-linear kinds get one linear stamp per mode: ideal_diode (off: i = Goff v ... on: v = Ron i + Vknee ...,
+MSL's s-parametrisation), limiter / dead_zone (low, mid, high), lim_pid (its limiter and the anti-windup path),
+slew_rate_limiter (rate clipped), the DC machine's brushes. The reference integrates in a mode, finds the switching
+times (solve_ivp events on the mode guards), carries the storage values across and continues in the new mode;
+modes at the start from the consistent initial values. A Ref per mode set, built lazily. Covered = True when every
+nonlinear element is piecewise linear; chattering (more than OMCT_REF_MAX_EVENTS switchings) gives covered = False.
+
+### Assumptions for version 2 (tools/v2_probe.sh on mochi)
+
+| # | Assumption | Status | Probe |
+|---|---|---|---|
+| B1 | FluidHeatFlow open loop (ambient, VolumeFlow, heated Pipe, ambient) builds and gives T_out = T_in + Q/(rho cp V) with tau = m cv/(m_flow cp) | ? | OpenLoop |
+| B2 | Which fluid and machine parameters are changeable at run time (medium.*, pipe friction, flows; machine nominal data, loss records) | ? | isValueChangeable list |
+| B3 | Overriding the medium's cp and the pump flow at run time takes effect | ? | OpenLoop ov |
+| B4 | Closed loop with AbsolutePressure: steady temperatures; zero flow (Vf = 0 by override) still simulates | ? | ClosedLoop |
+| B5 | IdealPump at constant speed against a pipe: the operating point of the curves | ? | PumpCurve |
+| B6 | DC_PermanentMagnet builds with the MSL example data; final w = wNominal, ia = IaNominal at nominal load | ? | Dcpm |
+| B7 | Variable names: dcpm.wMechanical, ia, va, tauElectrical, tauShaft, powerBalance.* | ? | Dcpm |
+| B8 | Overriding VaNominal and Ra recomputes turnsRatio (k) | ? | Dcpm ov |
+| B9 | With losses the power balance closes (Parm = Pmech + Pinertia + Ploss) | ? | DcpmLosses |
+| B10 | useThermalPort=true with all six heat ports connected; armature R follows the temperature | ? | DcpmThermal |
+| B11 | useThermalPort=true with only one heat port connected: error, or the open ports take no heat | ? | DcpmThermalOne |
+| B12 | Resistor useHeatPort with alpha: steady temperature from G (T - Ta) = V^2/R(T) | ? | HeatPorts |
+| B13 | Damper useHeatPort: d w^2 into the capacitor | ? | HeatPorts |
+| B14 | useHeatPort=true with the port open: error or LossPower forced to 0 | ? | HeatPortOpen |
+| B15 | IdealDiode rectifier: events, ripple, peak 10 - 0.7 V | ? | Rectifier |
+| B16 | Limiter in a loop: saturation and recovery at the closed-form time | ? | LimLoop |
+| B17 | build123d matrix_of_inertia: about the centre of mass, unit density mm^5; the sign of the products | **sandbox ✓** (build123d 0.12.0, OCP): about the centre of mass (a moved box gives the same matrix), unit density mm^5 (box and cylinder exact to 1e-12), off-diagonal = the tensor's -∫xy (box turned 30° about Z: Ixy = -7144709.58 = cos sin (Ixx0 - Iyy0)) | inertia.py; b3dt test_mass_properties_exact |
+
 ## Open ideas
 
-- `dc_machine` (DC_PermanentMagnet) with losses and a thermal port; induction machines with `Machines` quasi-static models.
-- FluidHeatFlow coolant loops (v2), then Modelica.Fluid with cfdt pump/pipe tables.
-- Electro-thermal coupling everywhere (`heat_port` on R and dampers into thermal networks).
+- Induction machines with `Machines` quasi-static models; Modelica.Fluid with cfdt pump/pipe tables.
 - FMU export for co-simulation; parameter estimation from measured data (fit k, J, d).
 - Event-driven stops (`crossing` that ends the run), frequency sweeps by simulation for nonlinear systems.
-- `ref.py` for piecewise-linear elements (ideal diode, limiter) by event detection.

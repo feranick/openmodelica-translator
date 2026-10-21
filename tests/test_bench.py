@@ -1,5 +1,5 @@
 """test_bench.py — the benchmarks' expected values against the reference implementation, and their evaluation.
-Version: 2026.10.21.4
+Version: 2026.10.21.13
 """
 import pytest
 
@@ -63,3 +63,32 @@ def test_chain_feat_modal_with_a_stand_in_feat(tmp_path, monkeypatch):
     assert r["passed"], r
     got = r["checks"][0]["got"]
     assert got / f1 == pytest.approx(1.01465, abs=2e-5)
+
+
+def test_chain_b3dt_inertia_with_a_stand_in_b3dt(tmp_path, monkeypatch):
+    """build123d-translator replaced by the exact disc: centre of mass and unit-density inertia (mm^5)."""
+    import math
+    import sys
+    import types
+
+    def check(goals):
+        r, h = (goals["part"]["features"][0]["params"][k] for k in ("r", "h"))
+        V = math.pi * r * r * h
+        izz, ixx = V * r * r / 2, V * (3 * r * r + h * h) / 12
+        return {"part": {"buildable": True, "volume": V, "center_of_mass": [0, 0, h / 2],
+                         "inertia_mm5": [[ixx, 0, 0], [0, ixx, 0], [0, 0, izz]]}}
+    fake_api = types.SimpleNamespace(check=check)
+    pkg = types.ModuleType("build123d_translator")
+    pkg.api = fake_api
+    monkeypatch.setitem(sys.modules, "build123d_translator", pkg)
+    monkeypatch.setitem(sys.modules, "build123d_translator.api", fake_api)
+    r = bench.run("ref", ["chain_b3dt_inertia"], tmp_path)["chain_b3dt_inertia"]
+    assert r["passed"], r
+    from openmodelica_translator import chains
+    goal = {"features": [{"kind": "base_cyl", "params": {"r": 50.0, "h": 20.0}}]}
+    m = 7850 * math.pi * 50 ** 2 * 20 * 1e-9
+    jx = chains.b3dt_inertia(goal, 7850, (1, 0, 0), (0, 0, 0))     # about X through the base: + m (h/2)^2
+    assert jx["value"] == pytest.approx(m * (3 * 0.05 ** 2 + 0.02 ** 2) / 12 + m * 0.01 ** 2, rel=1e-12)
+    assert jx["unit"] == "kg.m2" and jx["from"] == "b3dt"
+    with pytest.raises(ValueError):
+        chains.b3dt_inertia(goal, 7850, (0, 0, 0))

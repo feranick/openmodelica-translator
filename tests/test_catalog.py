@@ -64,7 +64,7 @@ class _FakeNet:
         return f"{e}." + C.PORT_PATHS.get((self.elems[e]["kind"], p), p)
 
 
-SAMPLE = {"table": [[0.0, 0.0], [1.0, 1.0]], "b": [1.0], "a": [1.0, 1.0], "controllerType": "PID", "law": "linear",
+SAMPLE = {"table": [[0.0, 0.0], [1.0, 1.0]], "b": [1.0], "a": [1.0, 1.0], "controllerType": "PID", "law": "linear", "medium": "water", "friction": "quadratic", "V_flowNominal": 1.0, "V_flowLaminar": 0.1, "dpLaminar": 0.01,
           "TorqueDirection": False}
 
 
@@ -83,7 +83,7 @@ def test_reference_covers_every_variable(kname):
     R._stamp(R._Ctx(sys_, net, "X"))
     have = set(sys_.paths) | set(sys_.products)
     for v in k["vars"]:
-        assert f"X.{v}" in have, f"{kname}.{v} has no reference value"
+        assert f"X.{C.var_path(kname, v)}" in have, f"{kname}.{v} has no reference value"
     for i, s in k["inits"].items():
         assert any(c["name"] == i for c in sys_.inits), f"{kname}.{i} is not a reference initial value"
 

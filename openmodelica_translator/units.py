@@ -1,5 +1,5 @@
 """units.py — values given with units -> SI, recorded.
-Version: 2026.10.21.1
+Version: 2026.10.21.13
 
 A signal block's values (unit "*") take any unit and become SI ("2000 rpm" -> 209.4 rad/s).
 A study value is a number (SI), a string "<number> <unit>" ("10 mH", "80 degC", "3000 rpm", "50 %"), or an
@@ -92,10 +92,50 @@ def _is_angular(unit_text: str) -> bool:
     return "rad" in unit_text or "rpm" in unit_text or "rev" in unit_text or "deg" in unit_text
 
 
+B3DT_KEYS = {"b3dt", "density", "axis", "point", "what"}
+
+
+def _from_b3dt(value: dict, si_unit: str, where: str):
+    """{"b3dt": <a part's check_goals/build_parts result>, "density": kg/m3 (or "7.85 g/cm3"), "axis": [x, y, z],
+    "point": [x, y, z] mm}: the part's mass (kg) or its moment of inertia about the axis (kg.m2)."""
+    from .chains import inertia_from_props
+    unknown = set(value) - B3DT_KEYS
+    if unknown:
+        raise UnitError(f"{where}: unknown keys {sorted(unknown)} in a b3dt value ({', '.join(sorted(B3DT_KEYS))})")
+    props = value["b3dt"]
+    if not isinstance(props, dict):
+        raise UnitError(f"{where}: 'b3dt' must be the part's result from build123d-translator (check_goals or "
+                        f"build_parts: volume, center_of_mass, inertia_mm5)")
+    if "density" not in value:
+        raise UnitError(f"{where}: a b3dt value needs 'density' (kg/m3, e.g. 7850 for steel, or '2.7 g/cm3')")
+    rho, _ = to_si(value["density"], "kg/m3", where=f"{where} density")
+    if rho <= 0:
+        raise UnitError(f"{where}: density must be > 0")
+    if si_unit == "kg":
+        try:
+            vol = float(props["volume"])
+        except (KeyError, TypeError, ValueError):
+            raise UnitError(f"{where}: the b3dt result has no volume") from None
+        si, how = float(f"{rho * vol * 1e-9:.15g}"), f"volume {vol:.6g} mm3 x density {rho:g} kg/m3"
+    elif si_unit == "kg.m2":
+        try:
+            J, how = inertia_from_props(props, rho, value.get("axis", (0.0, 0.0, 1.0)), value.get("point"))
+        except ValueError as exc:
+            raise UnitError(f"{where}: {exc}") from None
+        si, how = float(f"{J:.15g}"), "inertia " + how
+    else:
+        raise UnitError(f"{where}: a b3dt value gives a mass (kg) or a moment of inertia (kg.m2); this parameter is "
+                        f"in {si_unit}")
+    return si, {"from": "b3dt", "what": value.get("what") or how, "si": si, "unit": si_unit,
+                "given": {k: v for k, v in value.items() if k != "b3dt"}}
+
+
 def to_si(value, si_unit: str, *, absolute_temperature: bool = False, where: str = ""):
     """(SI number, record or None). si_unit is the parameter's SI unit as written in the catalog."""
     rec = None
     given = value
+    if isinstance(value, dict) and "b3dt" in value:
+        return _from_b3dt(value, si_unit, where)
     if isinstance(value, dict):
         if "value" not in value:
             raise UnitError(f"{where}: an object value needs 'value' (and 'unit'), e.g. {{\"value\": 12, \"unit\": \"N/mm\"}}")
