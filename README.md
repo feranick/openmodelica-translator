@@ -16,7 +16,7 @@ It is part of [llm-translators](https://github.com/feranick/llm-translators), wi
 | Settings prefix | `OMCT_` |
 | Output folder | `~/omct_runs` (`OMCT_OUT`) |
 
-**Status (2026.10.21.11, milestone 8 of 8):** every milestone checked on mochi with OpenModelica 1.27.1: 11 closed-form benchmarks, the MCP server, sweeps on one build, SLURM queueing, and the chains with fea-translator and build123d-translator (`chain_feat_modal`: Rayleigh/feat = 1.0171 against 1.0146 expected, 0.24 %; `chain_b3dt_mass`: exact). It joins llm-translators as `omct` (M8). 228 tests pass without OpenModelica.
+**Status (2026.10.21.12, milestone 8 of 8):** every milestone checked on mochi with OpenModelica 1.27.1: 11 closed-form benchmarks, the MCP server, sweeps on one build, SLURM queueing, and the chains with fea-translator and build123d-translator (`chain_feat_modal`: Rayleigh/feat = 1.0171 against 1.0146 expected, 0.24 %; `chain_b3dt_mass`: exact). It joins llm-translators as `omct` (M8). 228 tests pass without OpenModelica.
 
 ## Install
 
@@ -147,7 +147,7 @@ Listed in `planning.md` (A1–A19), each with the probe that checks it (`tools/m
 
 ## For LLM tools: the MCP server
 
-`omct-mcp` (stdio; `--http 8770` for HTTP). Tools: `study_format`, `validate_studies`, `run_studies`, `study_status`, `get_model`, `run_benchmarks`, `bench_status`, `jobs`, `cancel`, `get_image` (a PNG as an MCP image), `render_images`, `get_file`. `run_studies` and `study_status` return within 50 s with the rest `pending` (stage, elapsed, the time limit left); studies run in a worker pool (`OMCT_WORKERS`, 2) that lives across calls, and every state is read from the request folder, so another server process sees the results. Polling costs tokens: the instructions tell the model to report when a long run should finish and stop. `tools/mcp_smoke.py` runs the server as the Claude app would and simulates one example.
+`omct-mcp` (stdio; `--http 8770` for HTTP). Tools: `study_format`, `validate_studies`, `run_studies`, `study_status`, `get_model`, `run_benchmarks`, `bench_status`, `jobs`, `cancel`, `get_image` (a PNG as an MCP image: the model sees it, the user usually does not, so the instructions tell the model to chart `outputs.<name>.series` itself for the user), `render_images`, `get_file`. `run_studies` and `study_status` return within 50 s with the rest `pending` (stage, elapsed, the time limit left); studies run in a worker pool (`OMCT_WORKERS`, 2) that lives across calls, and every state is read from the request folder, so another server process sees the results. Polling costs tokens: the instructions tell the model to report when a long run should finish and stop. `tools/mcp_smoke.py` runs the server as the Claude app would and simulates one example.
 
 Pictures: `"images": true` in a study writes `images/outputs.png` (one panel per unit) or `images/bode.png` (linearize with `bode`); `render_images` draws other selections (`{name, outputs, window}`) from the saved `series.npz`.
 
@@ -159,6 +159,7 @@ Pictures: `"images": true` in a study writes `images/outputs.png` (one panel per
 
 | Version | Changes |
 |---|---|
+| 2026.10.21.12 | Pictures for the user: the instructions and `get_image` say the user usually does not see images in tool results (Claude app); the model charts `outputs.<name>.series` itself and does not refer to "the image above". Series rounded to 6 significant digits (about half the tokens) |
 | 2026.10.21.11 | M8: joins llm-translators (`translators.json` entry `omct`, port 8770, executor threads, backends omc and msl, every setting; BACKENDS.md section; README row); chains confirmed on mochi |
 | 2026.10.21.10 | M7: `chains.py`, benchmarks `chain_feat_modal` and `chain_b3dt_mass` (by name; skipped without the other translator); bench requests keep their checks; on mochi SLURM sweeps take 5.6 s (was 200 s) |
 | 2026.10.21.9 | SLURM queueing confirmed on mochi (two 30-CPU sweeps: the second waits for Resources, both 120/120 reliable); sweeps run their points in processes outside the server's pool, the reference comparison uses ≤ 1000 points, estimates from a whole study's measured time |

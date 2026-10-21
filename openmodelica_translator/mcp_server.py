@@ -1,6 +1,6 @@
 """mcp_server.py — MCP server: lets LLM-based tools simulate systems (circuits, drives, heat paths, controllers)
 with OpenModelica and the Modelica Standard Library.
-Version: 2026.10.21.7
+Version: 2026.10.21.12
 
 Tools (all JSON):
   study_format      the study format: component kinds, ports, parameters, analyses, conventions. Read it first.
@@ -12,7 +12,7 @@ Tools (all JSON):
   bench_status      collects benchmarks still running
   jobs              recent requests and their states
   cancel            stops a request's studies
-  get_image         a PNG (time plots, Bode plots) as an image
+  get_image         a PNG (time plots, Bode plots) as an image (seen by the model; users chart outputs.*.series)
   render_images     more pictures of a finished study, without running again
   get_file          a written file as base64 (for callers on another machine)
 
@@ -57,8 +57,10 @@ pending with job ids. They do not depend on this conversation. Report the expect
 poll. Later, study_status(request) collects them; jobs() lists recent and active runs (also those started in
 other conversations); cancel(request) stops them. A study's "run": {timeout_s, mem, procs, queue} overrides the
 machine's defaults for that study (procs: sweep points at once), within the caps in study_format's status.
-Pictures: "images": true in a study; results.images.<name>.path, then get_image shows each; render_images makes
-them again for a finished study. Results: outputs.<name>.{final, min, max, ...}, derived.<name>.*,
+Pictures: the user usually does not see images inside tool results (get_image shows them to you). To show the
+user a plot, draw outputs.<name>.series {t, y} (in every result) with your own charting or artifact tools, and never
+say "the image above". "images": true + get_image(results.images.<name>.path) lets you check a run by eye;
+render_images makes others for a finished study. Results: outputs.<name>.{final, min, max, ...}, derived.<name>.*,
 steady.<name>.*, linearization.{eigenvalues, modes, natural_frequencies_Hz, damping_ratios, dc_gain, bode},
 sweep.table.<i>.{params, values, reliable}."""
 
@@ -132,8 +134,9 @@ def cancel(request: str, names: list[str] | None = None) -> dict:
 
 @server.tool()
 def get_image(path: str) -> Image:
-    """A PNG written by run_studies (results' images.<name>.path) or render_images, as an image you can see and
-    show: time plots of the outputs (one panel per unit) or Bode plots."""
+    """A PNG written by run_studies (results' images.<name>.path) or render_images: time plots of the outputs (one
+    panel per unit) or Bode plots. You see it, but the user usually does not (tool results are hidden or collapsed
+    in their app): to show the user a plot, chart outputs.<name>.series yourself; describe what this one shows."""
     return Image(path=str(api.image_path(path)))
 
 

@@ -1,7 +1,8 @@
 """post.py — results from the simulated series: outputs, derived quantities, steady states, comparisons, expect.
-Version: 2026.10.21.6
+Version: 2026.10.21.12
 
 outputs(t, values, units)      {name: {unit, finite, initial, final, min, max, t_min, t_max, series: {t, y}}}
+                               (series: <= 400 points, 6 significant digits, for plotting)
 derived(t, values, specs, ...) the study's derived quantities, from the full series (not the downsampled one):
     step      rise_time_s (rise [0.1, 0.9] of the change), overshoot_pct, peak, peak_time_s (from t0),
               settling_time_s (last exit from band around final, from t0), initial, final, steady_state_error
@@ -26,6 +27,12 @@ def _r(x):
         return None
     x = float(x)
     return x if math.isfinite(x) else None
+
+
+def _r6(x):
+    """For the plotted series: 6 significant digits (half the tokens; the scalars keep full precision)."""
+    x = _r(x)
+    return None if x is None else float(f"{x:.6g}")
 
 
 def downsample(t, y, n: int = MAX_POINTS):
@@ -54,7 +61,7 @@ def outputs(t, values: dict, units: dict) -> dict:
             rec.update({"initial": _r(y[0]), "final": _r(y[-1]), "min": _r(y[i0]), "max": _r(y[i1]),
                         "t_min": _r(t[i0]), "t_max": _r(t[i1])})
         ts, ys = downsample(t, y)
-        rec["series"] = {"t": [_r(x) for x in ts], "y": [_r(x) for x in ys]}
+        rec["series"] = {"t": [_r6(x) for x in ts], "y": [_r6(x) for x in ys]}
         out[name] = rec
     return out
 

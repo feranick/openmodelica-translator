@@ -2,7 +2,7 @@
 
 Session context for Claude (the project documentation will be README.md). Start a chat with: "Read planning.md and start."
 
-Version: 2026.10.21.11 (milestone 8: joining llm-translators).
+Version: 2026.10.21.11 (all eight milestones done; omct is part of llm-translators).
 
 ## What this is
 
@@ -355,7 +355,7 @@ tools/  m0_probe.sh (M0 probe), check_catalog_msl.py (catalog vs the MSL 4.0.0 s
 - **M5 Analyses:** sweeps, linearisation, steady. Done (2026.10.21.6; linearisation and steady came with M2/M3).
 - **M6 SLURM:** `executor.py` from cfdt with sizing, caps, fake-SLURM tests; on mochi two sweeps from two conversations queue. Done in the sandbox (2026.10.21.7); the queueing test on mochi is next.
 - **M7 Chains:** `chain_feat_modal`, b3dt mass, cfdt tables. Done in the sandbox (2026.10.21.10; cfdt curves as `table` blocks until fluid networks in v2).
-- **M8 Joining the umbrella** (files prepared 2026.10.21.11; submodule and llmt checks by Nicola): submodule, `translators.json` (key `omct`, port 8770, `suggest: remote`, `executor: {prefix: OMCT, kind: threads, min_minutes: 1}`, backends `omc` and `msl`, every setting in `env`), `BACKENDS.md` (official apt repository, MSL 4.0.0 via the package manager, checks), README row, `llmt install/status/test/bench/tune/mcp test` on mochi, `llmt mcp setup` on the Mac.
+- **M8 Joining the umbrella** (done 2026.10.21.11: llmt install/status/test/bench/tune on mochi, mcp test on the Mac): submodule, `translators.json` (key `omct`, port 8770, `suggest: remote`, `executor: {prefix: OMCT, kind: threads, min_minutes: 1}`, backends `omc` and `msl`, every setting in `env`), `BACKENDS.md` (official apt repository, MSL 4.0.0 via the package manager, checks), README row, `llmt install/status/test/bench/tune/mcp test` on mochi, `llmt mcp setup` on the Mac.
 
 ## Decisions:
 
@@ -373,6 +373,12 @@ Made while building M1 (tell me if any is wrong):
 - Composites are flattened into elements `X__part` (no nested models, so every value is a direct override and no bound parameter has to be recomputed by OpenModelica).
 
 ## State
+
+**2026.10.21.12 (first end-to-end request, Claude app, 2026-10-21)**: the DC motor PI step response from the Claude app ran right (rise 46.4 ms, overshoot 5.9 %, settling 174 ms, peak current 19.6 A, 2000 rpm, reliable, converge same), but Nicola saw no picture: the model said "the image in the step above". Checked in Cowork: `get_image` returns the PNG and the model sees it, but it stays inside the collapsed tool result, so the user doesn't see it there. Fix: INSTRUCTIONS and the get_image docstring say so and tell the model to chart `outputs.<name>.series` (already in every result) with its own tools; the series are rounded to 6 significant digits (about half the tokens). The same holds for cfdt's get_image (not changed). To verify: the same request in the Claude app shows a chart drawn by the model.
+
+**2026.10.21.11 on the Mac (2026-10-21)**: `llmt mcp setup` + `llmt mcp test`: omct over ssh to mochi: ok, openmodelica-translator, 12 tools, started in 1.9 s (b3dt, feat, cfdt, lmpt ok too). **M8 done: omct is part of llm-translators.** Next: an end-to-end request in the Claude app (the DC motor PI step response; a chain with feat), then the open ideas below.
+
+**2026.10.21.11 in llm-translators (mochi, 2026-10-21)**: `llmt status`: omct 2026.10.21.11, commit c455460, pinned; OpenModelica (omc) ok, MSL 4.0.0 ok; runs: slurm. `llmt tune omct`: OMCT_PROCS=9 (18 of 20 physical cores / 2 workers), OMCT_EXECUTOR=slurm. `llmt test omct`: 228 passed (89 s). `llmt bench omct`: all 12 pass with OpenModelica (rc_step 3.3e-6, rlc_step overshoot 1.1e-5, rlc_poles_bode and msd_modes exact, msd_free 4.3e-7, inertia 1.2e-10, dc_motor 7e-12, thermal_rc 1.8e-5, thermal_steady 7.2e-9, two_mass exact, pi_first_order 2.5e-5, sweep_rc 3.3e-6 on one build). `llmt mcp test omct` on mochi: "no entry (llmt mcp setup)", as expected: the test reads the Claude app's MCP entries, which exist only on the client (the Mac) after `llmt mcp setup`. Next: `./llmt mcp setup` (omct remote on mochi) and `./llmt mcp test omct` on the Mac, restart the app, then an end-to-end request.
 
 **2026.10.21.11 (M8)**: on mochi with 2026.10.21.10: 228 tests pass; `bench chain_feat_modal chain_b3dt_mass` both pass. chain_feat_modal: feat's cantilever gave k = 526.24 N/mm (100 N / tip uz) and its first frequency 834.4 Hz; the mass (33/140 m) on that spring here gives 848.76 Hz, against 846.69 expected (1.0146 x feat): 0.24 % (Rayleigh's ratio comes out 1.0171: feat's static and modal meshes differ slightly in shear and discretisation; well inside the 1 %). chain_b3dt_mass: 0.0785 kg exact, 254.039 Hz exact. Prepared in llm-translators (for Nicola to review and commit): the `translators.json` entry (key omct, port 8770, suggest remote, extras [mcp], uses feat and b3dt, status/bench true, executor {OMCT, threads, 1 min}, tuning OMCT_PROCS/OMCT_WORKERS, backends omc and msl -> tool_status keys, all 21 OMCT_ settings in env; `./llmt list` reads it), BACKENDS.md (table row, the OpenModelica section with the apt repository from mochi's sources.list and installPackage for MSL 4.0.0, SLURM row), README (translators table, SLURM line), docs/EXECUTION.md (status line). Still to do by Nicola: the submodule, `llmt install / status / test / bench / tune / mcp test` on mochi, `llmt mcp setup` on the Mac.
 
