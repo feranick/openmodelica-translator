@@ -2,7 +2,7 @@
 
 Session context for Claude (the project documentation will be README.md). Start a chat with: "Read planning.md and start."
 
-Version: 2026.10.21.10 (milestone 7: chains).
+Version: 2026.10.21.11 (milestone 8: joining llm-translators).
 
 ## What this is
 
@@ -355,7 +355,7 @@ tools/  m0_probe.sh (M0 probe), check_catalog_msl.py (catalog vs the MSL 4.0.0 s
 - **M5 Analyses:** sweeps, linearisation, steady. Done (2026.10.21.6; linearisation and steady came with M2/M3).
 - **M6 SLURM:** `executor.py` from cfdt with sizing, caps, fake-SLURM tests; on mochi two sweeps from two conversations queue. Done in the sandbox (2026.10.21.7); the queueing test on mochi is next.
 - **M7 Chains:** `chain_feat_modal`, b3dt mass, cfdt tables. Done in the sandbox (2026.10.21.10; cfdt curves as `table` blocks until fluid networks in v2).
-- **M8 Joining the umbrella:** submodule, `translators.json` (key `omct`, port 8770, `suggest: remote`, `executor: {prefix: OMCT, kind: threads, min_minutes: 1}`, backends `omc` and `msl`, every setting in `env`), `BACKENDS.md` (official apt repository, MSL 4.0.0 via the package manager, checks), README row, `llmt install/status/test/bench/tune/mcp test` on mochi, `llmt mcp setup` on the Mac.
+- **M8 Joining the umbrella** (files prepared 2026.10.21.11; submodule and llmt checks by Nicola): submodule, `translators.json` (key `omct`, port 8770, `suggest: remote`, `executor: {prefix: OMCT, kind: threads, min_minutes: 1}`, backends `omc` and `msl`, every setting in `env`), `BACKENDS.md` (official apt repository, MSL 4.0.0 via the package manager, checks), README row, `llmt install/status/test/bench/tune/mcp test` on mochi, `llmt mcp setup` on the Mac.
 
 ## Decisions:
 
@@ -373,6 +373,8 @@ Made while building M1 (tell me if any is wrong):
 - Composites are flattened into elements `X__part` (no nested models, so every value is a direct override and no bound parameter has to be recomputed by OpenModelica).
 
 ## State
+
+**2026.10.21.11 (M8)**: on mochi with 2026.10.21.10: 228 tests pass; `bench chain_feat_modal chain_b3dt_mass` both pass. chain_feat_modal: feat's cantilever gave k = 526.24 N/mm (100 N / tip uz) and its first frequency 834.4 Hz; the mass (33/140 m) on that spring here gives 848.76 Hz, against 846.69 expected (1.0146 x feat): 0.24 % (Rayleigh's ratio comes out 1.0171: feat's static and modal meshes differ slightly in shear and discretisation; well inside the 1 %). chain_b3dt_mass: 0.0785 kg exact, 254.039 Hz exact. Prepared in llm-translators (for Nicola to review and commit): the `translators.json` entry (key omct, port 8770, suggest remote, extras [mcp], uses feat and b3dt, status/bench true, executor {OMCT, threads, 1 min}, tuning OMCT_PROCS/OMCT_WORKERS, backends omc and msl -> tool_status keys, all 21 OMCT_ settings in env; `./llmt list` reads it), BACKENDS.md (table row, the OpenModelica section with the apt repository from mochi's sources.list and installPackage for MSL 4.0.0, SLURM row), README (translators table, SLURM line), docs/EXECUTION.md (status line). Still to do by Nicola: the submodule, `llmt install / status / test / bench / tune / mcp test` on mochi, `llmt mcp setup` on the Mac.
 
 **2026.10.21.10 (M7, sandbox)**: on mochi with 2026.10.21.9 the SLURM test passed fully: 2609 ran (30 CPUs), 2610 waited (Resources) and followed; each sweep 120/120 reliable, 1 build, **5.6 s** (was 200 s: the points now run in processes and the reference uses <= 1000 points); estimate 0.36 min (an upper bound, as it should be). New: `chains.py` (feat stiffness/mass/frequency/conductance, b3dt mass, Rayleigh) and two chain benchmarks run by name: `chain_feat_modal` runs fea-translator's own `cantilever` and `cantilever_modal` cases (100x10x10 mm steel, 20x4x4 mesh), builds a mass (33/140 m) on a spring (k = 100 N / |tip uz|) here, linearises, and checks f = 1.0146 x feat's first frequency (1 %); `chain_b3dt_mass`: a b3dt box's volume x 7850 kg/m3 -> mass (1e-9), f = sqrt(k/m)/2 pi (1e-5). bench requests store their checks (chains are prepared once, when submitted). Tests: 228 pass (the feat chain with a stand-in feat giving exact Euler-Bernoulli answers: 1.01465). Open: b3dt does not report inertia (build123d has matrix_of_inertia; ask b3dt to add it, then rotational chains).
 Next on mochi (feat and b3dt are in the venv; ~1 min):

@@ -16,11 +16,13 @@ It is part of [llm-translators](https://github.com/feranick/llm-translators), wi
 | Settings prefix | `OMCT_` |
 | Output folder | `~/omct_runs` (`OMCT_OUT`) |
 
-**Status (2026.10.21.10, milestone 7 of 8):** M1-M6 checked on mochi (benchmarks, MCP, sweeps, SLURM queueing: two 30-CPU sweeps of 120 points, the second queued, 5.6 s each); chains with fea-translator and build123d-translator (M7: `chains.py`, two chain benchmarks). 228 tests pass without OpenModelica. Next: joining llm-translators (M8); see `planning.md`.
+**Status (2026.10.21.11, milestone 8 of 8):** every milestone checked on mochi with OpenModelica 1.27.1: 11 closed-form benchmarks, the MCP server, sweeps on one build, SLURM queueing, and the chains with fea-translator and build123d-translator (`chain_feat_modal`: Rayleigh/feat = 1.0171 against 1.0146 expected, 0.24 %; `chain_b3dt_mass`: exact). It joins llm-translators as `omct` (M8). 228 tests pass without OpenModelica.
 
 ## Install
 
-OpenModelica and MSL 4.0.0 on the machine that runs the studies (mochi): the official apt repository, then MSL with OpenModelica's package manager (details in llm-translators' `BACKENDS.md` once it joins the umbrella). The translator itself: `llmt install omct` in llm-translators, or for development `pip install -e .[mcp,test]`.
+1. **OpenModelica and MSL 4.0.0** on the machine that runs the studies: llm-translators' [BACKENDS.md](https://github.com/feranick/llm-translators/blob/main/BACKENDS.md#openmodelica) (the official apt repository, then `installPackage(Modelica, "4.0.0+maint.om")` with OpenModelica's package manager), and a C compiler.
+2. **The translator:** `./llmt install omct` in llm-translators (the shared venv; `./llmt tune omct` sets `OMCT_PROCS` and, with SLURM, `OMCT_EXECUTOR=slurm`). For development: `pip install -e .[mcp,test]`.
+3. **Check:** `./llmt status` (omc and MSL ok), `./llmt test omct`, `./llmt bench omct`, `./llmt mcp test omct`.
 
 ## Use
 
@@ -157,6 +159,7 @@ Pictures: `"images": true` in a study writes `images/outputs.png` (one panel per
 
 | Version | Changes |
 |---|---|
+| 2026.10.21.11 | M8: joins llm-translators (`translators.json` entry `omct`, port 8770, executor threads, backends omc and msl, every setting; BACKENDS.md section; README row); chains confirmed on mochi |
 | 2026.10.21.10 | M7: `chains.py`, benchmarks `chain_feat_modal` and `chain_b3dt_mass` (by name; skipped without the other translator); bench requests keep their checks; on mochi SLURM sweeps take 5.6 s (was 200 s) |
 | 2026.10.21.9 | SLURM queueing confirmed on mochi (two 30-CPU sweeps: the second waits for Resources, both 120/120 reliable); sweeps run their points in processes outside the server's pool, the reference comparison uses ≤ 1000 points, estimates from a whole study's measured time |
 | 2026.10.21.8 | job.sh puts the package's folder on PYTHONPATH (mochi: the first SLURM jobs could not import the translator, not yet installed in the venv) |
