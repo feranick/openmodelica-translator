@@ -1,5 +1,5 @@
 """runner.py — one study end to end: validate, translate, build (or reuse), run, read, check, write the result.
-Version: 2026.10.21.5
+Version: 2026.10.21.6
 
 run_study(name, study, folder, solver, timeout, cancel) -> the result dict, also written atomically to
 <folder>/<name>.json. solver: "omc" (OpenModelica) or "ref" (the reference implementation only: linear
@@ -8,7 +8,7 @@ Every run: outputs (from the result file), derived quantities, steady values (st
 balance, initialisation, solver, events, every applied value read back, finite outputs, the energy balance,
 the reference implementation on the same time points (linear networks; eigenvalues for linearize), and with
 converge: true a second run at tolerance / 10. reliable is false when any check fails; expect only sets passed.
-Sweeps come with milestone 5.
+A study with a sweep runs every point (sweep.py) and reports a table.
 """
 from __future__ import annotations
 
@@ -78,8 +78,12 @@ def run_study(name: str, study: dict, folder, solver: str = "omc", timeout: floa
         res.setdefault("unreliable_because", [res.get("why", "failed")])
     elif study.get("images"):
         try:
-            from .render import render
-            res["images"] = render(folder, res, True)
+            if res.get("sweep"):
+                from .sweep import plot
+                res["images"] = plot(folder, res)
+            else:
+                from .render import render
+                res["images"] = render(folder, res, True)
         except Exception as exc:  # noqa: BLE001
             res.setdefault("warnings", []).append(f"pictures failed: {type(exc).__name__}: {exc}")
     _atomic(folder / f"{name}.json", res)
@@ -207,7 +211,14 @@ def _run(name, study, folder, solver, timeout, cancel) -> dict:
         return {"ok": False, "why": "invalid study", "errors": v["errors"], "warnings": v["warnings"]}
     warnings = list(v["warnings"])
     if study.get("sweep"):
-        return {"ok": False, "why": "sweeps are not implemented yet in this version (milestone 5)", "warnings": warnings}
+        from .sweep import run_sweep
+        res = run_sweep(name, study, folder, solver, timeout, cancel, run_study)
+        res["warnings"] = list(dict.fromkeys(warnings + res.get("warnings", [])))
+        if study.get("expect"):
+            from .post import check_expect
+            res["expect"] = check_expect(res, study["expect"])
+            res["passed"] = all(e["passed"] for e in res["expect"])
+        return res
     an = study["analysis"]
     seconds = {}
     t = time.perf_counter()

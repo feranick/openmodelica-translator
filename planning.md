@@ -2,7 +2,7 @@
 
 Session context for Claude (the project documentation will be README.md). Start a chat with: "Read planning.md and start."
 
-Version: 2026.10.21.5 (milestone 4: API, MCP server, pictures).
+Version: 2026.10.21.6 (milestone 5: sweeps).
 
 ## What this is
 
@@ -49,7 +49,7 @@ It complements the other translators: they compute fields in one part; this one 
 ## Conventions
 
 - Versions `YYYY.MM.DD.x` in `__init__.py`, `pyproject.toml`, every module docstring (`Version: ...`) and the README's version table. First version 2026.10.20.1.
-- Author: Nicola Ferralis <ferralis@generalflash.com>. Nicola commits and pushes from the Mac; mochi pulls through llm-translators (`llmt pin omct --commit --push`, then `llmt update` on mochi).
+- Author: Nicola Ferralis <ferralis@hotmail.com>. Nicola commits and pushes from the Mac; mochi pulls through llm-translators (`llmt pin omct --commit --push`, then `llmt update` on mochi).
 - **Units: SI, as Modelica** (K for temperatures, rad/s, m, kg, N·m). This differs from feat/cfdt (mm, MPa, °C), so every non-SI value is converted explicitly and recorded (see "Units" in the format).
 - Dotted result paths; JSON in/out; result files written atomically.
 - Python ≥ 3.10; dependencies numpy, scipy, matplotlib; extras `[mcp, test]`; entry points `omct`, `omct-mcp`.
@@ -352,12 +352,12 @@ tools/  m0_probe.sh (M0 probe), check_catalog_msl.py (catalog vs the MSL 4.0.0 s
 - **M2 Backend driver:** `omc.py`, cache, `simrun.py`, `matfile.py`, log and result parsing, override verification; fixtures from mochi; tests that skip without omc.
 - **M3 Checks and benchmarks:** energy balance, `converge`, reliability, `bench.py`. Done in the sandbox (2026.10.21.4); benchmarks to run on mochi.
 - **M4 Interfaces:** `api.py`, `cli.py`, `mcp_server.py`, images. Done in the sandbox (2026.10.21.5).
-- **M5 Analyses:** sweeps, linearisation, steady.
+- **M5 Analyses:** sweeps, linearisation, steady. Done (2026.10.21.6; linearisation and steady came with M2/M3).
 - **M6 SLURM:** `executor.py` from cfdt with sizing, caps, fake-SLURM tests; on mochi two sweeps from two conversations queue.
 - **M7 Chains:** `chain_feat_modal`, b3dt mass, cfdt tables.
 - **M8 Joining the umbrella:** submodule, `translators.json` (key `omct`, port 8770, `suggest: remote`, `executor: {prefix: OMCT, kind: threads, min_minutes: 1}`, backends `omc` and `msl`, every setting in `env`), `BACKENDS.md` (official apt repository, MSL 4.0.0 via the package manager, checks), README row, `llmt install/status/test/bench/tune/mcp test` on mochi, `llmt mcp setup` on the Mac.
 
-## Decisions (Nicola, 2026-10-21: "I follow your recommendations")
+## Decisions:
 
 1. Units: SI numbers, plus unit strings and `{value, unit, from}` objects converted and recorded. Signal values (step heights, limits, block start values) take any unit (`'2000 rpm'`), converted to SI.
 2. Parameter names: MSL's names, plus convenience ones (`v0`, `w0`, `T0`, `m`+`cp`, `G` or `k`+`A`+`L`, `Gc` or `h`+`A`).
@@ -373,6 +373,17 @@ Made while building M1 (tell me if any is wrong):
 - Composites are flattened into elements `X__part` (no nested models, so every value is a direct override and no bound parameter has to be recomputed by OpenModelica).
 
 ## State
+
+**2026.10.21.6 (M5, sandbox)**: on mochi with 2026.10.21.5: 209 tests pass (74 s); `tools/mcp_smoke.py --solver omc` through the stdio MCP client: the DC motor with LimPID PI speed control ran reliable (every check ok; reference not covered: LimPID), w 0 -> 209.44 rad/s (2000 rpm), rise 46.5 ms, overshoot 5.88 %, peak at 0.102 s, settling 0.174 s, picture returned. New: `sweep.py` (grid/zip points, the first point builds, the rest in threads, run.procs or OMCT_PROCS at a time, since pool workers are daemonic and cannot fork pools; per-point folders points/pNNNN with full checks; table with params, params_si, values, ok, reliable; builds counted; sweep.png; progress "k of n points"); `post.get_path` takes keys with dots (table columns); benchmark `sweep_rc`. Tests: 212 pass (the fake-omc sweep: 6 points, 1 build).
+Next on mochi (about 1-2 min):
+```bash
+cd ~/Software/openmodelica-translator && git pull
+PY=~/Software/llm-translators/.venv/bin/python
+$PY -m pytest -q tests/ 2>&1 | tail -2
+$PY -m openmodelica_translator.cli bench sweep_rc | grep -E '"(passed|failed)"' -A2
+$PY -m openmodelica_translator.cli run examples/studies.json pi_gain_sweep > tools/m5_sweep_mochi.json
+$PY -c "import json; s=json.load(open('tools/m5_sweep_mochi.json'))['studies']['pi_gain_sweep']; print(s['ok'], s['reliable'], s['sweep']['builds'], s['sweep']['seconds'], 's'); [print(r['params'], r['values'], r['reliable']) for r in s['sweep']['table']]"
+```
 
 **2026.10.21.5 (M4, sandbox)**: on mochi with 2026.10.21.4: 204 tests pass (65 s) and **all 11 benchmarks pass with OpenModelica 1.27.1** (rc_step, rlc_step, rlc_poles_bode, msd_modes, msd_free, inertia_torque_step, dc_motor_steady, thermal_rc, thermal_steady, two_mass, pi_first_order), each reliable (energy balance and reference comparison included). New: `api.py` with the cfdt-style worker pool (spawn, lives across calls), `start`/`status`/`run(wait)` from request folders (states from files: model.mo -> building, sim.log -> simulating; a study whose server process died is reported failed), `jobs`, `cancel` (flag files; a queued study is skipped), `bench(wait_s)` + `bench_status`; `render.py` (time plots per unit, Bode; `series.npz` saved with every run; `render_images`); `mcp_server.py` (12 tools, 22-line instructions; checked over stdio with the SDK 2.3 client: handshake, run_studies, get_image); CLI `status REQUEST`, `jobs`, `cancel`, `images`, `run-study`; `tools/mcp_smoke.py`. Tests: 209 pass. Not yet: the SLURM paragraph in the instructions and `executor` (M6), sweeps (M5).
 Next on mochi (about 1-2 min):

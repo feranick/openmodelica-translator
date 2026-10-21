@@ -16,7 +16,7 @@ It is part of [llm-translators](https://github.com/feranick/llm-translators), wi
 | Settings prefix | `OMCT_` |
 | Output folder | `~/omct_runs` (`OMCT_OUT`) |
 
-**Status (2026.10.21.5, milestone 4 of 8):** format, validation, Modelica generation, the reference implementation (M1); the OpenModelica driver (M2); checks and 11 benchmarks, all passing on mochi with OpenModelica (M3); the API with a worker pool, the CLI, the MCP server and pictures (M4). 209 tests pass without OpenModelica. Next: sweeps (M5), SLURM (M6), chains (M7), joining llm-translators (M8); see `planning.md`.
+**Status (2026.10.21.6, milestone 5 of 8):** format, validation, Modelica generation, reference implementation (M1); the OpenModelica driver (M2); checks and benchmarks, all passing on mochi (M3); API, worker pool, MCP server and pictures, checked on mochi through the MCP client (M4); sweeps on one build, linearisation in every analysis (M5). 212 tests pass without OpenModelica. Next: SLURM (M6), chains (M7), joining llm-translators (M8); see `planning.md`.
 
 ## Install
 
@@ -92,6 +92,7 @@ A run writes `<OMCT_OUT>/run_<date>_<time>_<id>/<study>/`: `model.mo`, `params.t
 | `thermal_steady` | T∞ = T_a + Q/G (steady analysis) | 1e-7 |
 | `two_mass` | ω² = c(J1 + J2)/(J1 J2) | 1e-5 |
 | `pi_first_order` | PI on a first-order plant: overshoot and peak time (scipy.signal) | 2e-3 |
+| `sweep_rc` | τ = RC at R = 500, 1000, 2000 Ω; one build for the three points; all reliable | 1e-4 |
 
 A case passes when its run is ok and reliable (energy, reference) and every check holds. All pass with `--solver ref`; with OpenModelica: see `planning.md` (State).
 
@@ -114,8 +115,12 @@ Listed in `planning.md` (A1–A19), each with the probe that checks it (`tools/m
 | `matfile.py`, `linear.py` | the MAT v4 result file; `linearized_model.mo` → A, B, C, D, modes, DC gain, Bode |
 | `post.py`, `energy.py`, `bench.py` | outputs, derived quantities (step, crossing, window, steady), comparisons, expect; the energy balance; the benchmarks |
 | `runner.py`, `api.py`, `proc.py` | one study end to end with every check; the API (pool, request folders, status from files, cancel, jobs, benchmarks); process groups |
-| `render.py`, `mcp_server.py` | time and Bode plots; the MCP server |
+| `render.py`, `mcp_server.py`, `sweep.py` | time and Bode plots; the MCP server; sweeps |
 | `cli.py` | `omct status [REQUEST] | format | validate | model | run | bench | jobs | cancel | images | run-study` |
+
+### Sweeps
+
+`"sweep": {"params": {"pi.k": [0.5, 1, 2], "pi.T": [0.1, 0.2]}, "mode": "grid" | "zip", "report": ["derived.y.overshoot_pct"]}` on any analysis. Each point is the study with those values (parameters or initial values, with units allowed), run in `points/pNNNN/` with every check; the first point builds the model, the others reuse it and run `run.procs` (or `OMCT_PROCS`) at a time. Values compiled into the model (see the run warnings) make variant builds. Result: `sweep.table[i] = {point, params, params_si, values, ok, reliable, why}`, `columns`, `builds`, `ok_points`, `reliable_points`, `failed`; with `images`, `images/sweep.png` (each column against the first parameter). Default report: `outputs.*.final` (`steady.*.value`; `linearization.natural_frequencies_Hz`, `damping_ratios`, `time_constants_s`) and every numeric derived quantity.
 
 ## For LLM tools: the MCP server
 
@@ -131,6 +136,7 @@ Pictures: `"images": true` in a study writes `images/outputs.png` (one panel per
 
 | Version | Changes |
 |---|---|
+| 2026.10.21.6 | M5: sweeps (grid/zip on one build, threads, table, plot, progress), `get_path` with dotted keys, benchmark `sweep_rc`; on mochi the MCP smoke test passed with OpenModelica (DC motor + LimPID: reliable, 5.9 % overshoot) |
 | 2026.10.21.5 | M4: worker pool and request folders (`run` with `wait`, `start`, `status`, `jobs`, `cancel`), the MCP server (12 tools, SDK 1.x and 2.x), pictures (`render.py`), CLI `status REQUEST`, `jobs`, `cancel`, `images`, `run-study`; on mochi all 11 benchmarks pass with OpenModelica |
 | 2026.10.21.4 | M3: derived quantities, steady values, energy balance, reference comparison, converge, expect, 11 benchmarks (`omct bench`); the reference's square-wave edges and end-of-run steps fixed (found by the energy balance) |
 | 2026.10.21.3 | First runs on mochi (RC matches its closed form through OpenModelica); a value OpenModelica cannot change at run time (a mass's `v` became an alias of a spring-damper's `v_rel`) is now compiled in: the same value reuses the build, another value builds a variant |

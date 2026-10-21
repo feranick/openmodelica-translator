@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with closed-form answers: is the toolchain right?
-Version: 2026.10.21.4
+Version: 2026.10.21.6
 
 Each case is a study plus checks [(result path, expected, tolerance, why)]; tolerances are relative unless
 written {"abs": x}. A case passes when the run is ok and reliable (balance, initialisation, solver, values read
@@ -140,13 +140,24 @@ def _pi_loop():
                 ("derived.y.peak_time_s", t[i], 2e-3, "the same closed loop's peak (grid 1e-4 s)")]
 
 
+def _sweep_rc():
+    st, _ = _rc()
+    st = dict(st)
+    st["sweep"] = {"params": {"R.R": [500, "1 kOhm", 2000]}, "report": ["derived.v.crossing_time_s"]}
+    checks = [(f"sweep.table.{i}.values.derived.v.crossing_time_s", R * 1e-6, 1e-4, f"tau = R C with R = {R:g} Ohm")
+              for i, R in enumerate((500.0, 1000.0, 2000.0))]
+    checks.append(("sweep.builds", 0.5, {"abs": 0.5}, "every point runs on one build (0 with the reference solver)"))
+    checks.append(("sweep.reliable_points", 3, 0, "every point reliable"))
+    return st, checks
+
+
 def cases() -> dict:
     out = {}
     for name, fn in (("rc_step", _rc), ("rlc_step", lambda: _rlc("step")), ("rlc_poles_bode", lambda: _rlc("lin")),
                      ("msd_modes", lambda: _msd("modes")), ("msd_free", lambda: _msd("free")),
                      ("inertia_torque_step", _inertia), ("dc_motor_steady", _dc_motor),
                      ("thermal_rc", lambda: _thermal("rc")), ("thermal_steady", lambda: _thermal("steady")),
-                     ("two_mass", _two_mass), ("pi_first_order", _pi_loop)):
+                     ("two_mass", _two_mass), ("pi_first_order", _pi_loop), ("sweep_rc", _sweep_rc)):
         st, checks = fn()
         out[name] = {"study": st, "checks": checks}
     return out

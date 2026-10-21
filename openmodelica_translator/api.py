@@ -1,5 +1,5 @@
 """api.py — what the CLI and the MCP server call. JSON in, JSON out.
-Version: 2026.10.21.5
+Version: 2026.10.21.6
 
     tool_status()                  versions; omc, MSL, the C compiler, the build cache; the executor and its caps
     study_format()                 the study format, with status
@@ -145,6 +145,13 @@ def _progress(d: Path, timeout: float) -> dict:
         return {"state": "queued", "stage": "waiting for a worker (OMCT_WORKERS)"}
     t0 = min((p.stat().st_mtime for p in d.iterdir()), default=time.time())
     el = max(time.time() - t0, 0.0)
+    if (d / "sweep.json").exists():
+        n = json.loads((d / "sweep.json").read_text())["points"]
+        done = sum(1 for p in (d / "points").glob("p*/p*.json")) if (d / "points").exists() else 0
+        per = el / done if done else None
+        return {"state": "running", "stage": f"sweep: {done} of {n} points done", "points_done": done, "points": n,
+                "elapsed_min": round(el / 60, 2),
+                "eta_min_max": round(min(per * (n - done), max(timeout - el, 0)) / 60, 1) if per else round(max(timeout - el, 0) / 60, 1)}
     if (d / "sim_converge.log").exists():
         stage = "second run at tolerance/10 (converge)"
     elif (d / "sim.log").exists():

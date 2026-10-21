@@ -1,5 +1,5 @@
 """post.py — results from the simulated series: outputs, derived quantities, steady states, comparisons, expect.
-Version: 2026.10.21.4
+Version: 2026.10.21.6
 
 outputs(t, values, units)      {name: {unit, finite, initial, final, min, max, t_min, t_max, series: {t, y}}}
 derived(t, values, specs, ...) the study's derived quantities, from the full series (not the downsampled one):
@@ -194,12 +194,21 @@ def compare(a, b, mask=None) -> float:
 
 # ---- expect ---------------------------------------------------------------------------------------
 def get_path(res: dict, path: str):
-    cur = res
-    for k in path.split("."):
-        if isinstance(cur, dict) and k in cur:
-            cur = cur[k]
-        elif isinstance(cur, list) and k.lstrip("-").isdigit():
-            cur = cur[int(k)]
+    """A dotted path into a result. Keys may contain dots themselves (a sweep table's columns
+    'derived.y.overshoot_pct', parameters 'pi.k'): the longest key that matches wins."""
+    cur, parts = res, path.split(".")
+    i = 0
+    while i < len(parts):
+        if isinstance(cur, dict):
+            for j in range(len(parts), i, -1):
+                k = ".".join(parts[i:j])
+                if k in cur:
+                    cur, i = cur[k], j
+                    break
+            else:
+                raise KeyError(path)
+        elif isinstance(cur, list) and parts[i].lstrip("-").isdigit():
+            cur, i = cur[int(parts[i])], i + 1
         else:
             raise KeyError(path)
     return cur

@@ -224,3 +224,14 @@ def test_fake_converge_and_expect(fake, monkeypatch):
     assert r["ok"] and r["checks"]["converge"]["ok"] and r["checks"]["converge"]["tolerance"] == 1e-7
     assert r["passed"] is False and r["expect"][0]["got"] == pytest.approx(1 - math.exp(-5), rel=1e-6)
     assert r["reliable"]          # expect sets passed, not reliable
+
+
+def test_fake_sweep_one_build(fake, monkeypatch):
+    st = study(RC, sweep={"params": {"R.R": [500, 1000, 2000], "C.v0": [0, 0.5]}, "mode": "grid"}, run={"procs": 3})
+    _with_study(monkeypatch, fake, st)
+    r = run_study("sw", st, fake / "h" / "sw", "omc", 60)
+    assert r["ok"] and r["sweep"]["points"] == 6 and r["sweep"]["builds"] == 1, r.get("sweep")
+    params = {(fake / "h" / "sw" / "points" / f"p{i:04d}" / "params.txt").read_text() for i in range(6)}
+    assert len(params) == 6
+    assert r["sweep"]["table"][5]["params"] == {"R.R": 2000, "C.v0": 0.5}
+    assert r["sweep"]["table"][5]["params_si"] == {"R.R": 2000.0, "C.v0": 0.5}

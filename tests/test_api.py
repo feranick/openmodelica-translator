@@ -77,3 +77,12 @@ def test_mcp_tools():
     assert names == ["study_format", "validate_studies", "run_studies", "study_status", "get_model", "run_benchmarks",
                      "bench_status", "jobs", "cancel", "get_image", "render_images", "get_file"]
     assert len(m.INSTRUCTIONS.splitlines()) <= 30
+
+
+def test_sweep_ref_and_expect_on_table(out):
+    st = study(RC, sweep={"params": {"R.R": [500, 2000]}, "report": ["outputs.v.final"]}, images=True,
+               expect=[{"quantity": "sweep.table.1.values.outputs.v.final", "value": 1 - 2.718281828 ** -2.5, "tol": 1e-4}])
+    r = api.run({"s": st}, "ref")["studies"]["s"]
+    assert r["ok"] and r["reliable"] and r["passed"], r.get("expect")
+    assert r["images"]["sweep"]["path"].endswith("sweep.png")
+    assert r["sweep"]["columns"] == ["outputs.v.final"]

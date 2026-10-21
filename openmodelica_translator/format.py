@@ -1,5 +1,5 @@
 """format.py — the study format (study_format) and the static checks (validate, validate_study).
-Version: 2026.10.21.1
+Version: 2026.10.21.6
 
 validate_study(study) -> {ok, errors, warnings}: nothing runs (no omc). It resolves the network (network.build),
 checks outputs, analysis, derived quantities, sweep, expect, run (against the OMCT_MAX_* caps) and images, then
@@ -22,8 +22,9 @@ STUDY_KEYS = {
     "outputs": "{name: 'comp.var' | 'comp.signal_port' | 'comp.port.v'}: what to record and report",
     "analysis": "{kind: transient | steady | linearize, ...} (below)",
     "derived": "[{kind: step | crossing | window | steady, signal: <output name>, name?, ...}] (below)",
-    "sweep": "{params: {'comp.param': [values]}, mode: grid | zip (grid), report: [result paths]}: one build, "
-             "one run per point",
+    "sweep": "{params: {'comp.param' or 'comp.v0': [values]}, mode: grid | zip (grid), report: [result paths] "
+             "(default: outputs.*.final and derived.*)}: one build, one run per point (run.procs at a time) -> "
+             "sweep.table[i].{params, params_si, values, ok, reliable}",
     "converge": "true: rerun at tolerance/10; outputs that change more than 10 x tolerance x range -> unreliable",
     "expect": "[{quantity: dotted result path, value, tol (relative, 0.02) | abs}]",
     "run": "{timeout_s, mem, procs (parallel sweep points), queue}: within this machine's caps (status.executor.caps)",

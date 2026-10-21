@@ -1,6 +1,6 @@
 """mcp_server.py — MCP server: lets LLM-based tools simulate systems (circuits, drives, heat paths, controllers)
 with OpenModelica and the Modelica Standard Library.
-Version: 2026.10.21.5
+Version: 2026.10.21.6
 
 Tools (all JSON):
   study_format      the study format: component kinds, ports, parameters, analyses, conventions. Read it first.
@@ -49,13 +49,14 @@ not report the numbers as results (fix what 'unreliable_because' says). For accu
 second run at tolerance/10). Units: SI everywhere (K, rad/s, m, kg, N.m); values may be strings with units
 ("10 mH", "80 degC", "3000 rpm") or {value, unit, from} for chained values. Initial values (v0, i0, s0, w0, T0)
 are fixed only where they are free (a capacitor across a source follows it). Every electrical circuit needs a
-ground. Values change without recompiling (sweeps come in a later version); a structural change rebuilds the
-model in a second or two. Polling costs tokens: when a run needs more than about 5 minutes, tell the user when
+ground. Values change without recompiling: "sweep": {params: {"comp.param": [values]}, mode: grid | zip,
+report: [paths]} runs every point on one build and returns sweep.table (run.procs points at a time). Polling costs tokens: when a run needs more than about 5 minutes, tell the user when
 it should finish and stop; collect it later with study_status.
 A study's "run": {timeout_s, mem, procs, queue} sets its own limits, within the caps in study_format's status.
 Pictures: "images": true in a study; results.images.<name>.path, then get_image shows each; render_images makes
 them again for a finished study. Results: outputs.<name>.{final, min, max, ...}, derived.<name>.*,
-steady.<name>.*, linearization.{eigenvalues, modes, natural_frequencies_Hz, damping_ratios, dc_gain, bode}."""
+steady.<name>.*, linearization.{eigenvalues, modes, natural_frequencies_Hz, damping_ratios, dc_gain, bode},
+sweep.table.<i>.{params, values, reliable}."""
 
 server = _Server("openmodelica-translator", instructions=INSTRUCTIONS)
 
