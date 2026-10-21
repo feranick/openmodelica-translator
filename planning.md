@@ -2,7 +2,7 @@
 
 Session context for Claude (the project documentation will be README.md). Start a chat with: "Read planning.md and start."
 
-Version: 2026.10.20.1 (milestone 0: research and plan; no code yet).
+Version: 2026.10.21.1 (milestone 1 done: format, validation, Modelica generation and reference implementation, offline).
 
 ## What this is
 
@@ -245,12 +245,18 @@ Blocks with states get `initType = InitialState` (or `InitialOutput` when `y_sta
 
 ```
 openmodelica_translator/
-  format.py      study_format(), validate(): the catalog (kinds, MSL class, ports + connector types,
-                 parameters with SI units, ranges, defaults, structural flags, variables), units table
-  catalog.py     the catalog data (kept apart from format.py so study_format stays ~10-12 kB)
-  units.py       "10 mH" / {"value","unit"} -> SI, recorded
-  modelica.py    study -> stable Modelica text (sorted declarations, quoted where needed, experiment
-                 annotation, top-level inputs/outputs for linearize); structural text for the hash
+  catalog.py     [M1] the catalog: 82 public kinds (+ convection_core), elementary (one MSL class) or
+                 composite (dc_motor, convection: parts that are elementary kinds); ports, parameters (SI unit,
+                 default, range, structural), variables, initial values (Modelica variable, default, priority)
+  units.py       [M1] "10 mH" / {"value","unit","from"} -> SI, recorded; '*' = signal values, any unit
+  network.py     [M1] a study resolved: values, composites flattened (X__part), ports -> nodes (union-find),
+                 signal nets, the ground / reference / driven-input / open-pin checks
+  format.py      [M1] study_format() (~14 kB), validate(): everything static, then the reference system
+                 (singular models, initial values that are not free); run caps (OMCT_MAX_*)
+  modelica.py    [M1] study -> stable Modelica text (sorted declarations and connects, experiment annotation,
+                 top-level omct_u_* / omct_y_* for linearize); structure text with '?' for every overridable value
+                 (the cache key); the override file; the build .mos; the variable filter
+  cli.py         [M1] omct format | validate | model (more in M4)
   omc.py         the only module running omc: find it, version, MSL path; .mos scripts; checkModel and
                  buildModel; message records; the build cache (hash, fcntl lock, prune .c/.o)
   simrun.py      runs a cached executable: override file, flags, process group, timeout/cancel flag;
@@ -258,23 +264,24 @@ openmodelica_translator/
   matfile.py     MAT v4 reader (binTrans/binNormal, aliases, data_1 parameters)
   post.py        outputs, derived metrics, steady detection, energy balance, override read-back
   linear.py      linearized_model.mo parser; eigenvalues, modes, Bode, DC gain
-  ref.py         independent reference for linear networks (below)
+  ref.py         [M1] independent reference (below); also chooses the fixed initial values
   render.py      time plots, Bode plots, sweep plots (matplotlib/Agg)
   runner.py      run_study(name, study, folder, ...) end to end
   sweep.py       points from grid/zip; local process pool inside one study
   bench.py       benchmarks with closed forms
   executor.py    from cfdt: local pool or one SLURM job per study (kind threads)
   api.py, cli.py, mcp_server.py   as cfdt
-tests/  test_omct.py, test_ref.py, test_matfile.py, test_linear.py, test_slurm.py, fake_slurm.py,
+tests/  [M1] studies.py, test_units.py, test_catalog.py, test_format.py, test_modelica.py, test_ref.py;
+        later test_matfile.py, test_linear.py, test_slurm.py, fake_slurm.py,
         fixtures/ (mochi outputs: logs, init.xml, .mat, linearized_model.mo, message records)
-tools/  m0_probe.sh (M0 probe), measure scripts for mochi
+tools/  m0_probe.sh (M0 probe), check_catalog_msl.py (catalog vs the MSL 4.0.0 sources), measure scripts
 ```
 
 ### Translation and running (deterministic)
 
 1. **Validate** (static).
 2. **Generate** `model.mo`: `model omct_model` with one declaration per component (sorted by name), modifiers in SI with full precision (`repr`), `connect` equations sorted, top-level `RealInput`/`RealOutput` for linearisation, `annotation(experiment(StartTime, StopTime, Interval, Tolerance))`. The structural hash uses the same text with every overridable parameter value replaced by a placeholder, plus the omc version, MSL version and build flags. A value change therefore never recompiles; every study's values are applied through the override file, even right after a build, and read back.
-3. **Build** (cache miss only), in `OMCT_CACHE/<hash>/` under an `fcntl.flock`: a `.mos` with `setCommandLineOptions("--linearizationDumpLanguage=modelica")`, `loadModel(Modelica, {"4.0.0"})`, `loadFile("model.mo")`, `checkModel(omct_model)`, `buildModel(omct_model, fileNamePrefix="omct_model", outputFormat="mat", variableFilter=<outputs + overridden parameters + what the checks need>)`, with `getMessagesStringInternal()` after each call. `omc -n=OMCT_COMPILE_PROCS`. Keep the executable, `_init.xml`, `_info.json`, `*.bin`, `.libs`; delete `.c`/`.o`/`.h`/`.makefile`. Read `isValueChangeable` from `_init.xml` and refuse a sweep or value of a parameter that cannot be overridden (rebuild with the value in the text only if the catalog marks it structural).
+3. **Build** (cache miss only), in `OMCT_CACHE/<hash>/` under an `fcntl.flock`: a `.mos` with `setCommandLineOptions("--linearizationDumpLanguage=modelica")`, `loadModel(Modelica, {"4.0.0"})`, `loadFile("model.mo")`, `checkModel(omct_model)`, `buildModel(omct_model, fileNamePrefix="omct_model", outputFormat="mat", variableFilter=".*")` (the run narrows it with `-variableFilter` if A11 holds, so the filter never changes the build), with `getErrorString()` after each call (`getMessagesStringInternal()` once the probe shows its format). `omc -n=OMCT_COMPILE_PROCS`. Keep the executable, `_init.xml`, `_info.json`, `*.bin`, `.libs`; delete `.c`/`.o`/`.h`/`.makefile`. Read `isValueChangeable` from `_init.xml` and refuse a sweep or value of a parameter that cannot be overridden (rebuild with the value in the text only if the catalog marks it structural).
 4. **Run** from the study folder: `<cache>/omct_model -inputPath=<cache> -outputPath=<study> -overrideFile=params.txt -r=result.mat -stopTime -tolerance -stepSize -s=<method> -lv=LOG_STATS -alarm=<timeout>`, in its own process group, `OMP_NUM_THREADS=OMCT_OMP_THREADS`. Any override warning is an error. Linearisation: the same executable with `-l=<at>`.
 5. **Read** the MAT file: series, parameters read back (`data_1`) against what was asked (relative 1e-12), outputs finite.
 6. **Post-process**, check, render, write `<name>.json` atomically.
@@ -338,8 +345,8 @@ tools/  m0_probe.sh (M0 probe), measure scripts for mochi
 
 ## Milestones (each: version bump, tests, README and planning.md updated)
 
-- **M0 Research and plan** (this file; `tools/m0_probe.sh`). Waiting for: Nicola's go-ahead on format and scope, and the probe report from mochi.
-- **M1 Format and translation, offline:** `catalog.py`, `units.py`, `format.py` (study_format ~10–12 kB, validate), `modelica.py`, `.mos` generation, `ref.py`, tests.
+- **M0 Research and plan** (this file; `tools/m0_probe.sh`). Done; the probe report from mochi is still to come.
+- **M1 Format and translation, offline:** `catalog.py`, `units.py`, `format.py` (study_format ~10–12 kB, validate), `modelica.py`, `.mos` generation, `ref.py`, tests. Done (2026.10.21.1).
 - **M2 Backend driver:** `omc.py`, cache, `simrun.py`, `matfile.py`, log and result parsing, override verification; fixtures from mochi; tests that skip without omc.
 - **M3 Checks and benchmarks:** energy balance, `converge`, reliability, `bench.py`.
 - **M4 Interfaces:** `api.py`, `cli.py`, `mcp_server.py`, images.
@@ -348,20 +355,32 @@ tools/  m0_probe.sh (M0 probe), measure scripts for mochi
 - **M7 Chains:** `chain_feat_modal`, b3dt mass, cfdt tables.
 - **M8 Joining the umbrella:** submodule, `translators.json` (key `omct`, port 8770, `suggest: remote`, `executor: {prefix: OMCT, kind: threads, min_minutes: 1}`, backends `omc` and `msl`, every setting in `env`), `BACKENDS.md` (official apt repository, MSL 4.0.0 via the package manager, checks), README row, `llmt install/status/test/bench/tune/mcp test` on mochi, `llmt mcp setup` on the Mac.
 
-## Decisions for Nicola (before M1)
+## Decisions (Nicola, 2026-10-21: "I follow your recommendations")
 
-1. **Units:** SI numbers, plus unit strings (`"10 mH"`, `"80 degC"`) and `{value, unit, from}` objects converted by the translator and recorded. (Alternative: SI only, the LLM converts.)
-2. **Parameter names:** MSL's own names (`startTime`, `stepTorque`, `R`) plus a few convenience ones (`v0`, `w0`, `T0`, `m`+`cp`, `h`+`A`). (Alternative: our own snake_case for everything.)
-3. **DC motor:** composed R + L + EMF + inertia (+ damper) now; `DC_PermanentMagnet` later.
-4. **Results:** MAT (not CSV) for every run, to read parameters back; JSON series downsampled to ≤ 400 points.
-5. **Analyses:** `sweep` as a key on any analysis rather than an analysis kind; `steady` detected by us.
-6. **Scope:** FluidHeatFlow, switches and MultiBody stay in v2.
+1. Units: SI numbers, plus unit strings and `{value, unit, from}` objects converted and recorded. Signal values (step heights, limits, block start values) take any unit (`'2000 rpm'`), converted to SI.
+2. Parameter names: MSL's names, plus convenience ones (`v0`, `w0`, `T0`, `m`+`cp`, `G` or `k`+`A`+`L`, `Gc` or `h`+`A`).
+3. DC motor: composed R + L + RotationalEMF + Inertia + Damper (+ Fixed housing); `DC_PermanentMagnet` later.
+4. Results: MAT files; JSON series downsampled to <= 400 points.
+5. `sweep` is a key on any analysis; `steady` detected by us.
+6. Scope: FluidHeatFlow, switches, MultiBody in v2.
+
+Made while building M1 (tell me if any is wrong):
+- Resistor without `T_ref`/`alpha` (no heat port in v1, and MSL's default device temperature 293.15 K differs from T_ref 300.15 K, a trap). `pulse_voltage` has no `nperiod` (PulseVoltage lacks it; the `pulse` block has it). The speed-dependent load is two kinds, `linear_speed_load` and `quadratic_speed_load` (two MSL classes).
+- Initial values: the reference system decides which are free (forced block states first, then the study's values, then defaults; priority 1 storage before priority 2 spring/damper relative positions); only those get `fixed=true`. A study value that is not free is an error. Mass and inertia flanges are tied by equations, not merged into one node (each flange keeps its own force).
+- Blocks: `initType = InitialState` written for every block with a state (structural); PID's `Td` defaults to 0 (MSL has only a start value).
+- Composites are flattened into elements `X__part` (no nested models, so every value is a direct override and no bound parameter has to be recomputed by OpenModelica).
 
 ## State
 
-**2026.10.20.1 (M0)**: read the umbrella docs (create_new_translators.md, EXECUTION.md), cfdt (planning, executor, api, mcp_server, format), lmpt refcalc.py, feat's result keys. Read the OpenModelica v1.27.1 sources (overrides, steady state, linearisation, checkModel, buildModel, logs, MAT format) and the MSL 4.0.0 sources (class names, ports, parameters). Sandbox cannot install OpenModelica (proxy blocks build.openmodelica.org; no root). Wrote this plan and `tools/m0_probe.sh`.
+**2026.10.21.1 (M1, sandbox)**: `catalog.py`, `units.py`, `network.py`, `format.py`, `modelica.py`, `ref.py`, `cli.py` (format, validate, model); `examples/studies.json` (8 studies: the typical requests); 173 tests pass in the sandbox (`python3 -m pytest -q tests/`), including:
+- the catalog against the MSL 4.0.0 sources (`tools/check_catalog_msl.py`: every class, port, parameter, variable and start value exists; it caught `PulseVoltage.nperiod`);
+- the reference against closed forms: RC 1e-9, RLC step 1e-8 and poles 1e-10, mass-spring-damper 1e-10, thermal RC 1e-7 and its steady state, DC motor speed and poles, PI on a first-order plant 1e-8 (scipy.signal), two-mass eigenvalues and low-frequency response, index-2 networks (capacitor across a sine source, parallel capacitors, a current sensor between capacitors, an op-amp integrator), table/transfer function/PID, an inertia chain with a gear;
+- every catalog variable has a reference value; every example validates, translates and parses as Modelica (modparc grammar; not yet compiled).
+Found while testing: sources must be evaluated with their left limit at the end of an integration interval (Radau evaluates at the endpoint), and rank decisions need row/column equilibration (a capacitor across a source was taken as free before).
 
-Next: run the probe on mochi (`ssh nicola@mochi.mit.edu 'bash -s' < tools/m0_probe.sh > tools/m0_report_mochi.txt 2>&1`, 1–3 min), record its answers in the assumptions table, then M1 after the go-ahead.
+Not verified (no omc in the sandbox): that OpenModelica accepts the generated text (modifier syntax `v(start=..., fixed=true)` on inherited variables, enum and array literals, `table=[...]`, top-level `RealInput` connected to a block input), and every assumption A1-A19. Next: the probe report from mochi (`ssh nicola@mochi.mit.edu 'bash -s' < tools/m0_probe.sh > tools/m0_report_mochi.txt 2>&1`), then M2 (omc driver) built on its output, and a first real build of `examples/studies.json` on mochi.
+
+**2026.10.20.1 (M0)**: read the umbrella docs (create_new_translators.md, EXECUTION.md), cfdt (planning, executor, api, mcp_server, format), lmpt refcalc.py, feat's result keys. Read the OpenModelica v1.27.1 sources (overrides, steady state, linearisation, checkModel, buildModel, logs, MAT format) and the MSL 4.0.0 sources (class names, ports, parameters). Sandbox cannot install OpenModelica (proxy blocks build.openmodelica.org; no root). Wrote this plan and `tools/m0_probe.sh`.
 
 ## Open ideas
 

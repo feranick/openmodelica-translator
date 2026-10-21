@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openmodelica-translator"
+version = "2026.10.21.1"
+description = "System-dynamics studies (MSL 4.0.0 components) -> OpenModelica models and checked results; CLI, API and MCP server"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Nicola Ferralis", email = "ferralis@generalflash.com" }]
+license = { text = "MIT" }
+dependencies = ["numpy>=1.22", "scipy>=1.8", "matplotlib>=3.5"]
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.2"]
+test = ["pytest>=7"]
+
+[project.scripts]
+omct = "openmodelica_translator.cli:main"
+omct-mcp = "openmodelica_translator.mcp_server:main"
+
+[tool.setuptools]
+packages = ["openmodelica_translator"]

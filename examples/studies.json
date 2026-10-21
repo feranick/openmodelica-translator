@@ -1,0 +1,98 @@
+{
+ "dc_motor_pi_speed": {
+  "comment": "Step response of a DC motor with a PI speed controller: rise time, overshoot, settling time, peak current",
+  "components": {
+   "M": {"kind": "dc_motor", "R": "1.2 Ohm", "L": "0.6 mH", "k": 0.05, "J": "12 g.cm2", "d": 1e-5},
+   "load": {"kind": "inertia", "J": 2e-4},
+   "Vs": {"kind": "signal_voltage"}, "gnd": {"kind": "ground"},
+   "ref": {"kind": "step", "height": "2000 rpm", "startTime": 0.01},
+   "spd": {"kind": "rot_speed_sensor"},
+   "ctl": {"kind": "lim_pid", "controllerType": "PI", "k": 0.2, "Ti": 0.05, "yMax": 24}
+  },
+  "connect": [["Vs.p", "M.p"], ["M.n", "gnd"], ["Vs.n", "gnd"], ["M.flange", "load.flange_a"],
+              ["spd.flange", "load.flange_b"], ["ref.y", "ctl.u_s"], ["spd.w", "ctl.u_m"], ["ctl.y", "Vs.v"]],
+  "outputs": {"w": "load.w", "i": "M.i", "v": "ctl.y"},
+  "analysis": {"kind": "transient", "stop_time": 0.5, "intervals": 5000},
+  "derived": [{"kind": "step", "signal": "w", "t0": 0.01}],
+  "images": true
+ },
+ "aluminium_block_heating": {
+  "comment": "2 kg aluminium block, 50 W, h = 10 W/m2K over 0.06 m2, ambient 20 degC: time to 80 degC, final temperature",
+  "components": {
+   "blk": {"kind": "heat_capacitor", "m": 2, "cp": 900, "T0": "20 degC"},
+   "heater": {"kind": "fixed_heat_flow", "Q_flow": 50},
+   "air": {"kind": "convection", "h": 10, "A": 0.06},
+   "amb": {"kind": "fixed_temperature", "T": "20 degC"}
+  },
+  "connect": [["heater.port", "blk.port"], ["blk.port", "air.solid"], ["air.fluid", "amb.port"]],
+  "outputs": {"T": "blk.T"},
+  "analysis": {"kind": "transient", "stop_time": 20000, "intervals": 2000},
+  "derived": [{"kind": "crossing", "signal": "T", "level": "80 degC"}, {"kind": "steady", "signal": "T"}],
+  "expect": [{"quantity": "outputs.T.final", "value": 376.38, "tol": 0.001}]
+ },
+ "rlc_filter_bode": {
+  "comment": "Series RLC low-pass: resonance and damping from the linearisation, Bode points",
+  "components": {
+   "Vs": {"kind": "signal_voltage"}, "R": {"kind": "resistor", "R": 20},
+   "L": {"kind": "inductor", "L": "10 mH"}, "C": {"kind": "capacitor", "C": "2.5 uF"}, "gnd": {"kind": "ground"}
+  },
+  "connect": [["Vs.p", "R.p"], ["R.n", "L.p"], ["L.n", "C.p"], ["C.n", "gnd"], ["Vs.n", "gnd"]],
+  "outputs": {"v_C": "C.v"},
+  "analysis": {"kind": "linearize", "inputs": {"u": "Vs.v"}, "bode": {"f_min": 100, "f_max": 100000, "points": 60}}
+ },
+ "rlc_square_wave": {
+  "comment": "The same RLC driven by a 1 kHz square wave (0..5 V)",
+  "components": {
+   "V": {"kind": "pulse_voltage", "V": 5, "width": 50, "period": "1 ms"}, "R": {"kind": "resistor", "R": 20},
+   "L": {"kind": "inductor", "L": "10 mH"}, "C": {"kind": "capacitor", "C": "2.5 uF"}, "gnd": {"kind": "ground"}
+  },
+  "connect": [["V.p", "R.p"], ["R.n", "L.p"], ["L.n", "C.p"], ["C.n", "gnd"], ["V.n", "gnd"]],
+  "outputs": {"v_C": "C.v", "i": "L.i"},
+  "analysis": {"kind": "transient", "stop_time": 0.01, "intervals": 10000},
+  "derived": [{"kind": "window", "signal": "v_C", "t0": 0.008, "t1": 0.01}]
+ },
+ "two_mass_modes": {
+  "comment": "Two-mass drive with a compliant shaft: natural frequencies",
+  "components": {
+   "T": {"kind": "torque"}, "J1": {"kind": "inertia", "J": 0.01}, "J2": {"kind": "inertia", "J": 0.04},
+   "shaft": {"kind": "rot_spring_damper", "c": 1000, "d": 0.05}
+  },
+  "connect": [["T.flange", "J1.flange_a"], ["J1.flange_b", "shaft.flange_a"], ["shaft.flange_b", "J2.flange_a"]],
+  "outputs": {"w1": "J1.w", "w2": "J2.w"},
+  "analysis": {"kind": "linearize", "inputs": {"tau": "T.tau"}}
+ },
+ "two_mass_torque_step": {
+  "comment": "The same drive, a 2 N.m torque step",
+  "components": {
+   "T": {"kind": "torque_step", "stepTorque": 2, "startTime": 0.01}, "J1": {"kind": "inertia", "J": 0.01},
+   "J2": {"kind": "inertia", "J": 0.04}, "shaft": {"kind": "rot_spring_damper", "c": 1000, "d": 0.05}
+  },
+  "connect": [["T.flange", "J1.flange_a"], ["J1.flange_b", "shaft.flange_a"], ["shaft.flange_b", "J2.flange_a"]],
+  "outputs": {"w1": "J1.w", "w2": "J2.w", "twist": "shaft.phi_rel"},
+  "analysis": {"kind": "transient", "stop_time": 0.5, "intervals": 5000}
+ },
+ "pi_gain_sweep": {
+  "comment": "Overshoot table of a PI loop on a first-order plant over the gains",
+  "components": {
+   "r": {"kind": "step", "height": 1}, "fb": {"kind": "feedback"},
+   "pi": {"kind": "pi", "k": 1, "T": 0.5}, "plant": {"kind": "first_order", "k": 1.5, "T": 0.2}
+  },
+  "connect": [["r.y", "fb.u1"], ["plant.y", "fb.u2"], ["fb.y", "pi.u"], ["pi.y", "plant.u"]],
+  "outputs": {"y": "plant.y"},
+  "analysis": {"kind": "transient", "stop_time": 5, "intervals": 2000},
+  "derived": [{"kind": "step", "signal": "y", "final": 1}],
+  "sweep": {"params": {"pi.k": [0.5, 1, 2, 4], "pi.T": [0.1, 0.2, 0.5]}, "mode": "grid",
+            "report": ["derived.y.overshoot_pct", "derived.y.settling_time_s"]}
+ },
+ "bracket_on_spring_from_feat": {
+  "comment": "Chain: bracket stiffness from feat and mass from b3dt (effective mass 33/140 m for a cantilever), a shock",
+  "components": {
+   "m": {"kind": "mass", "m": {"value": 0.0943, "unit": "kg", "from": "feat", "what": "33/140 x bracket mass_kg"}},
+   "k": {"kind": "spring_damper", "c": {"value": 1850, "unit": "N/mm", "from": "feat", "what": "tip stiffness F/u"}, "d": 2},
+   "base": {"kind": "fixed"}, "F": {"kind": "force_step", "stepForce": 50, "startTime": 0.001}
+  },
+  "connect": [["base.flange", "k.flange_a"], ["k.flange_b", "m.flange_a"], ["F.flange", "m.flange_b"]],
+  "outputs": {"x": "m.s", "a": "m.a"},
+  "analysis": {"kind": "transient", "stop_time": 0.05, "intervals": 5000}
+ }
+}
