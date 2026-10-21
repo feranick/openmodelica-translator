@@ -16,7 +16,7 @@ It is part of [llm-translators](https://github.com/feranick/llm-translators), wi
 | Settings prefix | `OMCT_` |
 | Output folder | `~/omct_runs` (`OMCT_OUT`) |
 
-**Status (2026.10.21.20, milestone 8 of 8):** every milestone checked on mochi with OpenModelica 1.27.1: 11 closed-form benchmarks, the MCP server, sweeps on one build, SLURM queueing, and the chains with fea-translator and build123d-translator (`chain_feat_modal`: Rayleigh/feat = 1.0171 against 1.0146 expected, 0.24 %; `chain_b3dt_mass`: exact). It joins llm-translators as `omct` (M8). 228 tests pass without OpenModelica.
+**Status (2026.10.21.22, milestone 8 of 8):** every milestone checked on mochi with OpenModelica 1.27.1: 11 closed-form benchmarks, the MCP server, sweeps on one build, SLURM queueing, and the chains with fea-translator and build123d-translator (`chain_feat_modal`: Rayleigh/feat = 1.0171 against 1.0146 expected, 0.24 %; `chain_b3dt_mass`: exact). It joins llm-translators as `omct` (M8). 228 tests pass without OpenModelica.
 
 ## Install
 
@@ -182,6 +182,8 @@ Pictures: `"images": true` in a study writes `images/outputs.png` (one panel per
 
 | Version | Changes |
 |---|---|
+| 2026.10.21.22 | V3.3 started (off by default, `OMCT_REF_NONLINEAR=1`): a Radau IIA DAE integrator (`refnl.py`), nonlinear rows in the reference, the AC machines and drives written as nonlinear equations; behaviour unchanged unless the variable is set |
+| 2026.10.21.21 | mochi: the three-phase and AC machine benchmarks pass with OpenModelica (energy balance included); the reference comparison judges an output that is zero up to rounding on 1e-9 of the largest output of its dimension (three_phase_delta's Q) |
 | 2026.10.21.20 | V3.2: AC machines `induction_machine`, `pmsm`, `pmsm_damper` (MSL BasicMachines with a terminal box; heat ports, structural loss records, per-phase initial currents), supplies `three_phase_grid`, `vf_inverter`, `pmsm_current_drive` (vector signals inside); energy balance terms for the machines; benchmarks `im_grid_slip`, `pmsm_current_torque`, `im_vf_start` (OpenModelica only until the nonlinear reference) |
 | 2026.10.21.19 | V3.1: three-phase plugs (port type `plug`, phases joined pin by pin in the network and the reference), kinds `ac_voltage`, `star`, `delta`, `plug_to_pin`, `ac_resistor`, `ac_inductor`, `ac_capacitor`, `ac_current_rms`, `ac_voltage_rms`, `ac_power`; per-phase values and initial values (`fixed={true, true, false}`); the reference computes quasi-RMS and power outputs afterwards; benchmarks `three_phase_rl`, `three_phase_delta`; `tools/v3_probe.sh` (AC machines in OpenModelica) |
 | 2026.10.21.18 | mochi: 11 of the 13 new benchmarks pass with OpenModelica. Fixes: the DC machine's loss records are structural (OpenModelica compiles their final parameters in: a reused build ran without losses); a fluid component's `m` is structural; the reference and converge checks allow the solver's relative tolerance on the output's size (absolute temperatures); `coolant_open_step` and `resistor_self_heating` run at tolerance 1e-8 |

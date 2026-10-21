@@ -1,5 +1,5 @@
 """post.py — results from the simulated series: outputs, derived quantities, steady states, comparisons, expect.
-Version: 2026.10.21.12
+Version: 2026.10.21.22
 
 outputs(t, values, units)      {name: {unit, finite, initial, final, min, max, t_min, t_max, series: {t, y}}}
                                (series: <= 400 points, 6 significant digits, for plotting)
@@ -187,16 +187,17 @@ def not_events(t) -> np.ndarray:
     return m
 
 
-def compare(a, b, mask=None) -> float:
-    """max |a - b| / (range of b, or its size if constant)."""
+def compare(a, b, mask=None, floor=0.0) -> float:
+    """max |a - b| / (range of b, or its size if constant, at least floor: an output that is 0 up to rounding
+    is compared on the scale of its companions)."""
     a, b = np.asarray(a, float), np.asarray(b, float)
     if mask is not None:
         a, b = a[mask], b[mask]
     if a.size == 0:
         return 0.0
     scale = float(np.max(b) - np.min(b))
-    scale = scale if scale > 0 else max(float(np.max(np.abs(b))), 1e-300)
-    return float(np.max(np.abs(a - b)) / scale)
+    scale = scale if scale > 0 else float(np.max(np.abs(b)))
+    return float(np.max(np.abs(a - b)) / max(scale, floor, 1e-300))
 
 
 # ---- expect ---------------------------------------------------------------------------------------

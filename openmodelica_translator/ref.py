@@ -1,5 +1,5 @@
 """ref.py — an independent implementation of the study's equations, without OpenModelica.
-Version: 2026.10.21.20
+Version: 2026.10.21.22
 
 Built from the study (network.Net), never from the generated Modelica text, so a translation mistake shows up as
 a mismatch. Each catalog kind writes its equations (the MSL 4.0.0 ones, read from the library's sources) into a
@@ -26,6 +26,7 @@ enough for init_selection and the singularity check, never for numbers (covered 
 from __future__ import annotations
 
 import math
+import os
 import warnings
 
 import numpy as np
@@ -190,6 +191,20 @@ class Input(Fn):
 
 
 # ------------------------------------------------------------------------------------------- the system
+class _ODEDense:
+    """z(t) and z'(t) of a segment integrated as an ODE (for Cascade sources)."""
+
+    def __init__(self, sol, zfull, b):
+        self.sol, self.zfull, self.b = sol, zfull, b
+
+    def __call__(self, t):
+        return self.zfull(t, self.sol.sol(t), -1 if t >= self.b else 1)[0]
+
+    def deriv(self, t):
+        h = 1e-7 * max(1.0, abs(t))
+        return (self(t + h) - self(t - h)) / (2 * h)
+
+
 class Cascade(Fn):
     """Heat from a loss into a thermal network: q(t) = sum coef * (L1 z)(L2 z) on the solution of the electrical or
     mechanical part (one way: that part does not depend on temperatures). The base Ref runs once with q = 0 (the
@@ -229,7 +244,9 @@ class System:
         self.paths: dict[str, dict] = {}                # Modelica path -> linear functional {var: coef}
         self.products: dict = {}                        # path -> (f1, f2) or [(coef, f1, f2), ...]: sums of products
         self.cascades: list = []                        # Cascade sources (losses heating a thermal network)
-        self.funcs: dict = {}                           # path -> ("rms", [functionals]): outputs computed afterwards
+        self.funcs: dict = {}                           # path -> ("rms", [functionals]) | ("call", fn, deps): afterwards
+        self.nl: list = []                              # nonlinear terms: (row, fn(values), dependency names)
+        self.orient: dict = {}                          # PMSM cores written for a current feed: {elem: "c"}
         self.modes = None                               # None: neutral stand-ins (validation); else {elem: mode}
         self.pwl: dict = {}                             # piecewise-linear elements: {elem: initial mode}
         self.guards: list = []                          # [{elem, f, c, dir, to}]: leave the mode when f z + c crosses 0
@@ -249,10 +266,16 @@ class System:
             self.fns.append(f)
         return f
 
-    def eq(self, a: dict, b: dict | None = None, src: list | None = None):
+    def eq(self, a: dict, b: dict | None = None, src: list | None = None, nl=None):
+        """A row: sum a z + sum b z' + sum c F(t) (+ nl: (fn, deps): fn(values of deps) for the nonlinear terms)."""
         for x in list(a) + list(b or {}):
             self.v(x)
         self.rows.append((dict(a), dict(b or {}), [(c, self.fn(f)) for c, f in (src or [])]))
+        if nl is not None:
+            fn, deps = nl
+            for x in deps:
+                self.v(x)
+            self.nl.append((len(self.rows) - 1, fn, list(deps)))
 
 
 class _Ctx:
@@ -296,8 +319,12 @@ class _Ctx:
     def var(self, name):
         return self.s.v(f"{self.e}.{name}")
 
-    def eq(self, a, b=None, src=None):
-        self.s.eq(a, b, src)
+    def eq(self, a, b=None, src=None, nl=None):
+        self.s.eq(a, b, src, nl)
+
+    def func(self, name, fn, deps):
+        """An output computed from the solution: fn(*columns of deps) (vectorised)."""
+        self.s.funcs[f"{self.e}.{name}"] = ("call", fn, list(deps))
 
     def path(self, name, functional):
         self.s.paths[f"{self.e}.{name}"] = functional
@@ -309,6 +336,76 @@ class _Ctx:
     def approx(self, why):
         self.s.exact = False
         self.s.not_exact.append(f"{self.d['comp']} ({self.d['kind']}): {why}")
+
+
+def _reduce_linear_hidden(A, B, G, rs, nl_rows, K, Jg0=None, max_iter=6):
+    """Row operations on M z' = f: the system is index 1 when N (A + Jg) V0 is regular (N: left null space of B,
+    V0: its right null space). Combinations of rows y with y N (A + Jg) V0 = 0 are hidden constraints; those
+    without a nonlinear row (rigidly joined inertias, a capacitor across a source) are replaced by their time
+    derivatives (the sources' derivative columns shift), as the shuffle algorithm does; nonlinear ones stay (index
+    2: the integrator scales their components). Returns (A, B, G, Tg) of the integrated system; Tg maps the
+    nonlinear terms g(z) into its rows."""
+    n = A.shape[0]
+    Tg = np.diag(rs.astype(float))
+    nl_mask = np.zeros(n, bool)
+    nl_mask[list(nl_rows)] = True
+    Jg0 = np.zeros((n, n)) if Jg0 is None else Jg0
+    A, B, G = A.copy(), B.copy(), G.copy()
+    for _ in range(max_iter):
+        N, _R = _rank_split(B)
+        if N.shape[0] == 0:
+            break
+        V0, _rk = _null_right(B, n)
+        S = N @ (A + Tg @ Jg0) @ V0
+        W = np.hstack([S, N @ Tg[:, nl_mask]]) if nl_mask.any() else S
+        Yl = _rank_split(W)[0]
+        if Yl.shape[0] == 0:
+            break
+        C_ = Yl @ N
+        Uc, sc, Vc = np.linalg.svd(C_, full_matrices=True)
+        rk = int(np.sum(sc > 1e-10 * (sc[0] if sc.size else 1.0)))
+        if rk == 0:
+            break
+        Cr = np.linalg.qr((Uc[:, :rk].T @ C_).T)[0].T       # the constraint rows (orthonormal combinations)
+        Q = np.linalg.svd(Cr, full_matrices=True)[2][rk:]      # an orthonormal complement
+        CA, CG = Cr @ A, Cr @ G
+        if np.any(np.abs(CG[:, [j * K + K - 1 for j in range(G.shape[1] // K)]]) > 0):
+            break
+        CGs = np.zeros_like(CG)
+        for j in range(G.shape[1] // K):
+            for o in range(K - 1):
+                CGs[:, j * K + o + 1] = CG[:, j * K + o]
+        A = np.vstack([Q @ A, np.zeros_like(CA)])
+        B = np.vstack([Q @ B, CA])
+        G = np.vstack([Q @ G, CGs])
+        Tg = np.vstack([Q @ Tg, np.zeros((rk, n))])
+    return A, B, G, Tg
+
+
+def _cascades_to_nl(s: "System"):
+    """Turn the Cascade sources (losses heating a thermal network) into nonlinear terms of their rows."""
+    casc = {id(f): f for f in s.cascades}
+    for i, (a, b, src) in enumerate(s.rows):
+        keep, terms = [], []
+        for cf, f in src:
+            if id(f) in casc:
+                terms.append((cf, casc[id(f)]))
+            else:
+                keep.append((cf, f))
+        if not terms:
+            continue
+        s.rows[i] = (a, b, keep)
+        deps = sorted({x for _, f in terms for _, f1, f2 in f.terms for x in list(f1) + list(f2)})
+        pos = {x: k for k, x in enumerate(deps)}
+
+        def fn(v, terms=terms, pos=pos):
+            out = 0.0
+            for cf, f in terms:
+                for c2, f1, f2 in f.terms:
+                    out += cf * c2 * sum(c_ * v[pos[x]] for x, c_ in f1.items()) * sum(c_ * v[pos[x]] for x, c_ in f2.items())
+            return out
+        s.nl.append((i, fn, deps))
+    s.cascades = []
 
 
 def _heat_out(c: _Ctx, terms, port="heatPort"):
@@ -571,12 +668,23 @@ def _stamp(c: _Ctx):
     elif kn in ("linear_speed_load", "quadratic_speed_load"):
         tau, w = c.var("tau"), c.var("w")
         c.eq({w: 1}, {c.pot("flange"): -1})
-        c.eq({tau: 1, w: -p["tau_nominal"] / p["w_nominal"]})
+        tn, wn = float(p["tau_nominal"]), float(p["w_nominal"])
+        quad, same = kn == "quadratic_speed_load", bool(p["TorqueDirection"])
+        if not quad and not same:
+            c.eq({tau: 1, w: -tn / wn})
+        else:
+            # MSL: tau = tau_nominal*(w/w_nominal)^2 (TorqueDirection) or *sign(w)*(w/w_nominal)^2; linear:
+            # tau = tau_nominal*abs(w/w_nominal) (TorqueDirection)
+            if quad and same:
+                f = lambda x: -tn * (x[0] / wn) ** 2
+            elif quad:
+                f = lambda x: -tn * x[0] * abs(x[0]) / wn ** 2
+            else:
+                f = lambda x: -tn * abs(x[0] / wn)
+            c.eq({tau: 1}, nl=(f, [w]))
         c.eq({c.flow("flange"): 1, tau: 1})
         c.path("tau", {tau: 1.0})
         c.path("w", {w: 1.0})
-        if kn == "quadratic_speed_load" or p["TorqueDirection"]:
-            c.approx("speed-dependent torque (quadratic, or the same sign both ways)")
     elif kn in ("position_sensor", "angle_sensor"):
         c.eq({c.flow("flange"): 1})
         c.eq({c.sig("s" if kn == "position_sensor" else "phi"): 1, c.pot("flange"): -1})
@@ -980,60 +1088,343 @@ def _stamp_ac(c: _Ctx):
             c.path(f"v[{k}]", {v: 1.0})
             c.path(f"i[{k}]", {i: 1.0})
         return
-    c.approx("AC machines and drives: the reference covers them from version 3.3 (nonlinear)")
     if kn == "vf_controller":
-        x, am = c.var("x"), c.var("amplitude")
-        c.eq({c.sig("u"): 2 * math.pi}, {x: -1})
-        c.eq({am: 1, c.sig("u"): -SQ2 * p["VNominal"] / p["fNominal"]})
-        for k in range(1, 4):
-            c.eq({c.sig(f"y[{k}]"): 1, am: -1.0})
-        c.path("x", {x: 1.0})
-        c.path("amplitude", {am: 1.0})
-        c.init("x", {x: 1.0}, 0.0, 0, True, forced=True)
+        _stamp_vf(c)
         return
     if kn == "dq_to_three_phase":
-        for k in range(1, 4):
-            th = -(k - 1) * 2 * math.pi / 3
-            c.eq({c.sig(f"y[{k}]"): 1, c.sig("d"): -SQ2 * math.cos(th), c.sig("q"): SQ2 * math.sin(th), c.sig("phi"): 0.0})
+        _stamp_dq3(c)
         return
-    # machines (stand-in): per phase Rs + Ls, rotor currents in RL loops, rotor inertia, no torque
-    Ls = p["Lssigma"] + (p.get("Lm") or p.get("Lmd"))
+    _stamp_machine(c)
+
+
+PHI3 = [k * 2 * math.pi / 3 for k in range(3)]       # symmetricOrientation(3)
+
+
+def _alpha(a20, Tref):
+    return a20 / (1 + a20 * (Tref - 293.15))
+
+
+def _stamp_vf(c: _Ctx):
+    """MSL VfController: der(x) = 2 pi u; amplitude = sqrt(2) VNominal (|u| < fNominal ? |u|/fNominal : 1);
+    y[k] = amplitude sin(x - (k-1) 2 pi/3)."""
+    p = c.p
+    x, am, u = c.var("x"), c.var("amplitude"), c.sig("u")
+    VN, fN = p["VNominal"], p["fNominal"]
+    c.eq({u: 2 * math.pi}, {x: -1})
+    c.eq({am: 1}, None, None, (lambda v, VN=VN, fN=fN: -SQ2 * VN * (abs(v[0]) / fN if abs(v[0]) < fN else 1.0), [u]))
     for k in range(1, 4):
-        vs, is_ = c.var(f"vs[{k}]"), c.var(f"is[{k}]")
+        th = -PHI3[k - 1]
+        c.eq({c.sig(f"y[{k}]"): 1}, None, None, (lambda v, th=th: -v[0] * math.sin(v[1] + th), [am, x]))
+    c.path("x", {x: 1.0})
+    c.path("amplitude", {am: 1.0})
+    c.init("x", {x: 1.0}, 0.0, 0, True, forced=True)
+
+
+def _stamp_dq3(c: _Ctx):
+    """MSL DQToThreePhase: y[k] = sqrt(2) (d cos(phi_k - p phi) + q sin(phi_k - p phi)), phi_k = (k-1) 2 pi/3."""
+    pp = c.p["p"]
+    d, q, ph = c.sig("d"), c.sig("q"), c.sig("phi")
+    for k in range(1, 4):
+        th = PHI3[k - 1]
+        c.eq({c.sig(f"y[{k}]"): 1}, None, None,
+             (lambda v, th=th: -SQ2 * (v[0] * math.cos(th - pp * v[2]) + v[1] * math.sin(th - pp * v[2])), [d, q, ph]))
+
+
+def _clarke_rows(xs):
+    """(alpha, beta, zero) functionals of three phase variables (MSL: 2/3 sum x_k (cos, sin)(phi_k); sum/3)."""
+    a = {x: 2 / 3 * math.cos(th) for x, th in zip(xs, PHI3)}
+    b = {x: 2 / 3 * math.sin(th) for x, th in zip(xs, PHI3)}
+    z = {x: 1 / 3 for x in xs}
+    return a, b, z
+
+
+def _loss_torque(PRef, wRef, power_w, w, factor=1.0):
+    """The MSL loss torques (Friction, StrayLoad, PermanentMagnetLosses) on the flange: tauRef sign(w) (|w|/wRef)^pw,
+    friction linear below 0.001 wRef."""
+    if PRef <= 0:
+        return 0.0
+    tauRef = PRef / wRef
+    return factor * tauRef * math.copysign(1.0, w) * (abs(w) / wRef) ** power_w
+
+
+def _friction_torque(PRef, wRef, power_w, w):
+    if PRef <= 0:
+        return 0.0
+    tauRef = PRef / wRef
+    wL = 0.001 * wRef
+    if abs(w) > wL:
+        return tauRef * math.copysign(1.0, w) * (abs(w) / wRef) ** power_w
+    return tauRef * (wL / wRef) ** power_w * w / wL
+
+
+def _stamp_machine(c: _Ctx):
+    """IM_SquirrelCage and SM_PermanentMagnet, written independently of MSL's structure (same equations):
+    stator phases -> Rs (Ts) -> space phasor u = 2/3 sum u_k e^(j phi_k), zero sequence u0 = Lszero d i0/dt; core
+    conductance Gc = PRef/(3 VRef^2) across u; stray inductance Lssigma; airgap. IM: stator frame, states the stray
+    current i_L and the rotor current i_r (stator frame): u - Gc... ; Lm d(i_L + i_r)/dt + Lrsigma d i_r/dt
+    + Rr i_r - p w J (Lm (i_L + i_r) + Lrsigma i_r) = 0. PMSM: rotor frame (gamma = p phi), states i_dq (and the
+    damper's i_D); psi = (Lmd (i_d + Ie - i_Dd), Lmq (i_q - i_Dq)). Torque 3/2 p (i x psi); loss torques of
+    friction, stray load and the magnet; rotor inertia Jr. Nonlinear terms: the rotation, speed x flux, torque,
+    the loss torques, temperature-dependent resistances."""
+    kn, p = c.d["kind"], c.p
+    pp = p["p"]
+    m3 = (1, 2, 3)
+    th = c.d.get("enabled", set())
+    a_s = _alpha(p["alpha20s"], p["TsRef"])
+    ws = 2 * math.pi * p["fsNominal"]
+    # stator: phases
+    vs = [c.var(f"vs[{k}]") for k in m3]
+    is_ = [c.var(f"is[{k}]") for k in m3]
+    u = [c.var(f"u[{k}]") for k in m3]
+    for k, v_, i_, u_ in zip(m3, vs, is_, u):
         a, b = _ph("plug_sp", k), _ph("plug_sn", k)
-        c.eq({vs: 1, c.pot(a): -1, c.pot(b): 1})
-        c.eq({is_: 1, c.flow(a): -1})
+        c.eq({v_: 1, c.pot(a): -1, c.pot(b): 1})
+        c.eq({i_: 1, c.flow(a): -1})
         c.eq({c.flow(a): 1, c.flow(b): 1})
-        c.eq({vs: 1, is_: -p["Rs"]}, {is_: -Ls})
-        c.path(f"vs[{k}]", {vs: 1.0})
-        c.path(f"is[{k}]", {is_: 1.0})
-        _init_phase(c, "is0", k, {is_: 1.0})
-    if "ir0" in c.k["inits"]:
-        Rr = p.get("Rr") or p.get("Rrd")
-        Lr = p.get("Lrsigma") or p.get("Lrsigmad")
-        for k in (1, 2):
-            ir = c.var(f"ir[{k}]")
-            c.eq({ir: Rr}, {ir: Lr})
-            c.path(f"ir[{k}]", {ir: 1.0})
-            _init_phase(c, "ir0", k, {ir: 1.0})
-    phi, w, tau = c.var("phiMechanical"), c.var("wMechanical"), c.var("tauElectrical")
+        hp = f"heatPortStatorWinding{k}"
+        if hp in th and a_s != 0:
+            T = c.pot(hp)
+            c.eq({u_: 1, v_: -1}, None, None,
+                 (lambda v, R=p["Rs"], a_=a_s, Tr=p["TsRef"]: R * (1 + a_ * (v[1] - Tr)) * v[0], [i_, T]))
+        else:
+            Tk = c.pot(hp) if hp in th else None
+            R = p["Rs"] * (1 + a_s * (p["TsOperational"] - p["TsRef"])) if Tk is None else p["Rs"]
+            c.eq({u_: 1, v_: -1, i_: R})
+        c.path(f"vs[{k}]", {v_: 1.0})
+        c.path(f"is[{k}]", {i_: 1.0})
+        _init_phase(c, "is0", k, {i_: 1.0})
+    ua, ub, u0 = c.var("u_a"), c.var("u_b"), c.var("u0")
+    ia, ib, i0 = c.var("i_a"), c.var("i_b"), c.var("i0")
+    for x, f_ in zip((ua, ub, u0), _clarke_rows(u)):
+        c.eq({x: 1, **{k_: -v_ for k_, v_ in f_.items()}})
+    for x, f_ in zip((ia, ib, i0), _clarke_rows(is_)):
+        c.eq({x: 1, **{k_: -v_ for k_, v_ in f_.items()}})
+    Ls0 = p.get("Lszero") or p["Lssigma"]
+    c.eq({u0: 1}, {i0: -Ls0})
+    c.path("i_0_s", {i0: -1.0})
+    Gc = 0.0
+    if (p.get("PRef_statorCore") or 0) > 0:
+        Gc = p["PRef_statorCore"] / (3 * p["VRef_statorCore"] ** 2)
+    iLa, iLb = c.var("airGap.i_ss[1]"), c.var("airGap.i_ss[2]")
+    Lsig = p["Lssigma"]
+    phi, w = c.var("phiMechanical"), c.var("wMechanical")
+    tau = c.var("tauElectrical")
+    if kn == "im_core":
+        Lm, Lr, Rr = p["Lm"], p["Lrsigma"], p["Rr"]
+        a_r = _alpha(p["alpha20r"], p["TrRef"])
+        ira, irb = c.var("airGap.i_rs[1]"), c.var("airGap.i_rs[2]")
+        # i_sp = i_L + Gc u
+        c.eq({ia: 1, iLa: -1, ua: -Gc})
+        c.eq({ib: 1, iLb: -1, ub: -Gc})
+        # u = Lssigma d i_L/dt + Lm d(i_L + i_r)/dt
+        c.eq({ua: 1}, {iLa: -(Lsig + Lm), ira: -Lm})
+        c.eq({ub: 1}, {iLb: -(Lsig + Lm), irb: -Lm})
+        # rotor in the stator frame
+        rot_hp = "heatPortRotorWinding" in th
+        Trw = c.pot("heatPortRotorWinding") if rot_hp else None
+        RrOp = Rr * (1 + a_r * (p["TrOperational"] - p["TrRef"])) if not rot_hp else Rr
+
+        def rotor(v, comp, Lm=Lm, Lr=Lr, Rr=RrOp, a_r=a_r if rot_hp else 0.0, Tr=p["TrRef"], pp=pp):
+            iL1, iL2, ir1, ir2, w_ = v[:5]
+            R_ = Rr * (1 + a_r * (v[5] - Tr)) if len(v) > 5 else Rr
+            we = pp * w_
+            psi1, psi2 = Lm * (iL1 + ir1) + Lr * ir1, Lm * (iL2 + ir2) + Lr * ir2
+            # - we J psi: J = [[0, -1], [1, 0]] -> (we psi2, -we psi1)
+            return (R_ * ir1 + we * psi2) if comp == 0 else (R_ * ir2 - we * psi1)
+        deps = [iLa, iLb, ira, irb, w] + ([Trw] if rot_hp and a_r != 0 else [])
+        c.eq({}, {iLa: Lm, ira: Lm + Lr}, None, (lambda v: rotor(v, 0), deps))
+        c.eq({}, {iLb: Lm, irb: Lm + Lr}, None, (lambda v: rotor(v, 1), deps))
+        # torque 3/2 p Lm (iL_b ir_a - iL_a ir_b)
+        c.eq({tau: 1}, None, None, (lambda v, k_=1.5 * pp * Lm: -k_ * (v[1] * v[2] - v[0] * v[3]), [iLa, iLb, ira, irb]))
+        psa, psb = c.var("airGap.psi_ms[1]"), c.var("airGap.psi_ms[2]")
+        c.eq({psa: 1, iLa: -Lm, ira: -Lm})
+        c.eq({psb: 1, iLb: -Lm, irb: -Lm})
+        c.path("airGap.psi_ms[1]", {psa: 1.0})
+        c.path("airGap.psi_ms[2]", {psb: 1.0})
+        c.path("airGap.i_ms[1]", {iLa: 1.0, ira: 1.0})
+        c.path("airGap.i_ms[2]", {iLb: 1.0, irb: 1.0})
+        c.path("airGap.i_ss[1]", {iLa: 1.0})
+        c.path("airGap.i_ss[2]", {iLb: 1.0})
+        # MSL's ir: the cage current in the rotor frame = -R(gamma)^T i_rs
+        c.func("ir[1]", lambda a1, a2, f_, pp=pp: -(np.cos(pp * f_) * a1 + np.sin(pp * f_) * a2), [ira, irb, phi])
+        c.func("ir[2]", lambda a1, a2, f_, pp=pp: -(-np.sin(pp * f_) * a1 + np.cos(pp * f_) * a2), [ira, irb, phi])
+        # initial cage currents: the rotor-frame value at the initial angle
+        g0 = pp * c.d["inits"]["phi0"][0]
+        for k, (ca, cb) in enumerate(((-math.cos(g0), -math.sin(g0)), (math.sin(g0), -math.cos(g0))), 1):
+            _init_phase(c, "ir0", k, {ira: ca, irb: cb})
+        rot_loss = lambda a1, a2, R_=RrOp: 1.5 * R_ * (a1 ** 2 + a2 ** 2)
+        rot_deps = [ira, irb]
+    else:
+        Lmd, Lmq = p["Lmd"], p["Lmq"]
+        Ie = SQ2 * p["VsOpenCircuit"] / (Lmd * ws)
+        dmp = kn == "pmsm_damper_core"
+        idd, iqq = c.var("airGap.i_sr[1]"), c.var("airGap.i_sr[2]")
+        if dmp:
+            iDd, iDq = c.var("iD[1]"), c.var("iD[2]")
+            Rd, Rq = p["Rrd"], p.get("Rrq") or p["Rrd"]
+            Ld, Lq = p["Lrsigmad"], p.get("Lrsigmaq") or p["Lrsigmad"]
+            a_r = _alpha(p["alpha20r"], p["TrRef"])
+            fr = 1 + a_r * (p["TrOperational"] - p["TrRef"])
+            # damper: Lmd d(i_d - i_Dd)/dt = R_D i_Dd + L_D d i_Dd/dt (rotor-side voltage d psi_mr/dt)
+            c.eq({iDd: -Rd * fr}, {idd: Lmd, iDd: -(Lmd + Ld)})
+            c.eq({iDq: -Rq * fr}, {iqq: Lmq, iDq: -(Lmq + Lq)})
+            c.path("ir[1]", {iDd: -1.0})
+            c.path("ir[2]", {iDq: -1.0})
+            _init_phase(c, "ir0", 1, {iDd: -1.0})
+            _init_phase(c, "ir0", 2, {iDq: -1.0})
+        # stator in the rotor frame: R^T u = Lssigma (i' + we J i) + psi' + we J psi
+        bd = {idd: -(Lsig + Lmd)}
+        bq = {iqq: -(Lsig + Lmq)}
+        if dmp:
+            bd[iDd] = Lmd
+            bq[iDq] = Lmq
+
+        def stat(v, comp, Lmd=Lmd, Lmq=Lmq, Ie=Ie, Lsig=Lsig, pp=pp, dmp=dmp):
+            id_, iq_, w_ = v[:3]
+            Dd, Dq = (v[3], v[4]) if dmp else (0.0, 0.0)
+            we = pp * w_
+            psd, psq = Lmd * (id_ + Ie - Dd), Lmq * (iq_ - Dq)
+            # J x = (-x2, x1)
+            if comp == 0:
+                return -we * (-(Lsig * iq_) - psq)
+            return -we * (Lsig * id_ + psd)
+        vd, vq = c.var("v_d"), c.var("v_q")
+        deps = [idd, iqq, w] + ([iDd, iDq] if dmp else [])
+        c.eq({vd: 1}, bd, None, (lambda v: stat(v, 0), deps))
+        c.eq({vq: 1}, bq, None, (lambda v: stat(v, 1), deps))
+        # the rotation between the frames, written in the direction the network drives: a voltage-fed machine
+        # (orientation "v": v_dq = R^T u, i_sp = R i_dq) or a current-fed one ("c": u = R v_dq, i_dq = R^T i_L)
+        rot = lambda a1, a2, g: (math.cos(g) * a1 - math.sin(g) * a2, math.sin(g) * a1 + math.cos(g) * a2)
+        rotT = lambda a1, a2, g: (math.cos(g) * a1 + math.sin(g) * a2, -math.sin(g) * a1 + math.cos(g) * a2)
+        if c.s.orient.get(c.e, "v") == "v":
+            for k_, x in enumerate((vd, vq)):
+                c.eq({x: -1}, None, None, (lambda v, k_=k_, pp=pp: rotT(v[0], v[1], pp * v[2])[k_], [ua, ub, phi]))
+            # i_sp = R i_dq + Gc u (the stray current in the stator frame)
+            for k_, (x, ux) in enumerate(((ia, ua), (ib, ub))):
+                c.eq({x: 1, ux: -Gc}, None, None, (lambda v, k_=k_, pp=pp: -rot(v[0], v[1], pp * v[2])[k_], [idd, iqq, phi]))
+        else:
+            for k_, x in enumerate((ua, ub)):
+                c.eq({x: 1}, None, None, (lambda v, k_=k_, pp=pp: -rot(v[0], v[1], pp * v[2])[k_], [vd, vq, phi]))
+            c.eq({iLa: 1, ia: -1, ua: Gc})
+            c.eq({iLb: 1, ib: -1, ub: Gc})
+            for k_, x in enumerate((idd, iqq)):
+                c.eq({x: 1}, None, None, (lambda v, k_=k_, pp=pp: -rotT(v[0], v[1], pp * v[2])[k_], [iLa, iLb, phi]))
+
+        def torque(v, Lmd=Lmd, Lmq=Lmq, Ie=Ie, pp=pp, dmp=dmp):
+            id_, iq_ = v[0], v[1]
+            Dd, Dq = (v[2], v[3]) if dmp else (0.0, 0.0)
+            return -1.5 * pp * (iq_ * Lmd * (id_ + Ie - Dd) - id_ * Lmq * (iq_ - Dq))
+        c.eq({tau: 1}, None, None, (torque, [idd, iqq] + ([iDd, iDq] if dmp else [])))
+        psd_, psq_ = c.var("airGap.psi_mr[1]"), c.var("airGap.psi_mr[2]")
+        c.eq({psd_: 1, idd: -Lmd, **({iDd: Lmd} if dmp else {})}, None, [(-Lmd * Ie, Const(1.0))])
+        c.eq({psq_: 1, iqq: -Lmq, **({iDq: Lmq} if dmp else {})})
+        c.path("airGap.psi_mr[1]", {psd_: 1.0})
+        c.path("airGap.psi_mr[2]", {psq_: 1.0})
+        c.path("airGap.i_sr[1]", {idd: 1.0})
+        c.path("airGap.i_sr[2]", {iqq: 1.0})
+        if dmp:
+            c.func("airGap.i_mr[1]", lambda a1, a2, Ie=Ie: a1 + Ie - a2, [idd, iDd])
+            c.path("airGap.i_mr[2]", {iqq: 1.0, iDq: -1.0})
+        else:
+            c.func("airGap.i_mr[1]", lambda a1, Ie=Ie: a1 + Ie, [idd])
+            c.path("airGap.i_mr[2]", {iqq: 1.0})
+        c.func("airGap.i_ss[1]", lambda a1, a2, f_, pp=pp: np.cos(pp * f_) * a1 - np.sin(pp * f_) * a2, [idd, iqq, phi])
+        c.func("airGap.i_ss[2]", lambda a1, a2, f_, pp=pp: np.sin(pp * f_) * a1 + np.cos(pp * f_) * a2, [idd, iqq, phi])
+        if c.s.orient.get(c.e, "v") == "v":
+            for k_, x in enumerate((iLa, iLb)):
+                c.eq({x: 1}, None, None, (lambda v, k_=k_, pp=pp: -rot(v[0], v[1], pp * v[2])[k_], [idd, iqq, phi]))
+        if dmp:
+            rot_loss = lambda a1, a2, Rd=Rd * fr, Rq=Rq * fr: 1.5 * (Rd * a1 ** 2 + Rq * a2 ** 2)
+            rot_deps = [iDd, iDq]
+        else:
+            rot_loss, rot_deps = None, []
+    # mechanics: Jr dw/dt = tau + flange.tau - friction - stray - magnet losses
     c.eq({phi: 1, c.pot("flange"): -1})
     c.eq({w: 1}, {phi: -1})
-    c.eq({tau: 1})
-    c.eq({tau: 1, c.flow("flange"): 1}, {w: -p["Jr"]})
+    fr_ = (p["PRef_friction"], p.get("wRef_friction") or ws / pp, p["power_w_friction"])
+    st_ = (p.get("PRef_strayLoad") or 0.0, p.get("IRef_strayLoad") or 1.0, p.get("wRef_strayLoad") or ws / pp,
+           p.get("power_w_strayLoad") or 1.0)
+    pm_ = (p.get("PRef_pm") or 0.0, p.get("IRef_pm") or 1.0, p.get("wRef_pm") or ws / pp)
+
+    def losses_t(v):
+        w_, i1, i2, i3 = v
+        irms2 = (i1 * i1 + i2 * i2 + i3 * i3) / 3
+        tf = _friction_torque(fr_[0], fr_[1], fr_[2], w_)
+        ts = _loss_torque(st_[0], st_[2], st_[3], w_, irms2 / st_[1] ** 2)
+        tp = _loss_torque(pm_[0], pm_[2], 1.0, w_, (math.sqrt(irms2) / pm_[1]) ** 2) if pm_[0] > 0 else 0.0
+        return tf, ts, tp
+    c.eq({tau: -1, c.flow("flange"): -1}, {w: p["Jr"]}, None, (lambda v: sum(losses_t(v)), [w] + is_))
     c.path("phiMechanical", {phi: 1.0})
     c.path("wMechanical", {w: 1.0})
     c.path("tauElectrical", {tau: 1.0})
     c.path("tauShaft", {c.flow("flange"): -1.0})
-    for v in C.KINDS[kn]["vars"]:
-        if v.startswith(("power", "loss")):
-            c.s.products[f"{c.e}.{C.var_path(kn, v)}"] = [(0.0, {w: 1.0}, {w: 1.0})]
-    for h in c.k["cond_ports"]:
-        if c.enabled(h):
-            c.eq({c.flow(h): 1})
     _init(c, "w0", {w: 1.0})
     _init(c, "phi0", {phi: 1.0})
+    # power balance (MSL powerBalance.*) as outputs
+    Rs_op = p["Rs"] * (1 + a_s * (p["TsOperational"] - p["TsRef"]))
+    cl = [(1.5 * Gc, {ua: 1.0}, {ua: 1.0}), (1.5 * Gc, {ub: 1.0}, {ub: 1.0})]
+    va, vb, _ = _clarke_rows(vs)
+    pr = c.s.products
+    pr[f"{c.e}.powerBalance.powerStator"] = [(1.5, va, {ia: 1.0}), (1.5, vb, {ib: 1.0})]
+    pr[f"{c.e}.powerBalance.powerMechanical"] = [(-1.0, {w: 1.0}, {c.flow("flange"): 1.0})]
+    pr[f"{c.e}.powerBalance.lossPowerStatorWinding"] = [(Rs_op, {x: 1.0}, {x: 1.0}) for x in is_]
+    pr[f"{c.e}.powerBalance.lossPowerStatorCore"] = cl
+    pr[f"{c.e}.powerBalance.lossPowerRotorCore"] = [(0.0, {w: 1.0}, {w: 1.0})]
+    c.func("powerBalance.lossPowerFriction", lambda w_: np.vectorize(lambda x: _friction_torque(*fr_, x) * x)(w_), [w])
+    c.func("powerBalance.lossPowerStrayLoad",
+           lambda w_, i1, i2, i3: np.vectorize(lambda x, a, b, d: _loss_torque(st_[0], st_[2], st_[3], x,
+                                                                            (a * a + b * b + d * d) / 3 / st_[1] ** 2) * x)(w_, i1, i2, i3),
+           [w] + is_)
+    if kn != "im_core":
+        c.func("powerBalance.lossPowerPermanentMagnet",
+               lambda w_, i1, i2, i3: np.vectorize(lambda x, a, b, d: (_loss_torque(pm_[0], pm_[2], 1.0, x,
+                                                                                    (a * a + b * b + d * d) / 3 / pm_[1] ** 2) if pm_[0] > 0 else 0.0) * x)(w_, i1, i2, i3),
+               [w] + is_)
+    if rot_loss is not None:
+        c.func("powerBalance.lossPowerRotorWinding", rot_loss, rot_deps)
+    parts = ["lossPowerStatorWinding", "lossPowerStatorCore", "lossPowerFriction", "lossPowerStrayLoad"]
+    parts += (["lossPowerRotorWinding"] if rot_loss is not None else []) + (["lossPowerPermanentMagnet"] if kn != "im_core" else [])
+    deps_all = sorted(set([w, ua, ub] + is_ + rot_deps))
 
+    def total(*cols, deps_all=deps_all):
+        v = dict(zip(deps_all, cols))
+        out = Rs_op * (v[is_[0]] ** 2 + v[is_[1]] ** 2 + v[is_[2]] ** 2) + 1.5 * Gc * (v[ua] ** 2 + v[ub] ** 2)
+        out = out + np.vectorize(lambda x: _friction_torque(*fr_, x) * x)(v[w])
+        irms2 = (v[is_[0]] ** 2 + v[is_[1]] ** 2 + v[is_[2]] ** 2) / 3
+        out = out + np.vectorize(lambda x, r2: _loss_torque(st_[0], st_[2], st_[3], x, r2 / st_[1] ** 2) * x)(v[w], irms2)
+        if kn != "im_core" and pm_[0] > 0:
+            out = out + np.vectorize(lambda x, r2: _loss_torque(pm_[0], pm_[2], 1.0, x, r2 / pm_[1] ** 2) * x)(v[w], irms2)
+        if rot_loss is not None:
+            out = out + rot_loss(*[v[d] for d in rot_deps])
+        return out
+    c.func("powerBalance.lossPowerTotal", total, deps_all)
+    # heat ports: the losses leave as heat (nonlinear terms)
+    if th:
+        for k, i_ in zip(m3, is_):
+            hp = f"heatPortStatorWinding{k}"
+            if a_s != 0:
+                c.eq({c.flow(hp): 1}, None, None,
+                     (lambda v, R=p["Rs"], a_=a_s, Tr=p["TsRef"]: R * (1 + a_ * (v[1] - Tr)) * v[0] ** 2, [i_, c.pot(hp)]))
+            else:
+                c.eq({c.flow(hp): 1}, None, None, (lambda v, R=p["Rs"]: R * v[0] ** 2, [i_]))
+        c.eq({c.flow("heatPortStatorCore"): 1}, None, None, (lambda v, G=Gc: 1.5 * G * (v[0] ** 2 + v[1] ** 2), [ua, ub]))
+        c.eq({c.flow("heatPortRotorCore"): 1})
+        c.eq({c.flow("heatPortFriction"): 1}, None, None, (lambda v: _friction_torque(*fr_, v[0]) * v[0], [w]))
+        c.eq({c.flow("heatPortStrayLoad"): 1}, None, None,
+             (lambda v: _loss_torque(st_[0], st_[2], st_[3], v[0], (v[1] ** 2 + v[2] ** 2 + v[3] ** 2) / 3 / st_[1] ** 2) * v[0],
+              [w] + is_))
+        if "heatPortPermanentMagnet" in c.k["ports"]:
+            c.eq({c.flow("heatPortPermanentMagnet"): 1}, None, None,
+                 (lambda v: (_loss_torque(pm_[0], pm_[2], 1.0, v[0], (v[1] ** 2 + v[2] ** 2 + v[3] ** 2) / 3 / pm_[1] ** 2)
+                             if pm_[0] > 0 else 0.0) * v[0], [w] + is_))
+        if "heatPortRotorWinding" in c.k["ports"]:
+            if kn == "im_core":
+                a_r = _alpha(p["alpha20r"], p["TrRef"])
+                c.eq({c.flow("heatPortRotorWinding"): 1}, None, None,
+                     (lambda v, R=p["Rr"], a_=a_r, Tr=p["TrRef"]: 1.5 * R * (1 + a_ * (v[2] - Tr)) * (v[0] ** 2 + v[1] ** 2),
+                      rot_deps + [c.pot("heatPortRotorWinding")]))
+            else:
+                c.eq({c.flow("heatPortRotorWinding"): 1}, None, None, (lambda v: rot_loss(v[0], v[1]), rot_deps))
 
 # ------------------------------------------------------------------------------------------- coolant loops
 G_N = 9.80665           # Modelica.Constants.g_n
@@ -1518,11 +1909,12 @@ class Ref:
 
     MAXORD = 4
 
-    def __init__(self, net, free_inputs: dict | None = None, modes: dict | None = None, base=None):
+    def __init__(self, net, free_inputs: dict | None = None, modes: dict | None = None, base=None, orient=None):
         self.net = net
         self.base = base or self
         s = System()
         s.modes = modes
+        s.orient = dict(orient or {})
         self.sys = s
         s.hyd = hydraulics(net)
         self.hydraulics = s.hyd
@@ -1548,6 +1940,11 @@ class Ref:
         self.events = sorted(s.pwl) if base is None else []     # piecewise-linear elements (base system)
         self.exact = s.exact
         self.not_exact = s.not_exact
+        if s.nl and s.cascades:
+            _cascades_to_nl(s)                # with a nonlinear system the heat of losses is a nonlinear term too
+        if s.nl and s.pwl:
+            self.exact = s.exact = False
+            s.not_exact.append("piecewise-linear elements together with nonlinear machines (not combined)")
         n = len(s.vars)
         if len(s.rows) != n:
             raise RefError(f"{len(s.rows)} equations for {n} variables (a reference-implementation bug, or an "
@@ -1565,6 +1962,26 @@ class Ref:
                 B[i, s.idx[x]] += cf
             for cf, f in src:
                 G[i, s.fn_idx[id(f)] * K] += cf
+        self.nonlinear = bool(s.nl)
+        if self.nonlinear and os.environ.get("OMCT_REF_NONLINEAR", "") not in ("1", "true", "yes"):
+            # the nonlinear reference (V3.3) is still being checked: off unless OMCT_REF_NONLINEAR=1
+            self.exact = False
+            self.not_exact.append("nonlinear terms (AC machines and drives, speed-dependent loads): the nonlinear "
+                                  "reference is experimental (OMCT_REF_NONLINEAR=1)")
+        if self.nonlinear:
+            # the nonlinear terms: kept for the integrator; their linearisation at z = 0 (angles 0, speeds 0) makes
+            # the linear stand-in with the same states, for validation and the choice of initial values
+            self._nl = [(r, fn, np.array([s.idx[d] for d in deps])) for r, fn, deps in s.nl]
+            self.A_lin0, self.G_lin0 = A.copy(), G.copy()
+            one = self.sys.fn(Const(1.0)) if not hasattr(self, "_one") else self._one
+            self._one = one
+            if len(s.fns) * K > G.shape[1]:
+                G = np.hstack([G, np.zeros((n, len(s.fns) * K - G.shape[1]))])
+            z0 = np.zeros(n)
+            g0 = self._g(z0)
+            Jg0 = self._jg(z0)
+            A = A + Jg0
+            G[:, s.fn_idx[id(one)] * K] += g0
         self.A0, self.B0, self.G0 = A.copy(), B.copy(), G.copy()
         self.to_base = np.arange(n)
         # rows scaled by powers of 2 (exact) to comparable size before the reduction mixes them
@@ -1702,6 +2119,26 @@ class Ref:
         return np.linalg.solve(M, rhs)
 
     # ---- results ------------------------------------------------------------------------------------------
+    # ---- nonlinear terms ------------------------------------------------------------------------------------
+    def _g(self, z):
+        out = np.zeros(self.n)
+        for r, fn, dj in self._nl:
+            out[r] += fn(z[dj])
+        return out
+
+    def _jg(self, z):
+        J = np.zeros((self.n, self.n))
+        for r, fn, dj in self._nl:
+            base = fn(z[dj])
+            for k, j in enumerate(dj):
+                h = 1e-7 * max(1.0, abs(z[j]))
+                zz = z[dj].copy()
+                zz[k] += h
+                zm = z[dj].copy()
+                zm[k] -= h
+                J[r, j] += (fn(zz) - fn(zm)) / (2 * h)
+        return J
+
     def simulate(self, t_eval, t0=None):
         """{variable: array} on t_eval (sorted). Storage values carried across each source breakpoint and each
         switching of a piecewise-linear element (events). With losses heating a thermal network (Cascade sources):
@@ -1722,7 +2159,302 @@ class Ref:
             self._casc_on = False
 
     def _run(self, t_eval, t0):
+        if getattr(self, "nonlinear", False):
+            return self._simulate_nl(t_eval, t0)
         return self._simulate_events(t_eval, t0) if self.events else self._simulate(t_eval, t0)
+
+    def _nl_ode(self):
+        """The linear reduction of the system with the nonlinear terms as inputs u (residual rows: linear + u = 0,
+        u = g(z)): z = P [F(t); u] + V w, w' = Ad w + ... ; usable when the dynamics do not need u' (Vp P_u = 0)
+        and the constraints leave u free. None otherwise."""
+        if hasattr(self, "_nlode"):
+            return self._nlode
+        self._nlode = None
+        s, n, K = self.sys, self.n, self.MAXORD + 1
+        nf = len(s.fns)
+        nu = len(self._nl)
+        A = self.A_lin0
+        B = self.B0
+        G = np.zeros((n, (nf + nu) * K))
+        G[:, :self.G_lin0.shape[1]] = self.G_lin0
+        for j, (r, fn, dj) in enumerate(self._nl):
+            G[r, (nf + j) * K] += 1.0
+        sub = Ref.__new__(Ref)
+        sub.n, sub.MAXORD = n, self.MAXORD
+        rmax = np.maximum(np.abs(A).max(axis=1, initial=0), np.abs(B).max(axis=1, initial=0))
+        rs = np.where(rmax > 0, 2.0 ** -np.round(np.log2(np.where(rmax > 0, rmax, 1.0))), 1.0)
+        try:
+            sub._reduce(A * rs[:, None], B * rs[:, None], G * rs[:, None])
+        except RefError:
+            return None
+        ucols = [(nf + j) * K for j in range(nu)]
+        dcols = [(nf + j) * K + o for j in range(nu) for o in range(1, K)]
+        big = 1e-9 * max(np.abs(sub.P).max(initial=0), 1e-300)
+        d1 = [(nf + j) * K + 1 for j in range(nu)]
+        d2 = [(nf + j) * K + o for j in range(nu) for o in range(2, K)]
+        if np.abs(sub.P[:, dcols]).max(initial=0) > big:
+            return None
+        if sub.d and np.abs(sub.Vp @ sub.Gz[:, d2]).max(initial=0) > 1e-9 * max(1.0, np.abs(sub.Gz).max(initial=0)):
+            return None
+        sub.d1 = d1
+        # u moving the constrained part along the dynamic coordinates (a voltage from a V/f controller across
+        # inductors): the dynamics need u' = Jg z', solved with w' at each evaluation
+        Mv = (sub.Vp @ sub.P[:, ucols] - sub.Vp @ sub.Gz[:, d1]) if sub.d else np.zeros((0, nu))
+        sub.Mv = Mv
+        sub.need_ud = bool(sub.d and np.abs(Mv).max(initial=0) > 1e-9 * max(1.0, np.abs(sub.P[:, ucols]).max(initial=0)))
+        sub.nf, sub.nu, sub.ucols = nf, nu, ucols
+        self._nlode = sub
+        return sub
+
+    def _simulate_nl_ode(self, sub, t_eval, t0):
+        """Integrate the nonlinear system as an ODE in the linear reduction's dynamic coordinates (solve_ivp Radau),
+        u = g(z) solved at each evaluation (Newton on the few nonlinear terms)."""
+        from scipy.integrate import solve_ivp
+        n, K = self.n, self.MAXORD + 1
+        nf, nu = sub.nf, sub.nu
+        P, V, Vp, Ad, Az, Gz = sub.P, sub.V, sub.Vp, sub.Ad, sub.Az, sub.Gz
+        Pu = P[:, sub.ucols]
+        Fn_cols = nf * K
+
+        def Fs(t, side, shift=0):
+            out = np.zeros((nf + nu) * K)
+            out[:Fn_cols] = self.F(t, side, shift)
+            return out
+
+        nl = self._nl
+        u_prev = [np.zeros(nu)]
+
+        def solve_u(zF):
+            """u = g(zF + Pu u): fixed point by Newton (the terms seldom depend on each other)."""
+            u = u_prev[0].copy()
+            for it in range(4):                       # plain iteration first: most terms do not depend on u
+                gu = np.array([fn((zF + Pu @ u)[dj]) for _, fn, dj in nl])
+                if np.max(np.abs(gu - u), initial=0) <= 1e-14 * max(1.0, np.max(np.abs(gu), initial=0)):
+                    u_prev[0] = gu
+                    return gu
+                u = gu
+            for it in range(30):
+                z = zF + Pu @ u
+                gu = np.array([fn(z[dj]) for _, fn, dj in nl])
+                r = u - gu
+                if np.max(np.abs(r), initial=0) <= 1e-13 * max(1.0, np.max(np.abs(gu), initial=0)):
+                    break
+                Jg = np.zeros((nu, n))
+                for k, (_, fn, dj) in enumerate(nl):
+                    for q, j in enumerate(dj):
+                        hh = 1e-7 * max(1.0, abs(z[j]))
+                        zz = z[dj].copy()
+                        zz[q] += hh
+                        zm = z[dj].copy()
+                        zm[q] -= hh
+                        Jg[k, j] = (fn(zz) - fn(zm)) / (2 * hh)
+                Mu = np.eye(nu) - Jg @ Pu
+                u = u - np.linalg.solve(Mu, r)
+            u_prev[0] = u
+            return u
+
+        VpPu = sub.Mv
+
+        def jac_u(z):
+            Jg = np.zeros((nu, n))
+            for k, (_, fn, dj) in enumerate(nl):
+                for q, j in enumerate(dj):
+                    hh = 1e-7 * max(1.0, abs(z[j]))
+                    zz = z[dj].copy()
+                    zz[q] += hh
+                    zm = z[dj].copy()
+                    zm[q] -= hh
+                    Jg[k, j] = (fn(zz) - fn(zm)) / (2 * hh)
+            return Jg
+
+        def zfull(t, w_, side):
+            Fv = Fs(t, side)
+            zF = P @ Fv + (V @ w_ if sub.d else 0)
+            u = solve_u(zF)
+            return zF + Pu @ u, Fv, u
+
+        def rhs_factory(b):
+            def rhs(t, w_):
+                side = -1 if t >= b else 1
+                z, Fv, u = zfull(t, w_, side)
+                Fv = Fv.copy()
+                Fv[sub.ucols] = u
+                Fd = Fs(t, side, shift=1)
+                zp = P @ Fv                         # the constrained part (with u); Ad w carries the rest
+                a_ = Ad @ w_ + Vp @ (Az @ zp + Gz @ Fv - P @ Fd)
+                if not sub.need_ud:
+                    return a_
+                Jg = jac_u(z)
+                Mv = VpPu
+                lhs = np.eye(nu) - Jg @ Pu + Jg @ V @ Mv
+                ud = np.linalg.solve(lhs, Jg @ (P @ Fd + V @ a_))
+                return a_ - Mv @ ud
+            return rhs
+
+        # initial values: the selected ones (the stand-in's choice), mapped to w by least squares through z
+        Ls = np.array([self._functional(cd["f"]) for cd in self.selected]) if self.selected else np.zeros((0, n))
+        vals = np.array([cd["value"] for cd in self.selected])
+
+        def w_from(t, values, side=1):
+            if not sub.d:
+                return np.zeros(0)
+            w_ = np.zeros(sub.d)
+            for _ in range(20):
+                z, _, _ = zfull(t, w_, side)
+                r = Ls @ z - values
+                if np.max(np.abs(r), initial=0) < 1e-12 * max(1.0, np.max(np.abs(values), initial=0)):
+                    break
+                Jw = np.zeros((len(values), sub.d))
+                for k in range(sub.d):
+                    e = np.zeros(sub.d)
+                    hh = 1e-7 * max(1.0, abs(w_[k]))
+                    e[k] = hh
+                    Jw[:, k] = (Ls @ zfull(t, w_ + e, side)[0] - Ls @ zfull(t, w_ - e, side)[0]) / (2 * hh)
+                w_ = w_ - np.linalg.lstsq(Jw, r, rcond=None)[0]
+            return w_
+
+        t1 = float(t_eval[-1])
+        w_ = w_from(t0, vals)
+        Z = np.zeros((len(t_eval), n))
+        edges = [t0] + self.breaks(t0, t1) + [t1]
+        dense = []
+        scale = max(1.0, float(np.max(np.abs(w_), initial=0)))
+        for a, b in zip(edges[:-1], edges[1:]):
+            if b <= a:
+                continue
+            last = b == t1
+            idx = np.nonzero((t_eval >= a) & ((t_eval < b) | (last & (t_eval <= b))))[0]
+            if sub.d:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", RuntimeWarning)
+                    sol = solve_ivp(rhs_factory(b), (a, b), w_, method="Radau", rtol=1e-8, atol=1e-10 * scale,
+                                    dense_output=True, t_eval=t_eval[idx] if idx.size else None)
+                if not sol.success:
+                    raise RefError(f"integration failed: {sol.message}")
+                w_end = sol.sol(b)
+                for jj, i in enumerate(idx):
+                    Z[i] = zfull(t_eval[i], sol.y[:, jj], -1 if t_eval[i] >= b else 1)[0]
+                dense.append((a, b, _ODEDense(sol, zfull, b), None, self))
+            else:
+                w_end = w_
+                for i in idx:
+                    Z[i] = zfull(t_eval[i], w_, -1 if t_eval[i] >= b else 1)[0]
+            if not last:
+                z_left = zfull(b, w_end, -1)[0]
+                w_ = w_from(b, Ls @ z_left, side=1)
+        self.t, self.Z = t_eval, Z
+        self._dense = dense
+        return self.values(Z)
+
+    def _simulate_nl(self, t_eval, t0=None):
+        """The nonlinear system: as an ODE in the linear reduction's coordinates when the nonlinear terms do not need
+        differentiating (_nl_ode), else with refnl.radau between the sources' breakpoints (consistent initial values
+        from the selected ones, then from the left limits at each breakpoint)."""
+        from . import refnl
+        if not hasattr(self, "selected"):
+            sel, dep, missing = self.init_selection()
+            if missing:
+                raise RefError(f"{missing} state(s) without an initial value")
+        t_eval = np.asarray(t_eval, float)
+        t0 = float(t_eval[0]) if t0 is None else float(t0)
+        sub = self._nl_ode()
+        if sub is not None:
+            return self._simulate_nl_ode(sub, t_eval, t0)
+        t1 = float(t_eval[-1])
+        n, K = self.n, self.MAXORD + 1
+        s = self.sys
+        A, B = self.A_lin0, self.B0
+        G = self.G_lin0
+        if G.shape[1] < len(s.fns) * K:
+            G = np.hstack([G, np.zeros((n, len(s.fns) * K - G.shape[1]))])
+        rmax = np.maximum(np.abs(A).max(axis=1, initial=0), np.abs(B).max(axis=1, initial=0))
+        rs = np.where(rmax > 0, 2.0 ** -np.round(np.log2(np.where(rmax > 0, rmax, 1.0))), 1.0)
+        As, Bs, Gs = A * rs[:, None], B * rs[:, None], G * rs[:, None]
+        side = [1]
+
+        # the original system: consistent initial values satisfy all of it
+        def f(t, z):
+            return -(As @ z + Gs @ self.F(t, side[0]) + rs * self._g(z))
+
+        def jac(t, z):
+            return -(As + rs[:, None] * self._jg(z))
+
+        sysm = refnl.System(Bs, f, jac)
+        alg = [i for i in range(n) if not np.any(Bs[i])]
+        # the integrated system: linear constraints on differential variables only (rigidly joined inertias, a
+        # capacitor across a source) replaced by their time derivatives, as the shuffle algorithm does
+        Ar, Br, Gr, Tg = _reduce_linear_hidden(As, Bs, Gs, rs, [r for r, _, _ in self._nl], K, self._jg(np.zeros(n)))
+
+        bend = [np.inf]
+
+        def fr(t, z):
+            sd = -1 if t >= bend[0] else 1          # at the segment's end: the sources' values before the breakpoint
+            return -(Ar @ z + Gr @ self.F(t, sd) + Tg @ self._g(z))
+
+        def jacr(t, z):
+            return -(Ar + Tg @ self._jg(z))
+
+        sysr = refnl.System(Br, fr, jacr)
+        Ls = np.array([self._functional(cd["f"]) for cd in self.selected]) if self.selected else np.zeros((0, n))
+
+        def dF_dt(t):
+            return Gs @ self.F(t, side[0], shift=1)
+
+        # first guess: the linear stand-in's consistent state
+        wb = self._w_from(t0, [cd["value"] for cd in self.selected])
+        zg = self.P @ self.F(t0, 1) + (self.V @ wb if self.d else 0)
+        vals = np.array([cd["value"] for cd in self.selected])
+        try:
+            z = refnl.consistent(sysm, t0, zg, Ls, vals, alg, dF_dt)
+        except refnl.DAEError as exc:
+            raise RefError(str(exc)) from None
+        # error weights: differential components constrained by the algebraic rows count as index 2
+        algr = [i for i in range(n) if not np.any(Br[i])]
+        diff = np.array([np.any(Br[:, j]) for j in range(n)])
+        Jal = (-jacr(t0, z))[algr] if algr else np.zeros((0, n))
+        i2 = np.zeros(n, bool)
+        if Jal.size:
+            U, sv, Vt = np.linalg.svd(Jal, full_matrices=False)
+            rk = int(np.sum(sv > 1e-9 * (sv[0] if sv.size else 1)))
+            Rw = Vt[:rk]
+            for j in np.nonzero(diff)[0]:
+                e = np.zeros(n)
+                e[j] = 1.0
+                i2[j] = np.linalg.norm(e - Rw.T @ (Rw @ e)) < 1e-6
+        scale = np.maximum(np.abs(z), 1.0)
+        edges = [t0] + self.breaks(t0, t1) + [t1]
+        Z = np.zeros((len(t_eval), n))
+        dense = []
+        for a, b in zip(edges[:-1], edges[1:]):
+            if b <= a:
+                continue
+            side[0] = 1
+            bend[0] = b
+            last = b == t1
+            try:
+                steps, z_end = refnl.radau(sysr, a, b, z, rtol=1e-9, atol=np.full(n, 1e-9), index2=i2)
+            except refnl.DAEError as exc:
+                raise RefError(f"integration failed: {exc}") from None
+            for st_ in steps:
+                dense.append((st_.t0, st_.t0 + st_.h, st_, None, self))
+            idx = np.nonzero((t_eval >= a) & ((t_eval < b) | (last & (t_eval <= b))))[0]
+            j = 0
+            for i in idx:
+                ti = t_eval[i]
+                while j < len(steps) - 1 and ti > steps[j].t0 + steps[j].h:
+                    j += 1
+                Z[i] = steps[j](ti) if steps else z
+            if not last:
+                side[0] = 1
+                bend[0] = np.inf
+                vals_b = Ls @ z_end if len(Ls) else np.zeros(0)
+                try:
+                    z = refnl.consistent(sysm, b, z_end, Ls, vals_b, alg, dF_dt)
+                except refnl.DAEError as exc:
+                    raise RefError(str(exc)) from None
+        self.t, self.Z = t_eval, Z
+        self._dense = dense
+        return self.values(Z)
 
     def _stage1_state(self, t, side=1):
         """z and dz/dt (base indexing) of the first run (without the cascades' heat) at t."""
@@ -1734,6 +2466,8 @@ class Ref:
                 seg = sg
                 break
         a, b, sol, wconst, r = seg
+        if hasattr(sol, "deriv"):             # a step of the nonlinear integrator: z directly
+            return sol(t), sol.deriv(t)
         self._in_stage1 = True
         try:
             sd = -1 if (side < 0 or t >= b) else 1
@@ -1988,15 +2722,19 @@ class Ref:
         for path, pr in self.sys.products.items():
             terms = pr if isinstance(pr, list) else [(1.0, pr[0], pr[1])]
             out[path] = sum(cf * (Z @ self._functional(f1)) * (Z @ self._functional(f2)) for cf, f1, f2 in terms)
-        for path, (kind_, fs) in self.sys.funcs.items():
-            if kind_ == "rms":
+        for path, spec in self.sys.funcs.items():
+            if spec[0] == "rms":
+                fs = spec[1]
                 out[path] = np.sqrt(sum((Z @ self._functional(f)) ** 2 for f in fs) / len(fs))
+            elif spec[0] == "call":
+                _, fn, deps = spec
+                out[path] = np.asarray(fn(*[Z[:, self.sys.idx[d]] for d in deps]), float) * np.ones(Z.shape[0])
         return out
 
     def eigenvalues(self):
         """Eigenvalues of the reduced (consistent) dynamics: d values."""
-        if self.events:
-            raise RefError("piecewise-linear elements: the reference does not linearise them")
+        if self.events or getattr(self, "nonlinear", False):
+            raise RefError("piecewise-linear or nonlinear elements: the reference does not linearise them")
         if self.d == 0:
             return np.zeros(0, complex)
         return np.linalg.eigvals(self.Ad)
@@ -2012,6 +2750,8 @@ class Ref:
         raises RefError when it is not unique (free integrators, rigid-body motion). Cascades: the losses of the
         steady state without them, then the steady state with that heat. Piecewise-linear elements: the modes
         whose guards hold at the steady state."""
+        if getattr(self, "nonlinear", False):
+            raise RefError("nonlinear machines: no steady state in the reference (AC quantities oscillate)")
         casc = self.sys.cascades
         if not casc:
             z = self._steady_modes(t)
@@ -2064,8 +2804,8 @@ class Ref:
 
     def freq_response(self, inp: str, out_functional: dict, freqs):
         """Complex gain from the free input 'inp' to a linear functional {Modelica path: coef} at freqs [Hz]."""
-        if self.events:
-            raise RefError("piecewise-linear elements: the reference does not linearise them")
+        if self.events or getattr(self, "nonlinear", False):
+            raise RefError("piecewise-linear or nonlinear elements: the reference does not linearise them")
         K = self.MAXORD + 1
         j = self.sys.fn_idx[id(self.input_fns[inp])]
         g = self.G0[:, j * K]

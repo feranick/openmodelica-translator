@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with closed-form answers: is the toolchain right?
-Version: 2026.10.21.20
+Version: 2026.10.21.22
 
 Each case is a study plus checks [(result path, expected, tolerance, why)]; tolerances are relative unless
 written {"abs": x}. Chains (chain_feat_modal, chain_b3dt_mass, chain_b3dt_inertia) run the other translator first and only when named; they are skipped
@@ -9,6 +9,7 @@ back, energy, reference) and every check holds. The expected values are computed
 from __future__ import annotations
 
 import math
+import os
 
 import numpy as np
 
@@ -475,7 +476,8 @@ def _im_vf():
     return st, [("derived.w.mean", w, 1e-4, "the equivalent circuit at 50 Hz, 100 V, 100 N.m")]
 
 
-OMC_ONLY = {"im_grid_slip", "pmsm_current_torque", "im_vf_start"}      # the reference covers them from V3.3
+OMC_ONLY = set() if os.environ.get("OMCT_REF_NONLINEAR", "") in ("1", "true", "yes") else \
+    {"im_grid_slip", "pmsm_current_torque", "im_vf_start"}          # the nonlinear reference is experimental
 
 
 def cases() -> dict:

@@ -1,0 +1,161 @@
+
+################ machine
+2026-10-21T19:58:15+00:00
+OpenModelica 1.27.1~2-g6db4671
+
+################ C1: build all (omc time)
+true
+true
+"/home/nicola/omct_v3probe/d_ImGrid"
+{"/home/nicola/omct_v3probe/d_ImGrid/m", "m_init.xml"}
+"[/home/nicola/.openmodelica/libraries/Modelica 4.0.0+maint.om/Mechanics/Rotational/Sources/TorqueStep.mo:6:3-7:23:writable] Warning: Parameter tl.offsetTorque has no value, and is fixed during initialization (fixed=true), using available start value (start=0) as default value.
+"
+"/home/nicola/omct_v3probe"
+"/home/nicola/omct_v3probe/d_PmsmCurrent"
+{"", ""}
+"Error: Internal error IndexReduction.pantelidesIndexReduction failed! System is structurally singular and cannot be handled because the number of unassigned equations is larger than the number of states. Use -d=bltdump to get more information.
+Error: Internal error Transformation Module PFPlusExt index Reduction Method Pantelides failed!
+"
+"/home/nicola/omct_v3probe"
+"/home/nicola/omct_v3probe/d_ImVf"
+{"/home/nicola/omct_v3probe/d_ImVf/m", "m_init.xml"}
+"[/home/nicola/.openmodelica/libraries/Modelica 4.0.0+maint.om/Mechanics/Rotational/Sources/TorqueStep.mo:6:3-7:23:writable] Warning: Parameter tl.offsetTorque has no value, and is fixed during initialization (fixed=true), using available start value (start=0) as default value.
+"
+"/home/nicola/omct_v3probe"
+"/home/nicola/omct_v3probe/d_IMC_DOL"
+{"/home/nicola/omct_v3probe/d_IMC_DOL/m", "m_init.xml"}
+"/home/nicola/omct_v3probe"
+"/home/nicola/omct_v3probe/d_IMC_Inverter"
+{"/home/nicola/omct_v3probe/d_IMC_Inverter/m", "m_init.xml"}
+"/home/nicola/omct_v3probe"
+"/home/nicola/omct_v3probe/d_SMPM_CurrentSource"
+{"/home/nicola/omct_v3probe/d_SMPM_CurrentSource/m", "m_init.xml"}
+"/home/nicola/omct_v3probe"
+"/home/nicola/omct_v3probe/d_SMPM_VoltageSource"
+{"/home/nicola/omct_v3probe/d_SMPM_VoltageSource/m", "m_init.xml"}
+"/home/nicola/omct_v3probe"
+"/home/nicola/omct_v3probe/qs_IMC_DOL"
+{"/home/nicola/omct_v3probe/qs_IMC_DOL/m", "m_init.xml"}
+"/home/nicola/omct_v3probe"
+"/home/nicola/omct_v3probe/qs_SMPM_CurrentSource"
+{"/home/nicola/omct_v3probe/qs_SMPM_CurrentSource/m", "m_init.xml"}
+"/home/nicola/omct_v3probe"
+  [time] 13.97 s wall
+
+################ C1, C6: runs (time, steps, events)
+--- d_IMC_DOL
+|                 | |       | | |     1 state events
+|                 | |       | | |     0 time events
+|                 | |       | | |  1655 steps taken
+|                 | |       | | |  2127 calls of functionODE
+|                 | |       | | |   127 evaluations of jacobian
+|                 | |       | | |    62 error test failures
+  [time] 0.14 s wall
+--- d_IMC_Inverter
+|                 | |       | | |     2 state events
+|                 | |       | | |     0 time events
+|                 | |       | | |  1027 steps taken
+|                 | |       | | |  1182 calls of functionODE
+|                 | |       | | |    45 evaluations of jacobian
+|                 | |       | | |    10 error test failures
+  [time] 0.11 s wall
+--- d_ImGrid
+|                 | |       | | |     1 state events
+|                 | |       | | |     0 time events
+|                 | |       | | |  1812 steps taken
+|                 | |       | | |  2332 calls of functionODE
+|                 | |       | | |   110 evaluations of jacobian
+|                 | |       | | |    60 error test failures
+  [time] 0.15 s wall
+--- d_ImVf
+|                 | |       | | |     2 state events
+|                 | |       | | |     0 time events
+|                 | |       | | |  1047 steps taken
+|                 | |       | | |  1225 calls of functionODE
+|                 | |       | | |    49 evaluations of jacobian
+|                 | |       | | |    13 error test failures
+  [time] 0.11 s wall
+--- d_PmsmCurrent
+  (no executable)
+--- d_SMPM_CurrentSource
+|                 | |       | | |     0 state events
+|                 | |       | | |     0 time events
+|                 | |       | | |    82 steps taken
+|                 | |       | | |    92 calls of functionODE
+|                 | |       | | |    24 evaluations of jacobian
+|                 | |       | | |     0 error test failures
+  [time] 0.11 s wall
+--- d_SMPM_VoltageSource
+|                 | |       | | |     0 state events
+|                 | |       | | |     0 time events
+|                 | |       | | |   348 steps taken
+|                 | |       | | |   483 calls of functionODE
+|                 | |       | | |    35 evaluations of jacobian
+|                 | |       | | |    14 error test failures
+  [time] 0.11 s wall
+--- qs_IMC_DOL
+|                 | |       | | |     1 state events
+|                 | |       | | |     0 time events
+|                 | |       | | |  3798 steps taken
+|                 | |       | | |  5825 calls of functionODE
+|                 | |       | | |    33 evaluations of jacobian
+|                 | |       | | |     0 error test failures
+  [time] 0.30 s wall
+--- qs_SMPM_CurrentSource
+|                 | |       | | |     0 state events
+|                 | |       | | |     0 time events
+|                 | |       | | |    82 steps taken
+|                 | |       | | |    92 calls of functionODE
+|                 | |       | | |    24 evaluations of jacobian
+|                 | |       | | |     0 error test failures
+  [time] 0.24 s wall
+
+################ C2: isValueChangeable (attribute printed only when false)
+  d_ImGrid       im.Rs                                        variability = "parameter" 
+  d_ImGrid       im.Rr                                        variability = "parameter" 
+  d_ImGrid       im.Lm                                        variability = "parameter" 
+  d_ImGrid       im.Lssigma                                   variability = "parameter" 
+  d_ImGrid       im.Lrsigma                                   variability = "parameter" 
+  d_ImGrid       im.Lszero                                    variability = "parameter" 
+  d_ImGrid       im.Jr                                        variability = "parameter" 
+  d_ImGrid       im.p                                         variability = "parameter" 
+  d_ImGrid       im.fsNominal                                 variability = "parameter" 
+  d_ImGrid       im.TsOperational                             variability = "parameter" 
+  d_ImGrid       im.alpha20s                                  variability = "parameter" 
+  d_ImGrid       im.frictionParameters.PRef                   variability = "parameter" 
+  d_ImGrid       im.frictionParameters.tauRef                 variability = "parameter" 
+  d_ImGrid       im.statorCoreParameters.PRef                 variability = "parameter" 
+  d_ImGrid       im.statorCoreParameters.GcRef                variability = "parameter" 
+  d_ImGrid       im.strayLoadParameters.PRef                  variability = "parameter" 
+  d_ImGrid       im.airGap.L                                  not in _init.xml
+  d_ImGrid       im.airGap.Lm                                 variability = "parameter" 
+  d_ImGrid       vs.V                                         not in _init.xml
+  d_ImGrid       vs.f                                         not in _init.xml
+  d_ImGrid       d.Rs                                         variability = "parameter" 
+  d_PmsmCurrent  pm.VsOpenCircuit                             not in _init.xml
+  d_PmsmCurrent  pm.Lmd                                       not in _init.xml
+  d_PmsmCurrent  pm.Lmq                                       not in _init.xml
+  d_PmsmCurrent  pm.Rs                                        not in _init.xml
+  d_PmsmCurrent  pm.p                                         not in _init.xml
+  d_PmsmCurrent  pm.useDamperCage                             not in _init.xml
+  d_PmsmCurrent  pm.Ie                                        not in _init.xml
+  d_PmsmCurrent  id.k                                         not in _init.xml
+  d_PmsmCurrent  iq.k                                         not in _init.xml
+  d_PmsmCurrent  tl.tau_nominal                               not in _init.xml
+
+################ C3-C5: values
+C3 equivalent circuit at 100 N.m: slip 0.0234982698, speed 153.388533 rad/s, Is 66.0064298 A RMS
+  ImGrid im.wMechanical                       final 153.38853262588324
+  ImGrid im.tauElectrical                     final 99.99987465371638
+  ImGrid irms.I                               final 66.00627420912248
+  ImGrid pw.P                                 final 16100.060253939218
+  ImGrid pw.Q                                 final 11528.339037642427
+  ImGrid im.powerBalance.lossPowerTotal       final 761.2234474598275
+C4 torque 181.447712 N.m, steady speed 157.100289 rad/s (quadratic load)
+  d_PmsmCurrent: unreadable ([Errno 2] No such file or directory: '/home/nicola/omct_v3probe/d_PmsmCurrent/m_res.mat')
+  ImVf im.wMechanical                         final 153.38853787097398
+  ImVf im.tauElectrical                       final 99.99586525587091
+  ImVf expected final speed 153.388533 (100 N.m at 50 Hz, 100 V)
+
+################ done
+104M	/home/nicola/omct_v3probe

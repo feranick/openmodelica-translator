@@ -1,5 +1,5 @@
 """runner.py — one study end to end: validate, translate, build (or reuse), run, read, check, write the result.
-Version: 2026.10.21.18
+Version: 2026.10.21.22
 
 run_study(name, study, folder, solver, timeout, cancel) -> the result dict, also written atomically to
 <folder>/<name>.json. solver: "omc" (OpenModelica) or "ref" (the reference implementation only: linear
@@ -145,6 +145,14 @@ def _post(out, study, tr, t, get, units, solver, folder=None):
     return vals
 
 
+def _same_dim(u1, u2) -> bool:
+    from .units import UnitError, parse_unit
+    try:
+        return parse_unit(u1 or "1")[1] == parse_unit(u2 or "1")[1]
+    except UnitError:
+        return u1 == u2
+
+
 def allowed(y, lim, tol) -> float:
     """The allowed error relative to an output's range: lim, or what the solver's relative tolerance allows on
     the output's size (10 tol max|y|): an absolute temperature of 300 K rising by 1 K is only accurate to ~3e-4 K
@@ -184,11 +192,23 @@ def _reference(out, study, tr, t, vals, tol):
         return
     lim = max(1e-4, 100 * tol)
     errs, lims, ok = {}, {}, True
+    ys = {}
     for oname, (terms, _) in tr.outputs.items():
         y = None
         for c, path in terms:
             y = c * rv[path] if y is None else y + c * rv[path]
-        errs[oname] = compare(vals[oname][m], y)
+        ys[oname] = np.asarray(y, float)
+    # an output that is zero up to rounding (Q of a resistive load) is judged on 1e-9 of the largest output of
+    # the same unit (or of all outputs)
+    units = {o: u for o, (_, u) in tr.outputs.items()}
+    big = {}
+    for o, y in ys.items():
+        big[units[o]] = max(big.get(units[o], 0.0), float(np.max(np.abs(y))) if y.size else 0.0)
+    allbig = max(big.values()) if big else 0.0
+    for oname, y in ys.items():
+        fl = 1e-9 * max(v for u, v in big.items() if _same_dim(u, units[oname])) if any(
+            _same_dim(u, units[oname]) for u in big) else 1e-9 * allbig
+        errs[oname] = compare(vals[oname][m], y, floor=fl)
         lims[oname] = allowed(y, lim, tol)
         ok = ok and errs[oname] <= lims[oname]
     worst = max(errs.values()) if errs else 0.0

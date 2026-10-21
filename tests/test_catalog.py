@@ -90,7 +90,7 @@ def test_reference_covers_every_variable(kname):
     net = _FakeNet(kname, params)
     sys_ = R.System()
     R._stamp(R._Ctx(sys_, net, "X"))
-    have = set(sys_.paths) | set(sys_.products)
+    have = set(sys_.paths) | set(sys_.products) | set(sys_.funcs)
     for v in k["vars"]:
         assert f"X.{C.var_path(kname, v)}" in have, f"{kname}.{v} has no reference value"
     for i, s in k["inits"].items():
