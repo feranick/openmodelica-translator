@@ -1,5 +1,5 @@
 """ref.py — an independent implementation of the study's equations, without OpenModelica.
-Version: 2026.10.21.25
+Version: 2026.10.21.26
 
 Built from the study (network.Net), never from the generated Modelica text, so a translation mistake shows up as
 a mismatch. Each catalog kind writes its equations (the MSL 4.0.0 ones, read from the library's sources) into a
@@ -1880,12 +1880,15 @@ def _particular_on(H, Hg, prefer):
     dg = np.abs(np.diag(Rq))
     if not dg.size or dg[0] == 0:
         return None
-    rk = int(np.sum(dg > 1e-10 * dg[0]))
+    rk = int(np.sum(dg > 1e-9 * dg[0]))
     cols = np.sort(piv[:rk])
-    sol = np.linalg.lstsq(Hs[:, cols], -(Hg * r_[:, None]), rcond=None)[0]
+    rhs = -(Hg * r_[:, None])
+    sol = np.linalg.lstsq(Hs[:, cols], rhs, rcond=None)[0]
+    sol = sol + np.linalg.lstsq(Hs[:, cols], rhs - Hs[:, cols] @ sol, rcond=None)[0]     # one refinement step
     P = np.zeros((H.shape[1], Hg.shape[1]))
     P[cols] = c_[cols, None] * sol
-    if np.max(np.abs(H @ P + Hg), initial=0) > 1e-9 * max(1.0, np.max(np.abs(Hg), initial=0)):
+    scale = max(1.0, np.max(np.abs(Hg), initial=0), np.max(np.abs(H) @ np.abs(P), initial=0))
+    if np.max(np.abs(H @ P + Hg), initial=0) > 1e-8 * scale:
         return None
     return P
 
@@ -2241,13 +2244,15 @@ class Ref:
         rs = np.where(rmax > 0, 2.0 ** -np.round(np.log2(np.where(rmax > 0, rmax, 1.0))), 1.0)
         try:
             sub._reduce(A * rs[:, None], B * rs[:, None], G * rs[:, None])
-        except RefError:
+        except RefError as exc:
+            self._nlode_why = f"the reduction with the terms as inputs fails: {exc}"
             return None
         # the constrained part on the algebraic variables (columns without a derivative) where possible
         alg = ~np.any(B != 0, axis=0)
         P2 = _particular_on(sub.H, sub.Hg, alg)
         if P2 is not None:
             sub.P = P2
+        self._nlode_why = "" if P2 is not None else "no particular solution on the algebraic variables (min-norm used)"
         P = sub.P
         col = lambda j, o: (nf + j) * K + o
         ucols = [col(j, 0) for j in range(nu)]
@@ -2255,6 +2260,7 @@ class Ref:
         d2 = [col(j, o) for j in range(nu) for o in range(2, K)]
         big = 1e-9 * max(np.abs(P).max(initial=0), 1e-300)
         if np.abs(P[:, d2]).max(initial=0) > big:
+            self._nlode_why += f"; u'' in z ({np.abs(P[:, d2]).max():.3g} > {big:.3g})"
             return None                                         # u'' in z
         nz = lambda cols: set(np.nonzero(np.abs(P[:, cols]).max(axis=1, initial=0) > big)[0].tolist()) if cols else set()
         # late terms: they read rows that need u', or rows that hold other late terms
@@ -2267,6 +2273,7 @@ class Ref:
             late |= more
         L = sorted(late)
         if L and np.abs(P[:, [d1[j] for j in L]]).max(initial=0) > big:
+            self._nlode_why += "; a late term needs its own derivative"
             return None                                         # a late term would need its own derivative
         if sub.d:
             Vp, Az, Gz = sub.Vp, sub.Az, sub.Gz
@@ -2274,10 +2281,15 @@ class Ref:
             C0 = Vp @ (Az @ P[:, ucols] + Gz[:, ucols])
             C1 = Vp @ (Az @ P[:, d1] + Gz[:, d1] - P[:, ucols])
             C2 = Vp @ (Az @ P[:, [col(j, 2) for j in range(nu)]] + Gz[:, [col(j, 2) for j in range(nu)]] - P[:, d1])
-            sc = 1e-9 * max(1.0, np.abs(C0).max(initial=0), np.abs(sub.Ad).max(initial=0))
+            # rounding in these products scales with |Vp| |Az| |P|: the floor of what counts as zero
+            mag = np.abs(Vp).max(initial=0) * max(np.abs(Az).max(initial=0), 1.0) * max(np.abs(P).max(initial=0), 1.0)
+            sc = 1e-9 * max(1.0, np.abs(C0).max(initial=0), np.abs(sub.Ad).max(initial=0), mag * 1e-3)
             if np.abs(C2).max(initial=0) > sc or np.abs(Vp @ Gz[:, d2]).max(initial=0) > sc:
+                self._nlode_why += (f"; u'' in the dynamics ({np.abs(C2).max(initial=0):.3g}, "
+                                    f"{np.abs(Vp @ Gz[:, d2]).max(initial=0):.3g} > {sc:.3g})")
                 return None
             if L and (np.abs(C0[:, L]).max(initial=0) > sc or np.abs(C1[:, L]).max(initial=0) > sc):
+                self._nlode_why += "; a late term drives the dynamics"
                 return None                                     # a late term drives the dynamics
             Mv = -C1
             Mv[:, L] = 0.0
@@ -2535,6 +2547,7 @@ class Ref:
             return None
         alt = Ref(self.net, orient=pm)
         if not alt.nonlinear or alt._nl_ode() is None:
+            self._alt_why = getattr(alt, "_nlode_why", "")
             return None
         alt.selected = self.selected
         return alt

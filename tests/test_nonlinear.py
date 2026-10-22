@@ -1,7 +1,7 @@
 """test_nonlinear.py — the reference's nonlinear terms (V3.3; OMCT_REF_NONLINEAR=0 switches it off): speed-dependent loads
 against closed forms, AC machines (current-fed PMSM with and without damper cage, a line-connected PMSM, the
 induction machine's energy balance), the Radau IIA DAE integrator, and the flag.
-Version: 2026.10.21.24
+Version: 2026.10.21.26
 """
 import copy
 import math
@@ -69,7 +69,8 @@ def test_pmsm_current_drive_torque_and_energy(nl_on, tmp_path, damper):
     st = _pmsm_current(damper=damper)
     tr = modelica.translate(st)
     assert tr.ref._nl_ode() is None                 # voltage-fed orientation: not an ODE
-    assert tr.ref._alt_orientation() is not None    # current-fed orientation: an ODE with late terms (the voltages)
+    alt = tr.ref._alt_orientation()
+    assert alt is not None, getattr(tr.ref, "_alt_why", "")   # current-fed orientation: an ODE with late terms
     res = runner.run_study("pm", st, tmp_path / "pm", "ref", 300)
     assert res["ok"] and res["reliable"], res.get("why")
     T = 1.5 * 2 * (math.sqrt(2) * 112.3 / W50) * math.sqrt(2) * 84.6

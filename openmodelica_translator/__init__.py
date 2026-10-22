@@ -1,5 +1,5 @@
 """openmodelica-translator: system-dynamics studies on curated MSL 4.0.0 components -> OpenModelica, checked.
-Version: 2026.10.21.25
+Version: 2026.10.21.26
 Author: Nicola Ferralis <ferralis@generalflash.com>
 """
-__version__ = "2026.10.21.25"
+__version__ = "2026.10.21.26"
