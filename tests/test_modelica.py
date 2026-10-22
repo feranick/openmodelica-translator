@@ -72,7 +72,7 @@ def test_linearize_top_level_io():
 
 def test_mos_and_override_file():
     mos = M.build_mos("model.mo", "4.0.0", 0.05, 2000, 1e-6)
-    assert 'loadModel(Modelica, {"4.0.0"}); getErrorString();' in mos
+    assert 'loadModel(Modelica, {"4.0.0"}, requireExactVersion=true); getErrorString();' in mos
     assert 'setCommandLineOptions("--linearizationDumpLanguage=modelica")' in mos
     assert re.search(r'buildModel\(omct_model, .*fileNamePrefix="omct_model", outputFormat="mat"', mos)
     t = M.translate(RLC)

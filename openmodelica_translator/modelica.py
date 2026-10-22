@@ -1,5 +1,5 @@
 """modelica.py — a study -> the Modelica model, the omc build script, and the values applied at run time.
-Version: 2026.10.21.19
+Version: 2026.10.21.28
 
 translate(study, name) -> Translation with
   text        model.mo: `model omct_model` with one declaration per element (sorted), every value in SI with
@@ -252,11 +252,12 @@ def structure_hash(structure: str, omc_version: str, msl_version: str, flags: st
 
 def build_mos(model_file: str = "model.mo", msl_version: str = "4.0.0", stop_time: float = 1.0,
               intervals: int = 500, tolerance: float = 1e-6, method: str = "dassl", model: str = MODEL) -> str:
-    """The omc script: load MSL (pinned), the model, check it, build it. getErrorString() after every call.
+    """The omc script: load MSL (pinned, requireExactVersion: else omc takes the newest compatible MSL when several
+    are installed, e.g. 4.1.0 for "4.0.0" on carbonio), the model, check it, build it. getErrorString() after every call.
     It prints 11 values (omc.interpret_build reads them in this order). The executable is always omct_model."""
     return "\n".join([
         f'setCommandLineOptions("{BUILD_FLAGS}"); getErrorString();',
-        f'loadModel(Modelica, {{"{msl_version}"}}); getErrorString();',
+        f'loadModel(Modelica, {{"{msl_version}"}}, requireExactVersion=true); getErrorString();',
         'getVersion(Modelica);',
         f'loadFile("{model_file}"); getErrorString();',
         f'checkModel({model}); getErrorString();',

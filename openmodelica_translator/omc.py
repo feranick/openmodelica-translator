@@ -1,8 +1,8 @@
 """omc.py — the only module that runs omc: finding it, its version and MSL, and the build cache.
-Version: 2026.10.21.27
+Version: 2026.10.21.28
 
 find_omc()          {exe, version} or {error}            (OMCT_OMC, else omc on PATH)
-msl_status()        {version, path} or {error}           (loadModel(Modelica, {"4.0.0"}) in a scratch folder)
+msl_status()        {version, path} or {error}           (loadModel(Modelica, {"4.0.0"}, requireExactVersion=true))
 build(tr, ...)      the compiled model of a translation (modelica.Translation), from the cache or built now:
                     {ok, hash, dir, cache_hit, seconds, check: {equations, variables, trivial}, changeable,
                     errors, warnings}
@@ -161,7 +161,7 @@ def msl_status() -> dict:
     import tempfile
     with tempfile.TemporaryDirectory(prefix="omct_msl_") as d:
         mos = Path(d) / "msl.mos"
-        mos.write_text(f'loadModel(Modelica, {{"{msl_version()}"}}); getErrorString();\n'
+        mos.write_text(f'loadModel(Modelica, {{"{msl_version()}"}}, requireExactVersion=true); getErrorString();\n'
                        'getVersion(Modelica);\ngetSourceFile(Modelica);\n')
         r = run_proc([o["exe"], str(mos)], d, 120, Path(d) / "msl.log")
         vals = parse_values((Path(d) / "msl.log").read_text(errors="replace"))
