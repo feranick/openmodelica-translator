@@ -1,6 +1,6 @@
 """network.py — a study's components, values and connections, resolved: the common ground of validation, the
 Modelica generator and the reference implementation.
-Version: 2026.10.21.20
+Version: 2026.10.21.25
 
 build(study) -> Net, with net.errors (each says the fix) and net.warnings. It
   - resolves kinds (or "msl" class paths) and parameter values to SI (units.to_si), with defaults;
@@ -53,11 +53,14 @@ class Net:
 
     def port_type(self, eport: str) -> str:
         e, p = eport.split(".", 1)
+        ports = C.KINDS[self.elems[e]["kind"]]["ports"]
         if ".pin[" in p:                      # a phase of a plug
-            return "pin"
+            return "qs_pin" if ports[p.split(".", 1)[0]] == "qs_plug" else "pin"
+        if p.endswith((".re", ".im")) and "[" in p:      # a part of an element of a complex vector signal
+            return {"cvin": "in", "cvout": "out"}[ports[p.split("[")[0]]]
         if p.endswith("]") and "[" in p:      # an element of a vector signal
-            return {"vin": "in", "vout": "out"}[C.KINDS[self.elems[e]["kind"]]["ports"][p.split("[")[0]]]
-        return C.KINDS[self.elems[e]["kind"]]["ports"][p]
+            return {"vin": "in", "vout": "out"}[ports[p.split("[")[0]]]
+        return ports[p]
 
     def mpath(self, eport: str) -> str:
         """Element port -> Modelica path (table.y -> table.y[1]; a plug's phase: plug_p.pin[k])."""
@@ -97,6 +100,9 @@ class Net:
                 ep = self.elem_port(comp, v)
                 e, p = ep.split(".", 1)
                 return [(1.0, self.mpath(ep))], C.OUT_UNITS.get((self.elems[e]["kind"], p), "1")
+        if len(parts) >= 3 and parts[1] in pts and C.is_complex(pts[parts[1]]):
+            raise KeyError(f"'{ref}': {parts[1]} is a quasi-static port (complex phasors): measure it with "
+                           f"qs_current_rms, qs_voltage_rms or qs_power, or use the machine's abs_is[k], Ps_total, ...")
         if len(parts) == 4 and parts[1] in pts and pts[parts[1]] == "plug" and re.fullmatch(r"pin\[[123]\]", parts[2]) \
                 and parts[3] in ("v", "i"):
             ep = self.elem_port(comp, parts[1])
@@ -280,7 +286,10 @@ def build(study: dict) -> Net:
             inits_given = {i: spec[i] for i in k["inits"] if i in spec}
             net.comps[name] = {"kind": kname, "params": params, "given": set(spec) & set(k["params"]),
                                "inits_given": inits_given}
-            for part, (pk, sub) in k["parts"].items():
+            for part, pspec in k["parts"].items():
+                pk, sub = pspec[0], pspec[1]
+                if not C.part_on(pspec, params):
+                    continue
                 try:
                     ep = _elementary_params(pk, sub, params)
                 except (TypeError, KeyError):      # a missing value, already reported
@@ -296,7 +305,10 @@ def build(study: dict) -> Net:
                 inits = resolve_inits(pk, pinit_given, pk_params, f"{w}.{part}", net, name)
                 net.elems[ename] = {"kind": pk, "params": pk_params, "inits": inits, "comp": name, "part": part,
                                     "enabled": set()}
-            for a, b in k["conns"]:
+            for cn in k["conns"]:
+                if not C.part_on(cn, params):
+                    continue
+                a, b = cn[0], cn[1]
                 pa, qa = a.split(".", 1)
                 pb, qb = b.split(".", 1)
                 net.conns.append((f"{name}__{pa}.{qa}", f"{name}__{pb}.{qb}"))
@@ -415,7 +427,10 @@ def _connections(study, net):
             continue
         elif ta != tb:
             net.errors.append(f"{w}: {ca}.{pa} is a {C.domain_of(ta)} port ({ta}), {cb}.{pb} a {C.domain_of(tb)} port ({tb})"
-                              + (": a plug (three phases) connects to plugs; for one phase use plug_to_pin, for a star "
+                              + (": quasi-static (phasor) circuits connect only to quasi-static ports (qs_plug, "
+                                 "qs_pin); a transient and a quasi-static circuit cannot be joined (they meet through "
+                                 "shafts, heat and signals)" if C.domain_of(ta) == "quasi-static" or C.domain_of(tb) == "quasi-static"
+                                 else ": a plug (three phases) connects to plugs; for one phase use plug_to_pin, for a star "
                                  "point a star" if "plug" in (ta, tb) else ""))
             continue
         if (ca, pa) == (cb, pb):
@@ -483,13 +498,15 @@ def _topology(study, net):
                 sig_out.append(ep)
             elif t in ("vin", "vout"):              # vector signals: one net per element
                 (sig_in if t == "vin" else sig_out).extend(f"{ep}[{j}]" for j in (1, 2, 3))
+            elif t in ("cvin", "cvout"):            # complex vector signals: one net per element and part
+                (sig_in if t == "cvin" else sig_out).extend(f"{ep}[{j}].{r}" for j in (1, 2, 3) for r in ("re", "im"))
             else:
                 phys += net.pins(ep)
     for x in phys:
         uf.find(x)
     drivers = {}
     for a, b in net.conns:
-        if net.port_type(a) in ("in", "out", "vin", "vout"):
+        if net.port_type(a) in ("in", "out", "vin", "vout", "cvin", "cvout"):
             continue
         for x, y in zip(net.pins(a), net.pins(b)):
             uf.union(x, y)
@@ -514,6 +531,11 @@ def _topology(study, net):
             o, i_ = (a, b) if ta == "vout" else (b, a)
             for j in (1, 2, 3):
                 drivers.setdefault(f"{i_}[{j}]", []).append(f"{o}[{j}]")
+        elif {ta, tb} == {"cvin", "cvout"}:
+            o, i_ = (a, b) if ta == "cvout" else (b, a)
+            for j in (1, 2, 3):
+                for r in ("re", "im"):
+                    drivers.setdefault(f"{i_}[{j}].{r}", []).append(f"{o}[{j}].{r}")
     sig = _UF()
     for x in sig_in + sig_out:
         sig.find(x)
@@ -546,7 +568,7 @@ def _topology(study, net):
         if groups is None:
             by_dom = {}
             for p, t in k["ports"].items():
-                if t not in ("in", "out"):
+                if C.domain_of(t) != "signal":
                     by_dom.setdefault(C.domain_of(t), []).append(p)
             groups = list(by_dom.values())
         groups = [[x for q in g for x in (net.pins(f"{e}.{q}") if (q not in k["cond_ports"] or q in d["enabled"]) else [])
@@ -565,11 +587,20 @@ def _topology(study, net):
         if dom == "electrical" and "ground" not in kinds:
             net.errors.append(f"the circuit of {label} has no ground: add {{\"kind\": \"ground\"}} and connect it to one node "
                               f"of this circuit (each separate circuit, e.g. a transformer's secondary, needs its own)")
+        if dom == "quasi-static":
+            if "qs_ground" not in kinds:
+                net.errors.append(f"the quasi-static circuit of {label} has no ground: add {{\"kind\": \"qs_ground\"}} "
+                                  f"and connect it to one node (qs_grid and the QS drives have one inside)")
+            roots = sorted({_study_comp(net, x) for x in ports if net.elems[x.split(".")[0]]["kind"] in C.QS_SOURCES})
+            if len(roots) != 1:
+                net.errors.append(f"the quasi-static circuit of {label} has {len(roots)} quasi-static sources "
+                                  f"({', '.join(roots) or 'none'}): it needs exactly one (qs_grid, qs_ac_voltage, "
+                                  f"qs_vf_inverter or qs_pmsm_current_drive), which sets its frequency")
         if dom == "translational" and not kinds & {"fixed", "mass"}:
             net.errors.append(f"the translational system of {label} has neither a mass nor a fixed point: its position "
                               f"is undetermined; add a fixed (or a mass)")
         if dom == "rotational" and not kinds & {"rot_fixed", "inertia", "dc_machine", "im_core", "pmsm_core",
-                                                "pmsm_damper_core"}:
+                                                "pmsm_damper_core", "qs_im_core", "qs_pmsm_core", "qs_pmsm_damper_core"}:
             net.errors.append(f"the rotational system of {label} has neither an inertia nor a rot_fixed: its angle is "
                               f"undetermined; add a rot_fixed (or an inertia)")
         if dom == "thermal" and not kinds & {"fixed_temperature", "prescribed_temperature", "heat_capacitor", "pipe"}:
@@ -589,7 +620,7 @@ def _topology(study, net):
                 net.errors.append(f"the coolant loop of {label} mixes media ({desc}): give every component of a loop "
                                   f"the same medium")
     # unconnected physical ports
-    connected = {y for c in net.conns for x in c for y in (net.pins(x) if net.port_type(x) not in ("in", "out") else [x])}
+    connected = {y for c in net.conns for x in c for y in (net.pins(x) if C.domain_of(net.port_type(x)) != "signal" else [x])}
     reported = set()
     for x in phys:
         if ".pin[" in x:
@@ -606,7 +637,9 @@ def _topology(study, net):
             ref = _study_port(net, x)
             if t == "pin" and (kname == "star" or (kname == "terminal_box" and x.endswith(".starpoint"))):
                 pass                    # a floating star point: the phase currents sum to zero
-            elif t in ("pin", "plug"):
+            elif kname == "qs_terminal_box" and x.endswith(".starpoint"):
+                pass                    # terminal D: the star point does not exist
+            elif t in ("pin", "plug", "qs_pin", "qs_plug"):
                 net.errors.append(f"{ref} is not connected (an open terminal carries no current): connect it")
             elif t == "fluid":
                 net.errors.append(f"{ref} is not connected (an open fluid port is a closed end: no flow): connect it, "

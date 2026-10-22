@@ -376,6 +376,8 @@ Made while building M1 (tell me if any is wrong):
 
 **2026.10.21.22 (V3.3 in progress, sandbox, 2026-10-21)**: the nonlinear reference, **off by default** (OMCT_REF_NONLINEAR=1 turns it on; without it AC machines are 'not covered' as in 2026.10.21.21 and their benchmarks stay OpenModelica-only). Done: `refnl.py` (Radau IIA order 5 for M z' = f with singular constant M, RADAU5's error estimate and tolerance transformation, transformed real + complex Newton systems, index-2 scaling, running-maximum absolute tolerances, consistent initial values by Gauss-Newton; checked on y' = -y, an index-2 inductor, Van der Pol mu 10-100 against scipy); System rows with nonlinear terms (fn, deps) and post-computed outputs (funcs); the machines rewritten as their equations (IM in the stator frame with i_L and the rotor current as states; PMSM in the rotor frame with i_dq and the damper; losses, temperature-dependent resistances and heat as nonlinear terms); V/f controller and dq transform nonlinear; validation and the choice of initial values use the linearisation at 0 (same states as before). Two integration paths: (a) the nonlinear terms as inputs of the exact linear reduction, then an ODE in its coordinates (solve_ivp Radau), used when the dynamics need no derivative of the terms; checked exact on joined inertias with a nonlinear damper (1e-9); (b) the DAE path with the linear hidden constraints differentiated first (rigidly joined inertias are index 3), checked on an RLC with a nonlinear resistor (1e-8). Open: on the induction machine at fixed speed the phasor solution of the stamped equations gives exactly the equivalent circuit (66.0064 A, 100.0000 N.m) but path (a) settles at 64.96 A / 96.84 N.m and paths (a) and (b) disagree in the transient: a coupling bug to find. Then V3.4.
 
+**2026.10.21.25 (V3.4, sandbox, 2026-10-21)**: quasi-static machines (design and D1-D4 in "V3.4 quasi-static machines" below). Kinds: qs_ground, qs_star, qs_ac_voltage, qs_current_rms, qs_voltage_rms, qs_power (composite over PowerSensor); hidden qs_variable_voltage, qs_reference_current, qs_resistor_core, qs_vf_controller, qs_current_controller, qs_terminal_box, qs_im_core, qs_pmsm_core, qs_pmsm_damper_core; composites qs_grid, qs_vf_inverter (a gain fans f out to the controller and the source), qs_pmsm_current_drive (1 MOhm per phase across the reference current source as in MSL's SMPM_CurrentSource, which uses 1e5: without it the machine's zero/negative-sequence constraints make the current-fed circuit structurally singular; 1e9 was too small a conductance for the reduction's rank decisions), qs_induction_machine, qs_pmsm, qs_pmsm_damper (Y: a qs_ground on the star point inside, through a composite part with a condition; D: none). Port types qs_pin, qs_plug (domain quasi-static), cvin/cvout (three complex signals). Network: QS circuits need a qs_ground and exactly one QS source; mixing with transient plugs is an error that says why; QS port values are not outputs. Reference (refqs.py): every complex quantity an (re, im) pair, one reference angle and frequency per QS circuit; machines as derived; checked by tests/test_qs.py against an oracle that solves MSL's component equations literally (winding, converter with symmetrical components, eddy core, stray permeance/reluctance, salient air gap rotated by gammar, cage, damper m = 2 with N = sqrt(3/2), magnet, magnetic grounds at sp and rn): IM with and without core loss at three slips, salient PMSM with and without damper (Rrd != Rrq, Lrsigmad != Lrsigmaq) off synchronism: 1e-9. Found and fixed on the way: (1) nonlinear rows whose linear part was empty (rotor equations written wholly as terms) made path (a)'s reduction fail: the resistances are linear now; (2) the stand-in linearised at z = 0 loses couplings when everything is multiplied by omega: if its reduction fails it is linearised at a generic point (structure only); (3) the nonlinear terms are solved block by block in dependency order (Tarjan's strongly connected components; plain iteration only while it contracts, else Newton from the start value): with heat ports the old plain iteration diverged; (4) the transient terminal box in delta left its star-point node without an equation: validation refused every delta machine since V3.2 (fixed: the unconnected node's potential is 0). Energy: QS sources -P_total, machines 1/2 Jr w^2 and lossPowerTotal; not covered for a QS PMSM on a voltage supply (the phasor model is not energy-conserving while the rotor slips: P_airgap - tau w - damper loss = 3 omega_r Lmd Ie x (I_L + I_D'), a property of the QS model). Benchmarks with the reference: qs_im_grid_slip 1e-13 (and P 6e-12), qs_pmsm_current_torque T 7e-13, qs_im_vf_start 3e-13, qs_pmsm_damper_grid 2e-12, im_grid_delta 2e-12, qs_im_grid_delta 1e-13. On mochi: D1-D4 through the qs_* benchmarks.
+
 **2026.10.21.24 (2026-10-21)**: decided with the user: the nonlinear reference is on by default (ref.nonlinear_on(); OMCT_REF_NONLINEAR=0/false/no/off switches it off, and then the nonlinear benchmarks need OpenModelica). The MCP instructions list machines among the reference's coverage. 310 tests. V3.3 done; next V3.4 (quasi-static machines).
 
 **2026.10.21.23 (mochi results of V3.3, 2026-10-22)**: `llmt test omct` 309 passed, 4 skipped (4 min 42 s; the nonlinear reference benches 41 s and 36 s there, against 12 s in the sandbox). One earlier full run failed test_api's first pool run (rc not ok); it passed alone and in the next full run and was not reproduced; the test now prints the reason. Bench with OpenModelica: all 31 pass. With OMCT_REF_NONLINEAR=1 (SLURM jobs) the reference comparison ran on all five nonlinear cases (covered: True, ok). OpenModelica against the closed forms: im_grid_slip w 6e-9, I 6e-7, T 1.3e-7; pmsm_current_torque T 1.6e-16, w 2e-5 (not settled); im_vf_start 3e-9; pmsm_damper_grid w 3e-11, T 3e-9; quadratic_load crossing 1.8e-6, w(2 s) 3e-7. Open: whether the nonlinear reference becomes the default.
@@ -636,6 +638,51 @@ Design:
 - V3.4: QS machines (complex phasor plugs, reference angles: Connections.root in the QS sources): `qs_*` kinds with
   their own plug type `qs_plug`, QS grid/current sources, the same benchmarks (no ripple), the reference as complex
   algebra plus the mechanics.
+
+### V3.4 quasi-static machines (design, 2026-10-21)
+
+Nicola's choices: machines + drives + sensors (no QS passives yet); a separate port type `qs_plug` (and `qs_pin`):
+QS and transient plugs never join; mechanics, heat and signals are shared.
+
+MSL facts (Magnetic.QuasiStatic.FundamentalWave, Electrical.QuasiStatic; tag v4.0.0), phasors RMS, x(t) =
+Re(sqrt(2) X e^(j gamma)) with gamma the reference angle of the connector:
+- Sources are Connections.root: VoltageSource (V[m] RMS, phi[m] = -symmetricOrientation, f; gamma(start=0) a state,
+  omega = der(gamma) = 2 pi f), VariableVoltageSource (inputs f, V[m] complex), ReferenceCurrentSource (inputs
+  gamma, I[m]: plug reference gamma = the input). Ground: potentialRoot, v = 0. Star, TerminalBox (Y: starpoint pin,
+  D: Delta). Sensors: CurrentQuasiRMSSensor I and VoltageQuasiRMSSensor V = mean_k |x_k| (quasiRMS is the mean of
+  the magnitudes), PowerSensor apparentPower = sum v_k conj(i_k) (currentP/N, voltageP/N).
+- Machine (BaseClasses.Machine): no Lszero; stator SymmetricPolyphaseWinding = resistor (R_k) -> converter;
+  converter: i's non-positive symmetrical components = 0 (m = 3: zero and negative sequence), V_m = sqrt(2) (2/pi)
+  (m/2) N I_pos, -sqrt(2) V_pos = conj(N) j omega Phi (I_pos = 1/3 sum I_k e^(j phi_k), phi_k = (k-1) 2 pi/3); core
+  EddyCurrent G = m/2 GcRef in series with the converter's flux path, stray permeance 2 Lsigma/m parallel to it.
+  RotorSaliencyAirGap: Phi_s = Phi_r, (pi/2)(V_ms + V_mr) e^(j gammar) = (R_d, R_q) . Phi e^(j gammar), R = m/(2 Lm),
+  tau = -(pi p/2)(Phi.im V_ms.re - Phi.re V_ms.im), gammas = gammar + p phi. Cage (SymmetricPolyphaseCageWinding):
+  converter parallel to its resistor, stray reluctance m/(2 Lrsigma). PMSM: PermanentMagnet MMF V_mPM e^(-j gammar)
+  in series with the rotor (with the damper: SaliencyCageWinding, m = 2, N = sqrt(3/2), stray reluctances d/q on
+  the rotor-reference phasor). Losses: friction as transient; StrayLoad and PermanentMagnetLosses with iRMS = mean
+  |I_k|; core loss 3 Gc |E_pos|^2.
+- Derived here (independent of MSL's structure; checked against OpenModelica on mochi): with I_L = I_pos - Gc E_pos
+  (stray current), psi = flux linkage (RMS): E_pos = j omega_s (Lssigma I_L + psi); rotor frame (x e^(j gammar)):
+  psi_d = Lmd (I_L + I_x)_d (+ Ie), psi_q = Lmq (I_L + I_x)_q; IM: I_x = I_r, Rr I_r + j omega_r (Lrsigma I_r + psi) = 0;
+  PMSM: Ie = VsOpenCircuit / (Lmd 2 pi fsNominal) on d; damper I_D' = sqrt(2/3) I_D: (Rrd + Rrq)/2 I_D' + j omega_r
+  ((Lrsigmad, Lrsigmaq) . I_D' + psi) = 0; omega_r = omega_s - p w; tau = 3 p (psi_re I_L,im - psi_im I_L,re).
+- Kinds: qs_ground, qs_star, qs_ac_voltage, qs_current_rms, qs_voltage_rms, qs_power; composites qs_grid,
+  qs_vf_inverter, qs_pmsm_current_drive, qs_induction_machine, qs_pmsm, qs_pmsm_damper (machine + QS terminal box;
+  terminal Y grounds the machine's star point inside: with the zero-sequence current forced to 0 a floating QS
+  star is singular). Inits: w0, phi0 (machine), gamma0 (the source's reference angle; fixed). Checks: each QS
+  circuit has a qs_ground and exactly one QS source (it sets the frequency and the reference angle).
+- Reference (refqs.py): complex quantities as (re, im) pairs; the machines' products with omega, the rotation by
+  gammar and the torque are nonlinear terms (V3.3 path (a)); QS electrical variables are algebraic, the states are
+  the source angle, phi, w (and temperatures).
+- Benchmarks: the transient ones in QS form (qs_im_grid_slip, qs_pmsm_current_torque, qs_im_vf_start,
+  qs_pmsm_damper_grid): the same closed forms (no electrical transients, no ripple).
+
+| # | Assumption (V3.4) | Status | Probe |
+|---|---|---|---|
+| D1 | omct's QS models (grid + machine with the star grounded inside the composite, source `gamma(fixed=true)`, `phiMechanical(fixed=true)`) build, initialise and run in OpenModelica 1.27.1 | unverified | the qs_* benchmarks |
+| D2 | QS values are changeable at run time (VoltageSource V[k], phi[k], f; machine Rs, Lm, ...; L0 is a final binding) | unverified | overrides read back in the qs_* benchmarks |
+| D3 | Complex outputs record as `x.apparentPower.re` / `.im` in the MAT file | unverified | qs_power in qs_im_grid_slip |
+| D4 | The phasor equations derived above give OpenModelica's QS machine to 1e-6 (reference comparison) | unverified | reference check in the qs_* benchmarks |
 
 ### Assumptions for version 3 (tools/v3_probe.sh on mochi)
 

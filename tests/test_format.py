@@ -1,5 +1,5 @@
 """test_format.py — the study format and validation: every error names its fix.
-Version: 2026.10.21.14
+Version: 2026.10.21.25
 """
 import json
 

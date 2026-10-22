@@ -1,5 +1,5 @@
 """catalog.py — the curated MSL 4.0.0 components: kinds, ports, parameters (SI), variables, initial values.
-Version: 2026.10.21.23
+Version: 2026.10.21.25
 
 Every name below was checked against the MSL 4.0.0 sources (tag v4.0.0): class paths, port names, parameter
 names and defaults. A kind is either elementary (one MSL class) or composite (parts that are elementary kinds,
@@ -27,6 +27,12 @@ PORT_TYPES = {
     "flange_r": {"domain": "rotational", "potential": "phi", "flow": "tau", "units": {"phi": "rad", "tau": "N.m"}},
     "heat": {"domain": "thermal", "potential": "T", "flow": "Q_flow", "units": {"T": "K", "Q_flow": "W"}},
     "plug": {"domain": "electrical", "potential": "v", "flow": "i", "units": {"v": "V", "i": "A"}, "phases": 3},
+    # quasi-static (phasor) circuits: complex potentials and currents; never joined to the transient ones
+    "qs_pin": {"domain": "quasi-static", "potential": "v", "flow": "i", "units": {"v": "V", "i": "A"}, "complex": True},
+    "qs_plug": {"domain": "quasi-static", "potential": "v", "flow": "i", "units": {"v": "V", "i": "A"}, "phases": 3,
+                "complex": True},
+    "cvin": {"domain": "signal", "width": 3, "complex": True},     # three complex signals (inside QS drives)
+    "cvout": {"domain": "signal", "width": 3, "complex": True},
     "fluid": {"domain": "fluid", "potential": "p", "flow": "m_flow", "extra": ("h", "H_flow"),
               "units": {"p": "Pa", "m_flow": "kg/s", "h": "J/kg", "H_flow": "W"}},
     "in": {"domain": "signal"},
@@ -72,8 +78,10 @@ def kind(name, msl, ports, params=None, vars=None, inits=None, *, doc="", text=N
 
 def composite(name, parts, ports, params, vars, inits=None, *, conns=(), doc="", linear=True, alternatives=None,
               domain=None, port_groups=None):
-    """parts: {part: (kind, {part_param: study_param name | function(params)})}; ports: {port: "part.port"};
-    vars: {var: (expression over "part.var" names, unit)}; inits: {init: "part.init"}."""
+    """parts: {part: (kind, {part_param: study_param name | function(params)}[, condition(params)])}; ports:
+    {port: "part.port"}; vars: {var: (expression over "part.var" names, unit)}; inits: {init: "part.init"};
+    conns: ("a.port", "b.port"[, condition(params)]): a part or a connection with a condition exists only when it
+    holds (a QS machine's star-point ground with terminal Y)."""
     KINDS[name] = {"name": name, "msl": None, "parts": parts, "ports": ports, "params": params, "vars": vars,
                    "inits": inits or {}, "conns": list(conns), "doc": doc, "linear": linear, "hidden": False,
                    "alternatives": alternatives or [], "domain": domain, "port_groups": port_groups or {},
@@ -683,6 +691,158 @@ composite("pmsm_current_drive",
               "flange = the motor shaft (angle); ground the motor's starpoint (current sources leave it floating); "
               "torque = 3/2 p psiM sqrt(2) iq (+ (Ld - Lq) id iq)")
 
+# ------------------------------------------------------------------------------------------- quasi-static (V3.4)
+# Electrical.QuasiStatic and Magnetic.QuasiStatic.FundamentalWave: complex RMS phasors at the frequency of the
+# circuit's one source (its reference angle gamma); the machines' electrical side is algebraic, the mechanics are
+# not. Port types qs_plug / qs_pin; QS and transient circuits never join.
+QSP = "Modelica.Electrical.QuasiStatic.Polyphase."
+QSS = "Modelica.Electrical.QuasiStatic.SinglePhase."
+QFW = "Modelica.Magnetic.QuasiStatic.FundamentalWave."
+QS_TWO = {"plug_p": "qs_plug", "plug_n": "qs_plug"}
+QS_SRC_VARS = {"P_total": "W", "Q_total": "var"}
+QS_SOURCES = ("qs_ac_voltage", "qs_variable_voltage", "qs_reference_current")     # Connections.root
+QS_GAMMA0 = {"gamma0": I("gamma", "rad", 0.0)}
+QS_DRIVE_RP = 1e6       # Ohm per phase across the QS current drive's source (MSL's example: 1e5)
+
+
+def _qs_phi(phase):
+    import math
+    return [float(phase) - k * 2 * math.pi / 3 for k in range(3)]
+
+
+kind("qs_ground", QSS + "Basic.Ground", {"pin": "qs_pin"},
+     doc="pin.v = 0 (complex); every quasi-static circuit needs one")
+kind("qs_star", QSP + "Basic.Star", {"plug_p": "qs_plug", "pin_n": "qs_pin"}, text=M3, islands=[["plug_p", "pin_n"]],
+     doc="joins the three phases at pin_n (quasi-static)")
+kind("qs_ac_voltage", QSP + "Sources.VoltageSource", QS_TWO,
+     {"V_rms": P("V", gt=0, msl=False, doc="RMS voltage per phase (plug_p to plug_n)"), "f": P("Hz", gt=0),
+      "phase": P("rad", 0.0, msl=False, doc="phase of phase 1 (cosine reference)")},
+     QS_SRC_VARS, QS_GAMMA0, text=M3, mods={"V": lambda p: _phases(p["V_rms"]), "phi": lambda p: _qs_phi(p["phase"])},
+     doc="symmetric QS source V_k = V_rms e^(j (phase - (k-1) 2 pi/3)) at f; sets the circuit's frequency; "
+         "P_total, Q_total absorbed (< 0 delivering)")
+kind("qs_variable_voltage", QSP + "Sources.VariableVoltageSource", {**QS_TWO, "f": "in", "V": "cvin"}, {},
+     QS_SRC_VARS, QS_GAMMA0, text=M3, hidden=True)
+kind("qs_reference_current", QSP + "Sources.ReferenceCurrentSource", {**QS_TWO, "gamma": "in", "I": "cvin"}, {},
+     QS_SRC_VARS, text=M3, hidden=True)
+kind("qs_resistor_core", QSP + "Basic.Resistor", QS_TWO, {"R": P("Ohm", gt=0, msl=False)}, {}, text=M3,
+     mods={"R_ref": lambda p: _phases(p["R"])}, hidden=True)
+kind("qs_vf_controller", QFW + "Utilities.VfController", {"u": "in", "y": "cvout"},
+     {"VNominal": P("V", gt=0), "fNominal": P("Hz", gt=0)}, {"amplitude": "V"}, text=M3, hidden=True, linear=False)
+kind("qs_current_controller", QFW + "Utilities.CurrentController",
+     {"id_rms": "in", "iq_rms": "in", "phi": "in", "I": "cvout", "gamma": "out"},
+     {"p": P("1", type="int", structural=True, min=1)}, text=M3, hidden=True, linear=False)
+kind("qs_current_rms", QSP + "Sensors.CurrentQuasiRMSSensor", {**QS_TWO, "I": "out"}, text=M3, linear=False,
+     doc="I = mean_k |I_k| (the RMS current of a symmetric system), current from plug_p to plug_n")
+kind("qs_voltage_rms", QSP + "Sensors.VoltageQuasiRMSSensor", {**QS_TWO, "V": "out"}, text=M3, linear=False,
+     doc="V = mean_k |V_k|, V = plug_p - plug_n (no current)")
+kind("qs_power_core", QSP + "Sensors.PowerSensor",
+     {"currentP": "qs_plug", "currentN": "qs_plug", "voltageP": "qs_plug", "voltageN": "qs_plug"}, {},
+     {"P": "W", "Q": "var"}, text=M3, hidden=True, linear=False,
+     var_paths={"P": "apparentPower.re", "Q": "apparentPower.im"},
+     islands=[["currentP", "currentN", "voltageP", "voltageN"]])
+composite("qs_power", {"s": ("qs_power_core", {})}, {"plug_p": "s.currentP", "plug_ni": "s.currentN",
+                                                     "plug_nv": "s.voltageN"},
+          {}, {"P": ("s.P", "W"), "Q": ("s.Q", "var")}, conns=[("s.voltageP", "s.currentP")], linear=False,
+          domain="quasi-static",
+          doc="current plug_p to plug_ni, voltage plug_p to plug_nv (a star): P + jQ = sum V_k conj(I_k)")
+
+QS_STATOR = {k_: v_ for k_, v_ in AC_STATOR.items() if k_ != "Lszero"}
+QS_VARS = {"wMechanical": "rad/s", "phiMechanical": "rad", "tauElectrical": "N.m", "tauShaft": "N.m",
+           **{f"abs_is[{k}]": "A" for k in (1, 2, 3)}, **{f"abs_vs[{k}]": "V" for k in (1, 2, 3)},
+           "Ps_total": "W", "Qs_total": "var",
+           "powerStator": "W", "powerMechanical": "W", "lossPowerTotal": "W", "lossPowerStatorWinding": "W",
+           "lossPowerStatorCore": "W", "lossPowerRotorCore": "W", "lossPowerStrayLoad": "W", "lossPowerFriction": "W"}
+QS_INITS = {"w0": I("wMechanical", "rad/s", 0.0), "phi0": I("phiMechanical", "rad", 0.0)}
+kind("qs_im_core", QFW + "BasicMachines.InductionMachines.IM_SquirrelCage",
+     {"plug_sp": "qs_plug", "plug_sn": "qs_plug", "flange": "flange_r", **{h: "heat" for h in IM_HEAT}},
+     {**QS_STATOR, "Lm": P("H", gt=0, doc="main field inductance per phase"),
+      "Lrsigma": P("H", gt=0, doc="rotor stray inductance per phase (stator side)"),
+      "Rr": P("Ohm", min=0, doc="rotor resistance per phase (stator side) at TrRef"),
+      "TrRef": P("K", 293.15, gt=0, abs_T=True), "alpha20r": P("1/K", 0.0),
+      "TrOperational": P("K", 293.15, gt=0, abs_T=True)},
+     {**QS_VARS, "lossPowerRotorWinding": "W", **{f"abs_ir[{k}]": "A" for k in (1, 2, 3)}}, QS_INITS,
+     mods=AC_STATOR_MODS, cond_ports={h: "useThermalPort" for h in IM_HEAT}, hidden=True, linear=False,
+     var_paths={v: "powerBalance." + v for v in PB}, islands=[["plug_sp", "plug_sn"], ["flange"], IM_HEAT])
+for _n, _h, _dc in (("qs_pmsm_core", PM_HEAT, False), ("qs_pmsm_damper_core", PMD_HEAT, True)):
+    kind(_n, QFW + "BasicMachines.SynchronousMachines.SM_PermanentMagnet",
+         {"plug_sp": "qs_plug", "plug_sn": "qs_plug", "flange": "flange_r", **{h: "heat" for h in _h}},
+         {**QS_STATOR, **{k_: v_ for k_, v_ in KINDS["pmsm_damper_core" if _dc else "pmsm_core"]["params"].items()
+                          if k_ not in AC_STATOR}},
+         {**QS_VARS, "lossPowerPermanentMagnet": "W", **({"lossPowerRotorWinding": "W"} if _dc else {})}, QS_INITS,
+         text={"useDamperCage": "true" if _dc else "false"},
+         mods={**AC_STATOR_MODS, "IRef_pm": lambda p: _need(p, "IRef_pm", "PRef_pm"),
+               "wRef_pm": lambda p: _ref_or(p, "wRef_pm", "PRef_pm", _w_sync(p))},
+         cond_ports={h: "useThermalPort" for h in _h}, hidden=True, linear=False,
+         var_paths={v: "powerBalance." + v for v in PB}, islands=[["plug_sp", "plug_sn"], ["flange"], _h])
+kind("qs_terminal_box", QFW + "Utilities.TerminalBox", {"plug_sp": "qs_plug", "plug_sn": "qs_plug",
+                                                       "plugSupply": "qs_plug", "starpoint": "qs_pin"},
+     {"terminal": P("1", "Y", structural=True, type="enum", choices=["Y", "D"], msl=False)},
+     mods={"terminalConnection": lambda p: '"' + p["terminal"] + '"'}, hidden=True,
+     islands=[["plug_sp", "plug_sn", "plugSupply", "starpoint"]])
+
+
+def _is_y(p):
+    return p.get("terminal", "Y") == "Y"
+
+
+def _qs_machine(name, core, heat, extra_doc):
+    k = KINDS[core]
+    params = {**{n: s for n, s in k["params"].items()}, "terminal": KINDS["qs_terminal_box"]["params"]["terminal"]}
+    hp = {h: f"m.{h}" for h in heat}
+    composite(name, {"m": (core, {n: n for n in k["params"]}), "tb": ("qs_terminal_box", {"terminal": "terminal"}),
+                     "g": ("qs_ground", {}, _is_y)},
+              {"plug": "tb.plugSupply", "flange": "m.flange", **hp}, params,
+              {v: (f"m.{v}", u) for v, u in k["vars"].items()},
+              {i: f"m.{i}" for i in k["inits"]},
+              conns=[("m.plug_sp", "tb.plug_sp"), ("m.plug_sn", "tb.plug_sn"), ("tb.starpoint", "g.pin", _is_y)],
+              port_groups={"heatPort": list(hp)}, linear=False, domain="quasi-static",
+              doc=f"{extra_doc}; plug = QS supply (Y: star grounded inside, or D), flange = shaft; heatPort "
+                  f"or the {len(heat)} heat ports")
+
+
+KINDS_ALIAS_DOC = {}       # QS machine -> the transient machine whose parameters it shares (study_format lists them once)
+_qs_machine("qs_induction_machine", "qs_im_core", IM_HEAT,
+            "MSL QuasiStatic IM_SquirrelCage: Rs, Lssigma, Lm, Lrsigma, Rr per phase, p pole pairs")
+_qs_machine("qs_pmsm", "qs_pmsm_core", PM_HEAT,
+            "MSL QuasiStatic SM_PermanentMagnet without damper cage (needs a drive or a synchronous start): "
+            "VsOpenCircuit, Lmd, Lmq")
+_qs_machine("qs_pmsm_damper", "qs_pmsm_damper_core", PMD_HEAT,
+            "MSL QuasiStatic SM_PermanentMagnet with damper cage: also Lrsigmad, Rrd (Lrsigmaq, Rrq)")
+for _q, _t in (("qs_induction_machine", "induction_machine"), ("qs_pmsm", "pmsm"), ("qs_pmsm_damper", "pmsm_damper")):
+    KINDS[_q]["params_as"] = _t
+composite("qs_grid",
+          {"src": ("qs_ac_voltage", {"V_rms": "V_rms", "f": "f", "phase": "phase"}), "st": ("qs_star", {}),
+           "g": ("qs_ground", {})},
+          {"plug": "src.plug_p"}, {"V_rms": P("V", gt=0, doc="RMS phase voltage"), "f": P("Hz", gt=0),
+                                   "phase": P("rad", 0.0, doc="phase of phase 1 (cosine reference)")},
+          {"P_total": ("src.P_total", "W"), "Q_total": ("src.Q_total", "var")}, {"gamma0": "src.gamma0"},
+          conns=[("src.plug_n", "st.plug_p"), ("st.pin_n", "g.pin")], domain="quasi-static",
+          doc="a symmetric quasi-static grid, star point grounded; plug = the three phases; P_total, Q_total "
+              "absorbed by the source (negative when it delivers)")
+composite("qs_vf_inverter",
+          {"fin": ("gain", {"k": lambda p: 1.0}), "vf": ("qs_vf_controller", {"VNominal": "VNominal", "fNominal": "fNominal"}),
+           "src": ("qs_variable_voltage", {}), "st": ("qs_star", {}), "g": ("qs_ground", {})},
+          {"plug": "src.plug_p", "f": "fin.u"},
+          {"VNominal": P("V", gt=0, doc="RMS phase voltage at fNominal"), "fNominal": P("Hz", gt=0)},
+          {"P_total": ("src.P_total", "W"), "Q_total": ("src.Q_total", "var"), "amplitude": ("vf.amplitude", "V")},
+          {"gamma0": "src.gamma0"},
+          conns=[("fin.y", "vf.u"), ("fin.y", "src.f"), ("vf.y", "src.V"), ("src.plug_n", "st.plug_p"),
+                 ("st.pin_n", "g.pin")], linear=False, domain="quasi-static",
+          doc="an ideal quasi-static V/f inverter: input f [Hz] (the circuit's frequency); phase voltages VNominal "
+              "min(|f|/fNominal, 1) (RMS)")
+composite("qs_pmsm_current_drive",
+          {"cc": ("qs_current_controller", {"p": "p"}), "src": ("qs_reference_current", {}), "st": ("qs_star", {}),
+           "g": ("qs_ground", {}), "ang": ("angle_sensor", {}), "rp": ("qs_resistor_core", {"R": lambda p: QS_DRIVE_RP})},
+          {"plug": "src.plug_n", "id": "cc.id_rms", "iq": "cc.iq_rms", "flange": "ang.flange"},
+          {"p": P("1", type="int", structural=True, min=1, doc="pole pairs of the motor")},
+          {"P_total": ("src.P_total", "W"), "Q_total": ("src.Q_total", "var")},
+          conns=[("cc.I", "src.I"), ("cc.gamma", "src.gamma"), ("ang.phi", "cc.phi"), ("src.plug_p", "st.plug_p"),
+                 ("st.pin_n", "g.pin"), ("rp.plug_p", "src.plug_p"), ("rp.plug_n", "src.plug_n")],
+          linear=False, domain="quasi-static",
+          doc="ideal field-oriented current feed (MSL QS SMPM_CurrentSource): inputs id, iq [A RMS, rotor frame]; "
+              "flange = the motor shaft; torque = 3 p psiM iq (+ 3 p (Lmd - Lmq) id iq), psiM = VsOpenCircuit / "
+              "(2 pi fsNominal); 1 MOhm per phase across the source (as MSL's example)")
+
 # ------------------------------------------------------------------------------------------- composites
 composite("dc_motor",
           {"Ra": ("resistor", {"R": "R"}), "La": ("inductor", {"L": "L"}), "emf": ("emf", {"k": "k"}),
@@ -716,10 +876,13 @@ OUT_UNITS = {("voltage_sensor", "v"): "V", ("current_sensor", "i"): "A", ("poten
              ("rot_acc_sensor", "a"): "rad/s2", ("torque_sensor", "tau"): "N.m", ("temperature_sensor", "T"): "K",
              ("heat_flow_sensor", "Q_flow"): "W", ("fluid_temperature_sensor", "y"): "K",
              ("fluid_pressure_sensor", "y"): "Pa", ("volume_flow_sensor", "y"): "m3/s",
-             ("ac_current_rms", "I"): "A", ("ac_voltage_rms", "V"): "V", ("ac_power", "P"): "W", ("ac_power", "Q"): "var"}
+             ("ac_current_rms", "I"): "A", ("ac_voltage_rms", "V"): "V", ("ac_power", "P"): "W", ("ac_power", "Q"): "var",
+             ("qs_current_rms", "I"): "A", ("qs_voltage_rms", "V"): "V"}
 PORT_PATHS = {("table", "y"): "y[1]", **{("dc_machine", h): "thermalPort." + h for h in DCPM_HEAT},
               **{(k_, h): _heat_path(h) for k_, hs in (("im_core", IM_HEAT), ("pmsm_core", PM_HEAT),
-                                                       ("pmsm_damper_core", PMD_HEAT)) for h in hs}}
+                                                       ("pmsm_damper_core", PMD_HEAT), ("qs_im_core", IM_HEAT),
+                                                       ("qs_pmsm_core", PM_HEAT), ("qs_pmsm_damper_core", PMD_HEAT))
+                 for h in hs}}
 
 
 # ------------------------------------------------------------------------------------------- helpers
@@ -746,8 +909,23 @@ def var_path(kind_name: str, v: str) -> str:
 
 
 def phases(port_type: str) -> int:
-    """Pins per port: 3 for a plug, else 1."""
+    """Pins per port: 3 for a plug (transient or quasi-static), else 1."""
     return PORT_TYPES.get(port_type, {}).get("phases", 1)
+
+
+def is_complex(port_type: str) -> bool:
+    """Quasi-static ports and complex signals: each value is a pair (re, im)."""
+    return bool(PORT_TYPES.get(port_type, {}).get("complex"))
+
+
+def part_kind(spec) -> str:
+    """The kind of a composite's part spec (kind, sub[, condition])."""
+    return spec[0]
+
+
+def part_on(spec, params) -> bool:
+    """Whether a composite's part or connection (a tuple whose third item, when present, is its condition) exists."""
+    return len(spec) < 3 or bool(spec[2](params))
 
 
 def port_types(kind_name: str) -> dict:

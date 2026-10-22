@@ -1,5 +1,5 @@
 """ref.py — an independent implementation of the study's equations, without OpenModelica.
-Version: 2026.10.21.24
+Version: 2026.10.21.25
 
 Built from the study (network.Net), never from the generated Modelica text, so a translation mistake shows up as
 a mismatch. Each catalog kind writes its equations (the MSL 4.0.0 ones, read from the library's sources) into a
@@ -32,6 +32,7 @@ import warnings
 import numpy as np
 
 from . import catalog as C
+from . import refqs
 
 EPS = 2.220446049250313e-16
 SQ2 = math.sqrt(2.0)
@@ -421,6 +422,8 @@ def _ports_paths(c: _Ctx):
         if p in c.k["cond_ports"] and not c.enabled(p):
             continue
         mp = c.net.mpath(f"{c.e}.{p}")
+        if C.is_complex(t):
+            continue                    # quasi-static ports and complex signals: refqs (no port paths)
         if t in ("in", "out"):
             c.s.paths[mp] = {c.sig(p): 1.0}
         elif t in ("vin", "vout"):
@@ -512,6 +515,9 @@ def _stamp(c: _Ctx):
         return
     if kn in AC_PARTS:
         _stamp_ac(c)
+        return
+    if kn in refqs.QS_PARTS:
+        refqs.stamp(c)
         return
     # ---- electrical
     if kn == "resistor":
@@ -1074,7 +1080,7 @@ def _stamp_ac(c: _Ctx):
             c.eq({c.pot(_ph("plug_sn", 1)): 1, c.pot("starpoint"): -1})
             c.eq({c.flow("starpoint"): 1, **{c.flow(_ph("plug_sn", k)): 1 for k in range(1, 4)}})
         else:
-            c.eq({c.flow("starpoint"): 1})
+            c.eq({c.pot("starpoint"): 1})      # no star point in delta (its node, unconnected, carries no current)
         return
     if kn in ("signal_ac_voltage", "signal_ac_current"):
         x = "v" if kn == "signal_ac_voltage" else "i"
@@ -1950,11 +1956,15 @@ class Ref:
         for e in sorted(net.elems):
             _stamp(_Ctx(s, net, e))
         # node balances (flows into the components at a node sum to zero); coolant nodes: see _fluid_nodes
-        nodes, fluid = {}, {}
+        nodes, fluid, qsn = {}, {}, {}
         for ep, nid in net.node_of.items():
-            (fluid if net.port_type(ep) == "fluid" else nodes).setdefault(nid, []).append(ep)
+            pt = net.port_type(ep)
+            (fluid if pt == "fluid" else qsn if pt == "qs_pin" else nodes).setdefault(nid, []).append(ep)
         for nid in sorted(nodes):
             s.eq({f"{ep}#flow": 1.0 for ep in sorted(nodes[nid])})
+        for nid in sorted(qsn):                  # quasi-static nodes: real and imaginary parts
+            for part in ("#re", "#im"):
+                s.eq({f"{ep}#flow{part}": 1.0 for ep in sorted(qsn[nid])})
         _fluid_nodes(s, net, fluid)
         # free (linearisation) inputs
         self.input_fns = {}
@@ -2005,6 +2015,7 @@ class Ref:
             self._one = one
             if len(s.fns) * K > G.shape[1]:
                 G = np.hstack([G, np.zeros((n, len(s.fns) * K - G.shape[1]))])
+            A_raw, G_raw = A.copy(), G.copy()
             z0 = np.zeros(n)
             g0 = self._g(z0)
             Jg0 = self._jg(z0)
@@ -2012,10 +2023,26 @@ class Ref:
             G[:, s.fn_idx[id(one)] * K] += g0
         self.A0, self.B0, self.G0 = A.copy(), B.copy(), G.copy()
         self.to_base = np.arange(n)
-        # rows scaled by powers of 2 (exact) to comparable size before the reduction mixes them
-        rmax = np.maximum(np.abs(A).max(axis=1, initial=0), np.abs(B).max(axis=1, initial=0))
-        rs = np.where(rmax > 0, 2.0 ** -np.round(np.log2(np.where(rmax > 0, rmax, 1.0))), 1.0)
-        self._reduce(A * rs[:, None], B * rs[:, None], G * rs[:, None])
+
+        def reduce_scaled(A, B, G):
+            # rows scaled by powers of 2 (exact) to comparable size before the reduction mixes them
+            rmax = np.maximum(np.abs(A).max(axis=1, initial=0), np.abs(B).max(axis=1, initial=0))
+            rs = np.where(rmax > 0, 2.0 ** -np.round(np.log2(np.where(rmax > 0, rmax, 1.0))), 1.0)
+            self._reduce(A * rs[:, None], B * rs[:, None], G * rs[:, None])
+        try:
+            reduce_scaled(A, B, G)
+        except RefError:
+            if not self.nonlinear:
+                raise
+            # the linearisation at 0 can lose couplings (a quasi-static machine's voltages are omega times its
+            # fluxes: at omega = 0 they vanish): linearise at a generic point instead (structure only)
+            zg = np.random.default_rng(20261021).uniform(0.3, 1.0, n) * np.where(np.arange(n) % 2, 1.0, -1.0)
+            Jg = self._jg(zg)
+            A = A_raw + Jg
+            G = G_raw.copy()
+            G[:, s.fn_idx[id(one)] * K] += self._g(zg) - Jg @ zg
+            self.A0, self.G0 = A.copy(), G.copy()
+            reduce_scaled(A, B, G)
         for f in s.cascades:                # their second derivatives are not available
             j = s.fn_idx[id(f)]
             cols = slice(j * K + 2, (j + 1) * K)
@@ -2306,48 +2333,78 @@ class Ref:
         topo_cache = {}
 
         def topo(which):
-            """The terms of 'which' in an order where each reads only terms before it (None with a loop)."""
+            """The terms of 'which' as strongly connected components in dependency order (Tarjan): each block
+            reads only blocks before it; a block of one term without a self-loop is evaluated directly."""
             if which not in topo_cache:
-                ws, done, order = set(which), set(), []
-                while len(order) < len(which):
-                    ready = [k for k in which if k not in done and not ((dep_on[k] & ws) - done)]
-                    if not ready:
-                        order = None
-                        break
-                    order += ready
-                    done |= set(ready)
-                topo_cache[which] = order
+                ws = set(which)
+                index, low, stack, on, blocks = {}, {}, [], set(), []
+                counter = [0]
+
+                def strong(v):
+                    index[v] = low[v] = counter[0]
+                    counter[0] += 1
+                    stack.append(v)
+                    on.add(v)
+                    for x in sorted(dep_on[v] & ws):
+                        if x not in index:
+                            strong(x)
+                            low[v] = min(low[v], low[x])
+                        elif x in on:
+                            low[v] = min(low[v], index[x])
+                    if low[v] == index[v]:
+                        blk = []
+                        while True:
+                            x = stack.pop()
+                            on.discard(x)
+                            blk.append(x)
+                            if x == v:
+                                break
+                        blocks.append(sorted(blk))
+                for v in which:
+                    if v not in index:
+                        strong(v)
+                topo_cache[which] = [(blk, len(blk) > 1 or blk[0] in dep_on[blk[0]]) for blk in blocks]
             return topo_cache[which]
 
-        def solve_set(zF, which, u0):
-            """u[which] = g(zF + Pu u)[which], the other entries of u0 fixed: plain iteration (most terms do not
-            depend on each other), then Newton."""
-            u = u0.copy()
-            if not which:
-                return u
-            order = topo(tuple(which))
-            if order is not None:                     # no loop among the terms: one pass in dependency order
-                for k in order:
-                    _, fn, dj = nl[k]
-                    u[k] = fn(zF[dj] + Pu[dj] @ u)
-                return u
-            w_ = np.array(which)
+        def solve_block(zF, blk, u):
+            """Newton on one strongly connected block (plain iteration first while it contracts)."""
+            w_ = np.array(blk)
+            u0 = u[w_].copy()
+            prev = None
             for it in range(4):
                 z = zF + Pu @ u
-                gu = np.array([nl[k][1](z[nl[k][2]]) for k in which])
-                if np.max(np.abs(gu - u[w_]), initial=0) <= 1e-14 * max(1.0, np.max(np.abs(gu), initial=0)):
+                gu = np.array([nl[k][1](z[nl[k][2]]) for k in blk])
+                d = np.max(np.abs(gu - u[w_]), initial=0)
+                if d <= 1e-14 * max(1.0, np.max(np.abs(gu), initial=0)):
                     u[w_] = gu
-                    return u
+                    return
+                if prev is not None and d > 0.5 * prev:          # not contracting: Newton from the start value
+                    u[w_] = u0
+                    break
+                prev = d
                 u[w_] = gu
-            for it in range(30):
+            for it in range(40):
                 z = zF + Pu @ u
-                gu = np.array([nl[k][1](z[nl[k][2]]) for k in which])
+                gu = np.array([nl[k][1](z[nl[k][2]]) for k in blk])
                 r = u[w_] - gu
                 if np.max(np.abs(r), initial=0) <= 1e-13 * max(1.0, np.max(np.abs(gu), initial=0)):
                     break
-                Jg = jac_u(z, which)[w_]
-                Mu = np.eye(len(which)) - Jg @ Pu[:, w_]
+                Jg = jac_u(z, blk)[w_]
+                Mu = np.eye(len(blk)) - Jg @ Pu[:, w_]
                 u[w_] = u[w_] - np.linalg.solve(Mu, r)
+
+        def solve_set(zF, which, u0):
+            """u[which] = g(zF + Pu u)[which], the other entries of u0 fixed, block by block in dependency order."""
+            u = u0.copy()
+            if not which:
+                return u
+            for blk, loop in topo(tuple(which)):
+                if not loop:
+                    k = blk[0]
+                    _, fn, dj = nl[k]
+                    u[k] = fn(zF[dj] + Pu[dj] @ u)
+                else:
+                    solve_block(zF, blk, u)
             return u
 
         def solve_u(zF):

@@ -1,5 +1,5 @@
 """format.py — the study format (study_format) and the static checks (validate, validate_study).
-Version: 2026.10.21.20
+Version: 2026.10.21.25
 
 validate_study(study) -> {ok, errors, warnings}: nothing runs (no omc). It resolves the network (network.build),
 checks outputs, analysis, derived quantities, sweep, expect, run (against the OMCT_MAX_* caps) and images, then
@@ -80,6 +80,12 @@ CONVENTIONS = [
     "Y or D), flange = shaft, starpoint (Y: open, or to a ground, which pmsm_current_drive needs). Supplies: "
     "three_phase_grid (V_rms per phase, f), vf_inverter (input f [Hz]), pmsm_current_drive (inputs id, iq [A RMS]; "
     "its flange on the motor shaft). Stator and rotor currents start at 0, the rotor at w0, phi0.",
+    "Quasi-static (phasor) machines: qs_induction_machine, qs_pmsm, qs_pmsm_damper (MSL QuasiStatic "
+    "FundamentalWave: no electrical transients, much faster) on qs_grid (V_rms, f), qs_vf_inverter (input f [Hz]) or "
+    "qs_pmsm_current_drive (inputs id, iq [A RMS]; flange on the motor shaft). Their ports are qs_plug: they connect "
+    "only to quasi-static parts (qs_current_rms, qs_voltage_rms, qs_power, qs_star, qs_ground, qs_ac_voltage); each "
+    "quasi-static circuit has one source and a qs_ground. Outputs: wMechanical, tauElectrical, abs_is[k], abs_vs[k] "
+    "(RMS), Ps_total, Qs_total, the power balance. Machines start at w0, phi0 (the source's angle gamma0 = 0).",
     "Heat ports: resistors, ideal diodes, dampers, dc_motor (heatPort = both losses) and dc_machine (heatPort = all "
     "six) put their losses into a thermal network when their heatPort is connected (a resistor's R then follows the "
     "port's temperature with alpha); unconnected, the losses leave the model.",
@@ -109,7 +115,11 @@ def _kind_line(name: str) -> str:
     pts = C.port_types(name)
     ports = ",".join(f"{p}" + ("(in)" if t == "in" else "(out)" if t == "out" else "") for p, t in pts.items())
     ps = []
-    for p, s in k["params"].items():
+    if k.get("params_as"):
+        other = C.KINDS[k["params_as"]]["params"]
+        less = sorted(set(other) - set(k["params"]))
+        ps.append(f"as {k['params_as']}" + (f" without {', '.join(less)}" if less else ""))
+    for p, s in ([] if k.get("params_as") else k["params"].items()):
         d = s["default"]
         tag = "*" if s["structural"] else ""
         if s["type"] == "medium":
@@ -139,11 +149,13 @@ def _kind_line(name: str) -> str:
 
 def study_format() -> dict:
     domains = {
-        "electrical": [], "translational": [], "rotational": [], "thermal": [], "fluid": [], "signals": []}
+        "electrical": [], "quasi-static": [], "translational": [], "rotational": [], "thermal": [], "fluid": [],
+        "signals": []}
     for name in C.public_kinds():
         pts = C.port_types(name).values()
         doms = {C.domain_of(t) for t in pts}
-        d = next((x for x in ("fluid", "electrical", "translational", "rotational", "thermal") if x in doms), "signals")
+        d = next((x for x in ("fluid", "quasi-static", "electrical", "translational", "rotational", "thermal") if x in doms),
+                 "signals")
         if name == "dc_motor":
             d = "electrical"
         domains[d].append(name)

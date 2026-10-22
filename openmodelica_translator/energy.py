@@ -1,5 +1,5 @@
 """energy.py — the energy balance of a run, from the elements' values and the recorded series.
-Version: 2026.10.21.20
+Version: 2026.10.21.25
 
     work in (boundaries) = change of stored energy + dissipated energy
 
@@ -12,6 +12,8 @@ Storage: 1/2 C v^2, 1/2 L i^2 (transformer 1/2 (L1 i1^2 + 2 M i1 i2 + L2 i2^2)),
 Dissipation: LossPower of resistors and diodes, lossPower of dampers (with their heatPort connected the loss heats
 the thermal network instead: no term here, the heat shows up there); a DC machine's powerBalance.lossPowerTotal
 (storage 1/2 La i^2 + 1/2 Jr w^2); with heat ports connected the losses heat the thermal network instead.
+Quasi-static (phasor) circuits: sources put in -P_total (the average active power); machines store only 1/2 Jr w^2
+and lose powerBalance.lossPowerTotal; stars, grounds, terminal boxes, sensors and their blocks are neutral.
 Coolant loops: storage m cv T per component with medium inside; pumps (volume flow, pressure increase) put in
 -dp V_flow; ambients and pressure references -(H_flow + p m_flow / rho) (enthalpy and pressure work); pipes and valves
 lose V_flow dp minus the friction heat fed back to the medium (Q_friction); an ideal pump only converts its flange's
@@ -36,6 +38,9 @@ MECH_R = {"torque", "torque_step", "constant_torque", "linear_speed_load", "quad
 HEAT_B = {"fixed_temperature", "prescribed_temperature", "fixed_heat_flow", "prescribed_heat_flow"}
 FLUID_PUMPS = {"volume_flow", "signal_volume_flow", "pressure_increase", "signal_pressure_increase"}
 FLUID_NEUTRAL = {"fluid_temperature_sensor", "fluid_pressure_sensor", "volume_flow_sensor"}
+QS_NEUTRAL = {"qs_ground", "qs_star", "qs_terminal_box", "qs_current_rms", "qs_voltage_rms", "qs_power_core",
+              "qs_vf_controller", "qs_current_controller"}
+QS_SOURCES = {"qs_ac_voltage", "qs_variable_voltage", "qs_reference_current"}
 
 
 def _trap(y, t):
@@ -76,6 +81,21 @@ def plan(net) -> dict | None:
                 terms.append(("store", e, vv, lambda g, vv=vv, C_=p["C"]: 0.5 * C_ * sum(g(a) ** 2 for a in vv)))
             continue
         if k in ("terminal_box", "vf_controller", "dq_to_three_phase"):
+            continue
+        if k in QS_NEUTRAL:
+            continue
+        if k == "qs_resistor_core":
+            terms.append(("loss", e, [f"{e}.P_total"], lambda g, e=e: g(f"{e}.P_total")))
+            continue
+        if k in QS_SOURCES:
+            terms.append(("power", e, [f"{e}.P_total"], lambda g, e=e: -g(f"{e}.P_total")))
+            continue
+        if k in ("qs_im_core", "qs_pmsm_core", "qs_pmsm_damper_core"):
+            # quasi-static: no electromagnetic storage; the rotor's kinetic energy and the losses
+            terms.append(("store", e, [f"{e}.wMechanical"], lambda g, e=e, J=p["Jr"]: 0.5 * J * g(f"{e}.wMechanical") ** 2))
+            if not d.get("enabled"):
+                terms.append(("loss", e, [f"{e}.powerBalance.lossPowerTotal"],
+                              lambda g, e=e: g(f"{e}.powerBalance.lossPowerTotal")))
             continue
         if k in ("signal_ac_voltage", "signal_ac_current"):
             vv, ii = [f"{e}.v[{j}]" for j in (1, 2, 3)], [f"{e}.i[{j}]" for j in (1, 2, 3)]
@@ -133,11 +153,28 @@ def plan(net) -> dict | None:
             unknown.append(k)
     for term in terms:
         paths.update(term[2])
+    off_sync = _qs_sync_on_voltage(net)
+    if off_sync:
+        return {"covered": False, "why": f"quasi-static synchronous machine {off_sync} on a voltage supply: the phasor "
+                                         f"model does not conserve energy while its rotor slips (load-angle swings)",
+                "paths": set()}
     if unknown:
         return {"covered": False, "why": f"no energy terms for {sorted(set(unknown))}", "paths": set()}
     if not terms:
         return {"covered": False, "why": "no physical elements", "paths": set()}
     return {"covered": True, "terms": terms, "paths": paths}
+
+
+def _qs_sync_on_voltage(net):
+    """A QS PMSM whose circuit is fed by a voltage source (its rotor may slip against the phasors' frequency: the
+    magnet's field is then represented at the wrong frequency and the model's energy is not conserved)."""
+    from . import refqs
+    isl = refqs.islands(net)
+    roots = {isl[e]: d["kind"] for e, d in net.elems.items() if e in isl and d["kind"] in QS_SOURCES}
+    for e, d in sorted(net.elems.items()):
+        if d["kind"] in ("qs_pmsm_core", "qs_pmsm_damper_core") and roots.get(isl.get(e)) != "qs_reference_current":
+            return d["comp"]
+    return None
 
 
 def _fluid_terms(terms, e, k, p):

@@ -1,5 +1,5 @@
 """test_catalog.py — the catalog is consistent, matches MSL 4.0.0, and the reference covers every variable.
-Version: 2026.10.21.1
+Version: 2026.10.21.25
 """
 import importlib.util
 import os
@@ -25,12 +25,13 @@ def test_kinds_are_consistent():
             for i, s in k["inits"].items():
                 parse_unit(s["unit"])
         if k.get("parts") is not None:
-            for part, (pk, sub) in k["parts"].items():
+            for part, spec in k["parts"].items():
+                pk, sub = spec[0], spec[1]
                 assert pk in C.KINDS
                 for pp in sub:
                     assert pp in C.KINDS[pk]["params"], (name, part, pp)
-            for a, b in k["conns"]:
-                for x in (a, b):
+            for cn in k["conns"]:
+                for x in cn[:2]:
                     part, port = x.split(".")
                     assert port in C.KINDS[k["parts"][part][0]]["ports"], (name, x)
             for ci, target in k["inits"].items():
@@ -57,16 +58,20 @@ class _FakeNet:
         self.node_of, self.signal_of = {}, {}
         n = 0
         for p, t in k["ports"].items():
-            keys = [f"{e}.{p}.pin[{j}]" for j in (1, 2, 3)] if t == "plug" else \
-                [f"{e}.{p}[{j}]" for j in (1, 2, 3)] if t in ("vin", "vout") else [f"{e}.{p}"]
+            keys = [f"{e}.{p}.pin[{j}]" for j in (1, 2, 3)] if t in ("plug", "qs_plug") else \
+                [f"{e}.{p}[{j}]" for j in (1, 2, 3)] if t in ("vin", "vout") else \
+                [f"{e}.{p}[{j}].{r}" for j in (1, 2, 3) for r in ("re", "im")] if t in ("cvin", "cvout") else [f"{e}.{p}"]
             for key in keys:
-                (self.signal_of if t in ("in", "out", "vin", "vout") else self.node_of)[key] = n
+                (self.signal_of if t in ("in", "out", "vin", "vout", "cvin", "cvout") else self.node_of)[key] = n
                 n += 1
         self.free_inputs = {}
 
     def port_type(self, ep):
         e, p = ep.split(".", 1)
-        return "pin" if ".pin[" in p else C.KINDS[self.elems[e]["kind"]]["ports"][p]
+        ports = C.KINDS[self.elems[e]["kind"]]["ports"]
+        if ".pin[" in p:
+            return "qs_pin" if ports[p.split(".")[0]] == "qs_plug" else "pin"
+        return ports.get(p) or ports[p.split("[")[0]]
 
     def mpath(self, ep):
         e, p = ep.split(".", 1)

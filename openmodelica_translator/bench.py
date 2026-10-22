@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with closed-form answers: is the toolchain right?
-Version: 2026.10.21.24
+Version: 2026.10.21.25
 
 Each case is a study plus checks [(result path, expected, tolerance, why)]; tolerances are relative unless
 written {"abs": x}. Chains (chain_feat_modal, chain_b3dt_mass, chain_b3dt_inertia) run the other translator first and only when named; they are skipped
@@ -505,7 +505,128 @@ def _quad_load():
                 ("outputs.w.final", math.sqrt(50) * math.tanh(2 / tau), 1e-6, "w(2 s)")]
 
 
-NONLINEAR_CASES = {"im_grid_slip", "pmsm_current_torque", "im_vf_start", "pmsm_damper_grid", "quadratic_load"}
+# ---- quasi-static (V3.4): the same machines as phasor models; no electrical transients, so the closed forms hold
+# to the solver's tolerance (no ripple to average)
+QS_IM = {k: v for k, v in IM_DATA.items() if k != "Lszero"}
+QS_IM["kind"] = "qs_induction_machine"
+
+
+def _im_phasor(V, f, s_, d=IM_DATA):
+    """The stator current phasor of the equivalent circuit at slip s_ (V real, RMS)."""
+    w = 2 * math.pi * f
+    Zs = d["Rs"] + 1j * w * d["Lssigma"]
+    Zm = 1j * w * d["Lm"]
+    Zr = d["Rr"] / s_ + 1j * w * d["Lrsigma"]
+    return V / (Zs + Zm * Zr / (Zm + Zr))
+
+
+def _qs_im_grid():
+    """The QS induction machine on a QS 100 V 50 Hz grid, 100 N.m from 0.5 s: speed, current and power from the
+    equivalent circuit (qs_current_rms, qs_power against a grounded star)."""
+    s_, w, I = im_steady(100.0, 50.0, 100.0)
+    P = 3 * (100.0 * _im_phasor(100.0, 50.0, s_).conjugate()).real
+    st = {"components": {"grid": {"kind": "qs_grid", "V_rms": 100, "f": 50}, "M": dict(QS_IM),
+                         "irms": {"kind": "qs_current_rms"}, "pw": {"kind": "qs_power"}, "sv": {"kind": "qs_star"},
+                         "gv": {"kind": "qs_ground"}, "load": {"kind": "inertia", "J": 0.29},
+                         "tl": {"kind": "torque_step", "stepTorque": -100, "startTime": 0.5}},
+          "connect": [["grid.plug", "irms.plug_p"], ["irms.plug_n", "pw.plug_p"], ["pw.plug_ni", "M.plug"],
+                      ["pw.plug_nv", "sv.plug_p"], ["sv.pin_n", "gv.pin"], ["M.flange", "load.flange_a"],
+                      ["load.flange_b", "tl.flange"]],
+          "outputs": {"w": "M.wMechanical", "I": "irms.I", "T": "M.tauElectrical", "P": "pw.P"},
+          "analysis": {"kind": "transient", "stop_time": 2, "intervals": 2000},
+          "derived": [{"kind": "window", "signal": x, "t0": 1.8, "t1": 2} for x in ("w", "I", "T", "P")]}
+    return st, [("derived.w.mean", w, 1e-6, f"equivalent circuit: slip {s_:.5f}"),
+                ("derived.I.mean", I, 1e-5, "RMS stator current of the equivalent circuit"),
+                ("derived.T.mean", 100.0, 1e-5, "electrical torque = the load"),
+                ("derived.P.mean", P, 1e-5, "3 Re(V conj(I)) of the equivalent circuit")]
+
+
+def _qs_pmsm_current():
+    """The QS PMSM fed by the QS current drive (Id -53.5, Iq 84.6 A RMS): constant torque 3 p psiM Iq from the
+    start, so the speed against the quadratic load is w_inf tanh(t sqrt(T k)/J) exactly; the stator voltage
+    |Rs I + j p w ((Lssigma + Lmd) Id + psiM, (Lssigma + Lmq) Iq)| at the end."""
+    from .catalog import QS_DRIVE_RP as Rp
+    psiM = 112.3 / W50
+    Id, Iq = -53.5, 84.6
+    k = 181.4 / 157.07963267949 ** 2
+    J = 0.29 + PM_DATA["Jr"]
+    L = PM_DATA["Lssigma"] + PM_DATA["Lmd"]                     # Lmd = Lmq
+    T0 = 3 * 2 * psiM * Iq
+    w_end = math.sqrt(T0 / k) * math.tanh(3.0 * math.sqrt(T0 * k) / J)   # Rp changes it by ~1e-6
+
+    def machine(w_):
+        """The machine's current (the drive's 1 MOhm takes V/Rp), voltage and torque at speed w_ (rotor frame)."""
+        ws = 2 * w_
+        Z = PM_DATA["Rs"] + 1j * ws * L
+        Im = (complex(Id, Iq) - 1j * ws * psiM / Rp) / (1 + Z / Rp)
+        return Im, Z * Im + 1j * ws * psiM
+    Im, Vc = machine(w_end)
+    T, V = 3 * 2 * psiM * Im.imag, abs(Vc)
+    st = {"components": {"drv": {"kind": "qs_pmsm_current_drive", "p": 2}, "M": dict(PM_DATA, kind="qs_pmsm"),
+                         "id": {"kind": "constant", "k": Id}, "iq": {"kind": "constant", "k": Iq},
+                         "load": {"kind": "inertia", "J": 0.29},
+                         "tl": {"kind": "quadratic_speed_load", "tau_nominal": -181.4, "w_nominal": 157.07963267949,
+                                "TorqueDirection": False}},
+          "connect": [["drv.plug", "M.plug"], ["drv.flange", "M.flange"], ["id.y", "drv.id"], ["iq.y", "drv.iq"],
+                      ["M.flange", "load.flange_a"], ["load.flange_b", "tl.flange"]],
+          "outputs": {"w": "M.wMechanical", "T": "M.tauElectrical", "V": "M.abs_vs[1]"},
+          "analysis": {"kind": "transient", "stop_time": 3, "intervals": 3000}}
+    return st, [("outputs.T.final", T, 1e-7, "3 p psiM Iq (Ld = Lq), Iq less the drive resistor's share"),
+                ("outputs.w.final", w_end, 1e-5, "w_inf tanh(3 s sqrt(T k)/J)"),
+                ("outputs.V.final", V, 1e-5, "the dq phasor voltage at the final speed")]
+
+
+def _qs_im_vf():
+    """The QS induction machine started by the QS V/f inverter (0 -> 50 Hz in 1 s, 100 V at 50 Hz), 100 N.m from
+    1.2 s: the grid's steady speed."""
+    s_, w, I = im_steady(100.0, 50.0, 100.0)
+    st = {"components": {"inv": {"kind": "qs_vf_inverter", "VNominal": 100, "fNominal": 50},
+                         "f": {"kind": "ramp", "height": 50, "duration": 1}, "M": dict(QS_IM),
+                         "load": {"kind": "inertia", "J": 0.29},
+                         "tl": {"kind": "torque_step", "stepTorque": -100, "startTime": 1.2}},
+          "connect": [["f.y", "inv.f"], ["inv.plug", "M.plug"], ["M.flange", "load.flange_a"], ["load.flange_b", "tl.flange"]],
+          "outputs": {"w": "M.wMechanical"}, "analysis": {"kind": "transient", "stop_time": 2.5, "intervals": 2500},
+          "derived": [{"kind": "window", "signal": "w", "t0": 2.3, "t1": 2.5}]}
+    return st, [("derived.w.mean", w, 1e-6, "the equivalent circuit at 50 Hz, 100 V, 100 N.m")]
+
+
+def _qs_pmd_grid():
+    """The QS PMSM with damper cage on a QS 112.3 V 50 Hz grid, started synchronous, 50 N.m from 0.2 s: it stays
+    synchronous and the torque settles at the load."""
+    st = {"components": {"g": {"kind": "qs_grid", "V_rms": 112.3, "f": 50},
+                         "M": dict(PM_DATA, kind="qs_pmsm_damper", Lrsigmad=0.05 / W50, Rrd=0.04, w0=W50 / 2),
+                         "load": {"kind": "inertia", "J": 0.29},
+                         "tl": {"kind": "torque_step", "stepTorque": -50, "startTime": 0.2}},
+          "connect": [["g.plug", "M.plug"], ["M.flange", "load.flange_a"], ["load.flange_b", "tl.flange"]],
+          "outputs": {"w": "M.wMechanical", "T": "M.tauElectrical"},
+          "analysis": {"kind": "transient", "stop_time": 1.5, "intervals": 1500},
+          "derived": [{"kind": "window", "signal": x, "t0": 1.3, "t1": 1.5} for x in ("w", "T")]}
+    return st, [("derived.w.mean", W50 / 2, 1e-7, "synchronous speed"),
+                ("derived.T.mean", 50.0, 1e-5, "the load torque")]
+
+
+def _delta(qs):
+    """The induction machine connected in delta (terminal D) on a grid of 100/sqrt(3) V per phase: each winding
+    sees 100 V, so speed and torque are those of the star machine on 100 V (the equivalent circuit)."""
+    st, _ = (_qs_im_grid if qs else _im_grid)()
+    st = {**st, "components": dict(st["components"])}
+    gname = "grid"
+    st["components"]["M"] = dict(st["components"]["M"], terminal="D")
+    st["components"][gname] = dict(st["components"][gname], V_rms=100 / math.sqrt(3))
+    for k in ("pw", "sv", "gv", "irms"):
+        st["components"].pop(k, None)
+    st["connect"] = [["grid.plug", "M.plug"], ["M.flange", "load.flange_a"], ["load.flange_b", "tl.flange"]]
+    st["outputs"] = {"w": "M.wMechanical", "T": "M.tauElectrical"}
+    st["derived"] = [d for d in st["derived"] if d["signal"] in ("w", "T")]
+    s_, w, _ = im_steady(100.0, 50.0, 100.0)
+    tol = 1e-6 if qs else 1e-4
+    return st, [("derived.w.mean", w, tol, "the star machine's speed on 100 V"),
+                ("derived.T.mean", 100.0, 10 * tol, "electrical torque = the load")]
+
+
+NONLINEAR_CASES = {"im_grid_slip", "pmsm_current_torque", "im_vf_start", "pmsm_damper_grid", "quadratic_load",
+                   "qs_im_grid_slip", "qs_pmsm_current_torque", "qs_im_vf_start", "qs_pmsm_damper_grid", "im_grid_delta",
+                   "qs_im_grid_delta"}
 
 
 def omc_only() -> set:
@@ -529,7 +650,10 @@ def cases() -> dict:
                      ("dc_machine_brush", _dcpm_brush), ("three_phase_rl", lambda: _three_phase("star")),
                      ("three_phase_delta", lambda: _three_phase("delta")), ("im_grid_slip", _im_grid),
                      ("pmsm_current_torque", _pmsm_current), ("im_vf_start", _im_vf),
-                     ("pmsm_damper_grid", _pmd_grid), ("quadratic_load", _quad_load)):
+                     ("pmsm_damper_grid", _pmd_grid), ("quadratic_load", _quad_load),
+                     ("qs_im_grid_slip", _qs_im_grid), ("qs_pmsm_current_torque", _qs_pmsm_current),
+                     ("qs_im_vf_start", _qs_im_vf), ("qs_pmsm_damper_grid", _qs_pmd_grid),
+                     ("im_grid_delta", lambda: _delta(False)), ("qs_im_grid_delta", lambda: _delta(True))):
         st, checks = fn()
         out[name] = {"study": st, "checks": checks}
     return out

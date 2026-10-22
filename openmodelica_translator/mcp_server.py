@@ -1,6 +1,6 @@
 """mcp_server.py — MCP server: lets LLM-based tools simulate systems (circuits, drives, heat paths, controllers)
 with OpenModelica and the Modelica Standard Library.
-Version: 2026.10.21.24
+Version: 2026.10.21.25
 
 Tools (all JSON):
   study_format      the study format: component kinds, ports, parameters, analyses, conventions. Read it first.
@@ -37,7 +37,7 @@ except ImportError:  # 1.x
 INSTRUCTIONS = """openmodelica-translator simulates whole systems over time with OpenModelica and the Modelica
 Standard Library 4.0.0: circuits (R, L, C, sources, op-amps, transformers), translational and rotational
 mechanics (masses, inertias, springs, dampers, gears, force/torque sources), DC and AC machines (induction,
-PMSM; losses, heat ports) with three-phase grids and drives, heat transfer, coolant loops (pumps, pipes, valves;
+PMSM; transient or quasi-static phasor models; losses, heat ports) with grids and drives, heat, coolant loops (pumps, pipes, valves;
 Thermal.FluidHeatFlow) and control blocks (PI, PID, LimPID, limiters, tables). A study lists components (catalog kinds with parameters), connections between their ports,
 outputs, and an analysis: transient, steady or linearize (eigenvalues, modes, Bode); derived quantities (step
 metrics, crossing times, window statistics) and expect checks. It takes other translators' results as values
