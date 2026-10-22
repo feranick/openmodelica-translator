@@ -1,6 +1,6 @@
 """test_api.py — the API (worker pool, request folders, status from files, cancel, jobs, benchmarks, pictures)
 and the MCP server's tool list. Runs with the reference solver: no OpenModelica needed.
-Version: 2026.10.21.5
+Version: 2026.10.21.23
 """
 import asyncio
 import json
@@ -24,7 +24,9 @@ def test_run_in_the_pool_then_status(out):
     assert r["studies"]["bad"]["why"] == "invalid study"
     if r["pending"]:
         r = api.status(r["request"], 40)
-    assert r["done"] and r["studies"]["rc"]["ok"] and r["studies"]["rc"]["reliable"]
+    rc = r["studies"]["rc"]
+    assert r["done"] and rc["ok"] and rc["reliable"], {k: rc.get(k) for k in ("ok", "reliable", "why", "unreliable_because",
+                                                                          "warnings", "stage", "state")}
     # another reader sees the same results from the files
     again = api._collect(api.Path(r["request"]))
     assert again["studies"]["rc"]["outputs"]["v"]["final"] == r["studies"]["rc"]["outputs"]["v"]["final"]
