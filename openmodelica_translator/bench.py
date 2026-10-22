@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with closed-form answers: is the toolchain right?
-Version: 2026.10.21.22
+Version: 2026.10.21.23
 
 Each case is a study plus checks [(result path, expected, tolerance, why)]; tolerances are relative unless
 written {"abs": x}. Chains (chain_feat_modal, chain_b3dt_mass, chain_b3dt_inertia) run the other translator first and only when named; they are skipped
@@ -476,8 +476,41 @@ def _im_vf():
     return st, [("derived.w.mean", w, 1e-4, "the equivalent circuit at 50 Hz, 100 V, 100 N.m")]
 
 
-OMC_ONLY = set() if os.environ.get("OMCT_REF_NONLINEAR", "") in ("1", "true", "yes") else \
-    {"im_grid_slip", "pmsm_current_torque", "im_vf_start"}          # the nonlinear reference is experimental
+def _pmd_grid():
+    """The PMSM with damper cage on a 112.3 V 50 Hz grid (its open-circuit voltage), started at synchronous speed,
+    50 N.m load from 0.2 s: it stays synchronous (w = 2 pi 50 / p) and the electrical torque settles at the load."""
+    st = {"components": {"g": {"kind": "three_phase_grid", "V_rms": 112.3, "f": 50},
+                         "M": dict(PM_DATA, kind="pmsm_damper", Lrsigmad=0.05 / W50, Rrd=0.04, w0=W50 / 2),
+                         "load": {"kind": "inertia", "J": 0.29},
+                         "tl": {"kind": "torque_step", "stepTorque": -50, "startTime": 0.2}},
+          "connect": [["g.plug", "M.plug"], ["M.flange", "load.flange_a"], ["load.flange_b", "tl.flange"]],
+          "outputs": {"w": "M.wMechanical", "T": "M.tauElectrical"},
+          "analysis": {"kind": "transient", "stop_time": 1.5, "intervals": 3000},
+          "derived": [{"kind": "window", "signal": x, "t0": 1.3, "t1": 1.5} for x in ("w", "T")]}
+    return st, [("derived.w.mean", W50 / 2, 1e-6, "synchronous speed"),
+                ("derived.T.mean", 50.0, 1e-4, "the load torque")]
+
+
+def _quad_load():
+    """An inertia (0.5 kg.m2) driven by 10 N.m against a quadratic load (-20 N.m at 10 rad/s): J w' = 10 - 0.2 w^2,
+    w = sqrt(50) tanh(t sqrt(2) / J)."""
+    st = {"components": {"src": {"kind": "constant_torque", "tau_constant": 10.0}, "J": {"kind": "inertia", "J": 0.5},
+                         "tl": {"kind": "quadratic_speed_load", "tau_nominal": -20.0, "w_nominal": 10.0,
+                                "TorqueDirection": False}},
+          "connect": [["src.flange", "J.flange_a"], ["J.flange_b", "tl.flange"]],
+          "outputs": {"w": "J.w"}, "analysis": {"kind": "transient", "stop_time": 2, "intervals": 4000},
+          "derived": [{"kind": "crossing", "signal": "w", "level": math.sqrt(50) / 2}]}
+    tau = 0.5 / math.sqrt(2)
+    return st, [("derived.w.crossing_time_s", tau * math.atanh(0.5), 1e-4, "w = sqrt(50) tanh(t / tau); grid interpolation"),
+                ("outputs.w.final", math.sqrt(50) * math.tanh(2 / tau), 1e-6, "w(2 s)")]
+
+
+NONLINEAR_CASES = {"im_grid_slip", "pmsm_current_torque", "im_vf_start", "pmsm_damper_grid", "quadratic_load"}
+
+
+def omc_only() -> set:
+    """Cases the reference does not cover yet: the AC machines unless OMCT_REF_NONLINEAR=1 (experimental)."""
+    return set() if os.environ.get("OMCT_REF_NONLINEAR", "") in ("1", "true", "yes") else set(NONLINEAR_CASES)
 
 
 def cases() -> dict:
@@ -494,7 +527,8 @@ def cases() -> dict:
                      ("limiter_loop", _limiter_loop), ("rectifier_mean", _rectifier), ("slew_rate_ramp", _slew),
                      ("dc_machine_brush", _dcpm_brush), ("three_phase_rl", lambda: _three_phase("star")),
                      ("three_phase_delta", lambda: _three_phase("delta")), ("im_grid_slip", _im_grid),
-                     ("pmsm_current_torque", _pmsm_current), ("im_vf_start", _im_vf)):
+                     ("pmsm_current_torque", _pmsm_current), ("im_vf_start", _im_vf),
+                     ("pmsm_damper_grid", _pmd_grid), ("quadratic_load", _quad_load)):
         st, checks = fn()
         out[name] = {"study": st, "checks": checks}
     return out
@@ -629,7 +663,7 @@ def run(solver: str, names=None, folder=None) -> dict:
     names = list(names) if names else list(cases())
     studies, checks, skipped = prepare(names)
     if solver == "ref":
-        for n in [n for n in studies if n in OMC_ONLY]:
+        for n in [n for n in studies if n in omc_only()]:
             studies.pop(n)
             skipped[n] = "needs OpenModelica (not covered by the reference yet)"
     out = {n: {"skipped": why} for n, why in skipped.items()}

@@ -1,5 +1,5 @@
 """api.py — what the CLI and the MCP server call. JSON in, JSON out.
-Version: 2026.10.21.20
+Version: 2026.10.21.23
 
     tool_status()                  versions; omc, MSL, the C compiler, the build cache; the executor and its caps
     study_format()                 the study format, with status
@@ -393,7 +393,7 @@ def bench(names=None, solver: str | None = None, wait_s: float | None = None) ->
     names = list(names) if names else list(B.cases())
     studies, checks, skipped = B.prepare(names)
     if (solver or os.environ.get("OMCT_SOLVER", "")) == "ref":
-        for n in [n for n in studies if n in B.OMC_ONLY]:
+        for n in [n for n in studies if n in B.omc_only()]:
             studies.pop(n)
             checks.pop(n, None)
             skipped[n] = "needs OpenModelica (not covered by the reference yet)"

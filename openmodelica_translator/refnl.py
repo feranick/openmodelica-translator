@@ -1,7 +1,7 @@
 """refnl.py — the reference's integrator for nonlinear systems (AC machines): differential-algebraic equations
     B z' + A z + G F(t) + g(z) = 0          (B constant and possibly singular; g: the nonlinear terms)
 written as M z' = f(t, z) with M = B, f = -(A z + G F(t) + g(z)).
-Version: 2026.10.21.22
+Version: 2026.10.21.23
 
 consistent(...)  initial values: Gauss-Newton (minimum norm) on the residual, the derivatives of the algebraic rows
                  and the given initial values, unknowns z0 and z0' (only z0 is used afterwards).

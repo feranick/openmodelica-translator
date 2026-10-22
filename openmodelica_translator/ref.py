@@ -1,5 +1,5 @@
 """ref.py — an independent implementation of the study's equations, without OpenModelica.
-Version: 2026.10.21.22
+Version: 2026.10.21.23
 
 Built from the study (network.Net), never from the generated Modelica text, so a translation mistake shows up as
 a mismatch. Each catalog kind writes its equations (the MSL 4.0.0 ones, read from the library's sources) into a
@@ -1860,6 +1860,30 @@ def _constant_driver(c: _Ctx, port):
 
 
 # ------------------------------------------------------------------------------------------- numerics
+def _particular_on(H, Hg, prefer):
+    """A particular solution P of H P = -Hg supported on as few non-preferred columns as possible (column-pivoted
+    QR with the preferred columns weighted up), or None. With the algebraic variables preferred, the states stay in
+    V w only (the min-norm solution spreads a constraint over the states it mentions)."""
+    from scipy.linalg import qr
+    if not H.shape[0]:
+        return None
+    r_, c_ = _equil(H)
+    Hs = H * r_[:, None] * c_[None, :]
+    wgt = np.where(prefer, 1e3, 1.0)
+    _, Rq, piv = qr(Hs * wgt[None, :], pivoting=True, mode="economic")
+    dg = np.abs(np.diag(Rq))
+    if not dg.size or dg[0] == 0:
+        return None
+    rk = int(np.sum(dg > 1e-10 * dg[0]))
+    cols = np.sort(piv[:rk])
+    sol = np.linalg.lstsq(Hs[:, cols], -(Hg * r_[:, None]), rcond=None)[0]
+    P = np.zeros((H.shape[1], Hg.shape[1]))
+    P[cols] = c_[cols, None] * sol
+    if np.max(np.abs(H @ P + Hg), initial=0) > 1e-9 * max(1.0, np.max(np.abs(Hg), initial=0)):
+        return None
+    return P
+
+
 def _equil(M):
     """Row and column scalings (powers of 2) that bring every nonzero row and column max to ~1."""
     M = np.abs(np.asarray(M, float))
@@ -2165,8 +2189,9 @@ class Ref:
 
     def _nl_ode(self):
         """The linear reduction of the system with the nonlinear terms as inputs u (residual rows: linear + u = 0,
-        u = g(z)): z = P [F(t); u] + V w, w' = Ad w + ... ; usable when the dynamics do not need u' (Vp P_u = 0)
-        and the constraints leave u free. None otherwise."""
+        u = g(z)): z = P [F(t); u; u'] + V w, w' = Ad w + ... . Usable when no term needs u'' and the terms that read
+        a part of z needing u' (the 'late' ones: a current-fed machine's voltages) neither drive the dynamics nor
+        other terms; they are computed from the state afterwards. None otherwise."""
         if hasattr(self, "_nlode"):
             return self._nlode
         self._nlode = None
@@ -2187,21 +2212,55 @@ class Ref:
             sub._reduce(A * rs[:, None], B * rs[:, None], G * rs[:, None])
         except RefError:
             return None
-        ucols = [(nf + j) * K for j in range(nu)]
-        dcols = [(nf + j) * K + o for j in range(nu) for o in range(1, K)]
-        big = 1e-9 * max(np.abs(sub.P).max(initial=0), 1e-300)
-        d1 = [(nf + j) * K + 1 for j in range(nu)]
-        d2 = [(nf + j) * K + o for j in range(nu) for o in range(2, K)]
-        if np.abs(sub.P[:, dcols]).max(initial=0) > big:
-            return None
-        if sub.d and np.abs(sub.Vp @ sub.Gz[:, d2]).max(initial=0) > 1e-9 * max(1.0, np.abs(sub.Gz).max(initial=0)):
-            return None
+        # the constrained part on the algebraic variables (columns without a derivative) where possible
+        alg = ~np.any(B != 0, axis=0)
+        P2 = _particular_on(sub.H, sub.Hg, alg)
+        if P2 is not None:
+            sub.P = P2
+        P = sub.P
+        col = lambda j, o: (nf + j) * K + o
+        ucols = [col(j, 0) for j in range(nu)]
+        d1 = [col(j, 1) for j in range(nu)]
+        d2 = [col(j, o) for j in range(nu) for o in range(2, K)]
+        big = 1e-9 * max(np.abs(P).max(initial=0), 1e-300)
+        if np.abs(P[:, d2]).max(initial=0) > big:
+            return None                                         # u'' in z
+        nz = lambda cols: set(np.nonzero(np.abs(P[:, cols]).max(axis=1, initial=0) > big)[0].tolist()) if cols else set()
+        # late terms: they read rows that need u', or rows that hold other late terms
+        late = set()
+        while True:
+            bad = nz(d1) | nz([ucols[j] for j in late])
+            more = {j for j, (_, _, dj) in enumerate(self._nl) if j not in late and bad & set(dj.tolist())}
+            if not more:
+                break
+            late |= more
+        L = sorted(late)
+        if L and np.abs(P[:, [d1[j] for j in L]]).max(initial=0) > big:
+            return None                                         # a late term would need its own derivative
+        if sub.d:
+            Vp, Az, Gz = sub.Vp, sub.Az, sub.Gz
+            # the dynamics' coefficients of u and u' (and u'', which must vanish)
+            C0 = Vp @ (Az @ P[:, ucols] + Gz[:, ucols])
+            C1 = Vp @ (Az @ P[:, d1] + Gz[:, d1] - P[:, ucols])
+            C2 = Vp @ (Az @ P[:, [col(j, 2) for j in range(nu)]] + Gz[:, [col(j, 2) for j in range(nu)]] - P[:, d1])
+            sc = 1e-9 * max(1.0, np.abs(C0).max(initial=0), np.abs(sub.Ad).max(initial=0))
+            if np.abs(C2).max(initial=0) > sc or np.abs(Vp @ Gz[:, d2]).max(initial=0) > sc:
+                return None
+            if L and (np.abs(C0[:, L]).max(initial=0) > sc or np.abs(C1[:, L]).max(initial=0) > sc):
+                return None                                     # a late term drives the dynamics
+            Mv = -C1
+            Mv[:, L] = 0.0
+        else:
+            Mv = np.zeros((0, nu))
         sub.d1 = d1
         # u moving the constrained part along the dynamic coordinates (a voltage from a V/f controller across
         # inductors): the dynamics need u' = Jg z', solved with w' at each evaluation
-        Mv = (sub.Vp @ sub.P[:, ucols] - sub.Vp @ sub.Gz[:, d1]) if sub.d else np.zeros((0, nu))
         sub.Mv = Mv
-        sub.need_ud = bool(sub.d and np.abs(Mv).max(initial=0) > 1e-9 * max(1.0, np.abs(sub.P[:, ucols]).max(initial=0)))
+        sub.need_ud = bool(sub.d and np.abs(Mv).max(initial=0) > 1e-9 * max(1.0, np.abs(P[:, ucols]).max(initial=0)))
+        sub.late = L
+        sub.early = [j for j in range(nu) if j not in late]
+        # the outputs need u' of the early terms where z holds it (a current-fed machine's voltages)
+        sub.need_ud_out = sub.need_ud or bool(nz(d1))
         sub.nf, sub.nu, sub.ucols = nf, nu, ucols
         self._nlode = sub
         return sub
@@ -2222,44 +2281,15 @@ class Ref:
             return out
 
         nl = self._nl
+        E, Lt = sub.early, sub.late
         u_prev = [np.zeros(nu)]
 
-        def solve_u(zF):
-            """u = g(zF + Pu u): fixed point by Newton (the terms seldom depend on each other)."""
-            u = u_prev[0].copy()
-            for it in range(4):                       # plain iteration first: most terms do not depend on u
-                gu = np.array([fn((zF + Pu @ u)[dj]) for _, fn, dj in nl])
-                if np.max(np.abs(gu - u), initial=0) <= 1e-14 * max(1.0, np.max(np.abs(gu), initial=0)):
-                    u_prev[0] = gu
-                    return gu
-                u = gu
-            for it in range(30):
-                z = zF + Pu @ u
-                gu = np.array([fn(z[dj]) for _, fn, dj in nl])
-                r = u - gu
-                if np.max(np.abs(r), initial=0) <= 1e-13 * max(1.0, np.max(np.abs(gu), initial=0)):
-                    break
-                Jg = np.zeros((nu, n))
-                for k, (_, fn, dj) in enumerate(nl):
-                    for q, j in enumerate(dj):
-                        hh = 1e-7 * max(1.0, abs(z[j]))
-                        zz = z[dj].copy()
-                        zz[q] += hh
-                        zm = z[dj].copy()
-                        zm[q] -= hh
-                        Jg[k, j] = (fn(zz) - fn(zm)) / (2 * hh)
-                Mu = np.eye(nu) - Jg @ Pu
-                u = u - np.linalg.solve(Mu, r)
-            u_prev[0] = u
-            return u
-
-        VpPu = sub.Mv
-
-        def jac_u(z):
+        def jac_u(z, which=None):
             Jg = np.zeros((nu, n))
-            for k, (_, fn, dj) in enumerate(nl):
+            for k in (range(nu) if which is None else which):
+                _, fn, dj = nl[k]
                 for q, j in enumerate(dj):
-                    hh = 1e-7 * max(1.0, abs(z[j]))
+                    hh = 6e-6 * max(1.0, abs(z[j]))      # eps^(1/3): central differences to ~1e-11
                     zz = z[dj].copy()
                     zz[q] += hh
                     zm = z[dj].copy()
@@ -2267,28 +2297,116 @@ class Ref:
                     Jg[k, j] = (fn(zz) - fn(zm)) / (2 * hh)
             return Jg
 
+        bigP = 1e-12 * max(np.abs(Pu).max(initial=0), 1e-300)
+        dep_on = [set(np.nonzero(np.abs(Pu[dj]).max(axis=0, initial=0) > bigP)[0].tolist()) for _, _, dj in nl]
+        topo_cache = {}
+
+        def topo(which):
+            """The terms of 'which' in an order where each reads only terms before it (None with a loop)."""
+            if which not in topo_cache:
+                ws, done, order = set(which), set(), []
+                while len(order) < len(which):
+                    ready = [k for k in which if k not in done and not ((dep_on[k] & ws) - done)]
+                    if not ready:
+                        order = None
+                        break
+                    order += ready
+                    done |= set(ready)
+                topo_cache[which] = order
+            return topo_cache[which]
+
+        def solve_set(zF, which, u0):
+            """u[which] = g(zF + Pu u)[which], the other entries of u0 fixed: plain iteration (most terms do not
+            depend on each other), then Newton."""
+            u = u0.copy()
+            if not which:
+                return u
+            order = topo(tuple(which))
+            if order is not None:                     # no loop among the terms: one pass in dependency order
+                for k in order:
+                    _, fn, dj = nl[k]
+                    u[k] = fn(zF[dj] + Pu[dj] @ u)
+                return u
+            w_ = np.array(which)
+            for it in range(4):
+                z = zF + Pu @ u
+                gu = np.array([nl[k][1](z[nl[k][2]]) for k in which])
+                if np.max(np.abs(gu - u[w_]), initial=0) <= 1e-14 * max(1.0, np.max(np.abs(gu), initial=0)):
+                    u[w_] = gu
+                    return u
+                u[w_] = gu
+            for it in range(30):
+                z = zF + Pu @ u
+                gu = np.array([nl[k][1](z[nl[k][2]]) for k in which])
+                r = u[w_] - gu
+                if np.max(np.abs(r), initial=0) <= 1e-13 * max(1.0, np.max(np.abs(gu), initial=0)):
+                    break
+                Jg = jac_u(z, which)[w_]
+                Mu = np.eye(len(which)) - Jg @ Pu[:, w_]
+                u[w_] = u[w_] - np.linalg.solve(Mu, r)
+            return u
+
+        def solve_u(zF):
+            u = solve_set(zF, E, np.where(np.isin(np.arange(nu), E), u_prev[0], 0.0))
+            u_prev[0] = u
+            return u
+
+        VpPu = sub.Mv
+        Pd1 = P[:, sub.d1]
+
         def zfull(t, w_, side):
             Fv = Fs(t, side)
             zF = P @ Fv + (V @ w_ if sub.d else 0)
             u = solve_u(zF)
             return zF + Pu @ u, Fv, u
 
+        def closure(seed):
+            """The terms whose u' is needed for those of seed: they and the early terms they read."""
+            out, todo = set(), list(seed)
+            while todo:
+                k = todo.pop()
+                if k in out or k not in Eset:
+                    continue
+                out.add(k)
+                todo += list(dep_on[k])
+            return sorted(out)
+
+        Eset = set(E)
+        bigM = 1e-12 * max(np.abs(VpPu).max(initial=0), 1e-300)
+        R_dyn = closure(np.nonzero(np.abs(VpPu).max(axis=0, initial=0) > bigM)[0].tolist()) if sub.d else []
+        R_out = closure(set(R_dyn) | set(np.nonzero(np.abs(Pd1).max(axis=0, initial=0) > 1e-12 * max(
+            np.abs(Pd1).max(initial=0), 1e-300))[0].tolist()))
+
+        def wdot(t, w_, side, z, Fv, u, want_ud=False):
+            Fv = Fv.copy()
+            Fv[sub.ucols] = u
+            Fd = Fs(t, side, shift=1)
+            zp = P @ Fv                         # the constrained part (with u); Ad w carries the rest
+            a_ = Ad @ w_ + Vp @ (Az @ zp + Gz @ Fv - P @ Fd) if sub.d else np.zeros(0)
+            if not (sub.need_ud or want_ud):
+                return a_, None
+            # u' = Jg z' with z' = P F' + Pu u' + Pd1 u'' (none for the early terms) + V w', w' = a_ - Mv u'
+            Jg = jac_u(z, R_out if want_ud else R_dyn)
+            Mv = VpPu
+            lhs = np.eye(nu) - Jg @ Pu + (Jg @ V @ Mv if sub.d else 0)
+            ud = np.linalg.solve(lhs, Jg @ (P @ Fd + (V @ a_ if sub.d else 0)))
+            return (a_ - Mv @ ud if sub.d else a_), ud
+
+        def zfull_out(t, w_, side):
+            """z at an output point: the early terms, their u' where z holds it, then the late terms."""
+            z, Fv, u = zfull(t, w_, side)
+            if not sub.need_ud_out and not Lt:
+                return z, Fv, u
+            _, ud = wdot(t, w_, side, z, Fv, u, want_ud=True)
+            zF = z - Pu @ u + Pd1 @ ud
+            u = solve_set(zF, Lt, u)
+            return zF + Pu @ u, Fv, u
+
         def rhs_factory(b):
             def rhs(t, w_):
                 side = -1 if t >= b else 1
                 z, Fv, u = zfull(t, w_, side)
-                Fv = Fv.copy()
-                Fv[sub.ucols] = u
-                Fd = Fs(t, side, shift=1)
-                zp = P @ Fv                         # the constrained part (with u); Ad w carries the rest
-                a_ = Ad @ w_ + Vp @ (Az @ zp + Gz @ Fv - P @ Fd)
-                if not sub.need_ud:
-                    return a_
-                Jg = jac_u(z)
-                Mv = VpPu
-                lhs = np.eye(nu) - Jg @ Pu + Jg @ V @ Mv
-                ud = np.linalg.solve(lhs, Jg @ (P @ Fd + V @ a_))
-                return a_ - Mv @ ud
+                return wdot(t, w_, side, z, Fv, u)[0]
             return rhs
 
         # initial values: the selected ones (the stand-in's choice), mapped to w by least squares through z
@@ -2300,7 +2418,7 @@ class Ref:
                 return np.zeros(0)
             w_ = np.zeros(sub.d)
             for _ in range(20):
-                z, _, _ = zfull(t, w_, side)
+                z, _, _ = zfull_out(t, w_, side)
                 r = Ls @ z - values
                 if np.max(np.abs(r), initial=0) < 1e-12 * max(1.0, np.max(np.abs(values), initial=0)):
                     break
@@ -2309,7 +2427,7 @@ class Ref:
                     e = np.zeros(sub.d)
                     hh = 1e-7 * max(1.0, abs(w_[k]))
                     e[k] = hh
-                    Jw[:, k] = (Ls @ zfull(t, w_ + e, side)[0] - Ls @ zfull(t, w_ - e, side)[0]) / (2 * hh)
+                    Jw[:, k] = (Ls @ zfull_out(t, w_ + e, side)[0] - Ls @ zfull_out(t, w_ - e, side)[0]) / (2 * hh)
                 w_ = w_ - np.linalg.lstsq(Jw, r, rcond=None)[0]
             return w_
 
@@ -2333,18 +2451,32 @@ class Ref:
                     raise RefError(f"integration failed: {sol.message}")
                 w_end = sol.sol(b)
                 for jj, i in enumerate(idx):
-                    Z[i] = zfull(t_eval[i], sol.y[:, jj], -1 if t_eval[i] >= b else 1)[0]
-                dense.append((a, b, _ODEDense(sol, zfull, b), None, self))
+                    Z[i] = zfull_out(t_eval[i], sol.y[:, jj], -1 if t_eval[i] >= b else 1)[0]
+                dense.append((a, b, _ODEDense(sol, zfull_out, b), None, self))
             else:
                 w_end = w_
                 for i in idx:
-                    Z[i] = zfull(t_eval[i], w_, -1 if t_eval[i] >= b else 1)[0]
+                    Z[i] = zfull_out(t_eval[i], w_, -1 if t_eval[i] >= b else 1)[0]
             if not last:
-                z_left = zfull(b, w_end, -1)[0]
+                z_left = zfull_out(b, w_end, -1)[0]
                 w_ = w_from(b, Ls @ z_left, side=1)
         self.t, self.Z = t_eval, Z
         self._dense = dense
         return self.values(Z)
+
+    def _alt_orientation(self):
+        """The same network with its PMSM cores written for a current feed (u = R v_dq, i_dq = R^T i_L), when that
+        makes path (a) usable; the initial values chosen here carry over (same variables). None otherwise."""
+        if self.sys.orient:
+            return None
+        pm = {e: "c" for e, d in self.net.elems.items() if d["kind"] in ("pmsm_core", "pmsm_damper_core")}
+        if not pm:
+            return None
+        alt = Ref(self.net, orient=pm)
+        if not alt.nonlinear or alt._nl_ode() is None:
+            return None
+        alt.selected = self.selected
+        return alt
 
     def _simulate_nl(self, t_eval, t0=None):
         """The nonlinear system: as an ODE in the linear reduction's coordinates when the nonlinear terms do not need
@@ -2360,6 +2492,11 @@ class Ref:
         sub = self._nl_ode()
         if sub is not None:
             return self._simulate_nl_ode(sub, t_eval, t0)
+        alt = self._alt_orientation()
+        if alt is not None:
+            out = alt._simulate_nl_ode(alt._nl_ode(), t_eval, t0)
+            self.t, self._dense = alt.t, alt._dense
+            return out
         t1 = float(t_eval[-1])
         n, K = self.n, self.MAXORD + 1
         s = self.sys

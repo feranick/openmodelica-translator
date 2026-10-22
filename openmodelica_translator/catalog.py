@@ -1,5 +1,5 @@
 """catalog.py — the curated MSL 4.0.0 components: kinds, ports, parameters (SI), variables, initial values.
-Version: 2026.10.21.20
+Version: 2026.10.21.23
 
 Every name below was checked against the MSL 4.0.0 sources (tag v4.0.0): class paths, port names, parameter
 names and defaults. A kind is either elementary (one MSL class) or composite (parts that are elementary kinds,
@@ -200,8 +200,7 @@ for _n, _c, _e in (("linear_speed_load", "LinearSpeedDependentTorque", "1"), ("q
          {"tau_nominal": P("N.m"), "w_nominal": P("rad/s", gt=0), "TorqueDirection": P("1", True, type="bool")},
          {"tau": "N.m", "w": "rad/s"}, linear=(_e == "1"),
          doc=f"accelerating torque tau = tau_nominal*(w/w_nominal)^{_e} (TorqueDirection true: the same sign both ways, "
-             f"a load opposing motion in either direction needs tau_nominal < 0); linear for the reference only with "
-             f"TorqueDirection false")
+             f"a load opposing motion in either direction needs tau_nominal < 0)")
 kind("angle_sensor", MR + "Sensors.AngleSensor", {"flange": "flange_r", "phi": "out"})
 kind("rot_speed_sensor", MR + "Sensors.SpeedSensor", {"flange": "flange_r", "w": "out"})
 kind("rot_acc_sensor", MR + "Sensors.AccSensor", {"flange": "flange_r", "a": "out"})
