@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with closed-form answers: is the toolchain right?
-Version: 2026.10.21.23
+Version: 2026.10.21.24
 
 Each case is a study plus checks [(result path, expected, tolerance, why)]; tolerances are relative unless
 written {"abs": x}. Chains (chain_feat_modal, chain_b3dt_mass, chain_b3dt_inertia) run the other translator first and only when named; they are skipped
@@ -509,8 +509,9 @@ NONLINEAR_CASES = {"im_grid_slip", "pmsm_current_torque", "im_vf_start", "pmsm_d
 
 
 def omc_only() -> set:
-    """Cases the reference does not cover yet: the AC machines unless OMCT_REF_NONLINEAR=1 (experimental)."""
-    return set() if os.environ.get("OMCT_REF_NONLINEAR", "") in ("1", "true", "yes") else set(NONLINEAR_CASES)
+    """Cases the reference does not cover: the nonlinear ones when OMCT_REF_NONLINEAR=0 switches it off."""
+    from .ref import nonlinear_on
+    return set() if nonlinear_on() else set(NONLINEAR_CASES)
 
 
 def cases() -> dict:

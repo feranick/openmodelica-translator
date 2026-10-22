@@ -1,7 +1,7 @@
-"""test_nonlinear.py — the reference's nonlinear terms (V3.3, behind OMCT_REF_NONLINEAR=1): speed-dependent loads
+"""test_nonlinear.py — the reference's nonlinear terms (V3.3; OMCT_REF_NONLINEAR=0 switches it off): speed-dependent loads
 against closed forms, AC machines (current-fed PMSM with and without damper cage, a line-connected PMSM, the
 induction machine's energy balance), the Radau IIA DAE integrator, and the flag.
-Version: 2026.10.21.23
+Version: 2026.10.21.24
 """
 import copy
 import math
@@ -17,7 +17,7 @@ W50 = 2 * math.pi * 50
 
 @pytest.fixture
 def nl_on(monkeypatch):
-    monkeypatch.setenv("OMCT_REF_NONLINEAR", "1")
+    monkeypatch.delenv("OMCT_REF_NONLINEAR", raising=False)     # on by default
 
 
 def _load_study(load):
@@ -102,13 +102,13 @@ def test_induction_machine_start_energy(nl_on, tmp_path):
     assert res["checks"]["energy"]["ok"] and res["checks"]["energy"]["error_rel"] < 1e-3
 
 
-def test_flag_off_leaves_machines_uncovered(monkeypatch, tmp_path):
-    monkeypatch.delenv("OMCT_REF_NONLINEAR", raising=False)
+def test_flag_0_leaves_machines_uncovered(monkeypatch, tmp_path):
+    monkeypatch.setenv("OMCT_REF_NONLINEAR", "0")
     st = _pmsm_current(stop=0.1)
     r = modelica.translate(st).ref
     assert not r.exact and any("OMCT_REF_NONLINEAR" in x for x in r.not_exact)
     res = runner.run_study("pm", st, tmp_path / "pm", "ref", 60)
-    assert not res["ok"] and "experimental" in res["why"]
+    assert not res["ok"] and "switched off" in res["why"]
 
 
 def test_radau_index1_dae():

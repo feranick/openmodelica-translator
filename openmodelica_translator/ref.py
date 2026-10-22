@@ -1,5 +1,5 @@
 """ref.py — an independent implementation of the study's equations, without OpenModelica.
-Version: 2026.10.21.23
+Version: 2026.10.21.24
 
 Built from the study (network.Net), never from the generated Modelica text, so a translation mistake shows up as
 a mismatch. Each catalog kind writes its equations (the MSL 4.0.0 ones, read from the library's sources) into a
@@ -1924,6 +1924,11 @@ def _null_right(H, n, tol=1e-9):
     return V, rank
 
 
+def nonlinear_on() -> bool:
+    """The nonlinear reference (machines, speed loads): on unless OMCT_REF_NONLINEAR is 0 / false / no / off."""
+    return os.environ.get("OMCT_REF_NONLINEAR", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
 class RefError(ValueError):
     pass
 
@@ -1987,11 +1992,10 @@ class Ref:
             for cf, f in src:
                 G[i, s.fn_idx[id(f)] * K] += cf
         self.nonlinear = bool(s.nl)
-        if self.nonlinear and os.environ.get("OMCT_REF_NONLINEAR", "") not in ("1", "true", "yes"):
-            # the nonlinear reference (V3.3) is still being checked: off unless OMCT_REF_NONLINEAR=1
+        if self.nonlinear and not nonlinear_on():
             self.exact = False
             self.not_exact.append("nonlinear terms (AC machines and drives, speed-dependent loads): the nonlinear "
-                                  "reference is experimental (OMCT_REF_NONLINEAR=1)")
+                                  "reference is switched off (OMCT_REF_NONLINEAR=0)")
         if self.nonlinear:
             # the nonlinear terms: kept for the integrator; their linearisation at z = 0 (angles 0, speeds 0) makes
             # the linear stand-in with the same states, for validation and the choice of initial values

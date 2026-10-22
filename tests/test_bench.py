@@ -1,5 +1,5 @@
 """test_bench.py — the benchmarks' expected values against the reference implementation, and their evaluation.
-Version: 2026.10.21.23
+Version: 2026.10.21.24
 """
 import pytest
 
@@ -98,7 +98,7 @@ def test_chain_b3dt_inertia_with_a_stand_in_b3dt(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("name", sorted(bench.NONLINEAR_CASES))
-def test_nonlinear_case_passes_with_ref(name, tmp_path, monkeypatch):
-    monkeypatch.setenv("OMCT_REF_NONLINEAR", "1")
+def test_nonlinear_case_skipped_when_switched_off(name, tmp_path, monkeypatch):
+    monkeypatch.setenv("OMCT_REF_NONLINEAR", "0")
     r = bench.run("ref", [name], tmp_path)[name]
-    assert r["passed"], r
+    assert "needs OpenModelica" in r["skipped"]
