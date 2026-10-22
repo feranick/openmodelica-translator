@@ -1,5 +1,5 @@
 """omc.py — the only module that runs omc: finding it, its version and MSL, and the build cache.
-Version: 2026.10.21.7
+Version: 2026.10.21.27
 
 find_omc()          {exe, version} or {error}            (OMCT_OMC, else omc on PATH)
 msl_status()        {version, path} or {error}           (loadModel(Modelica, {"4.0.0"}) in a scratch folder)
@@ -168,7 +168,13 @@ def msl_status() -> dict:
     if r["exit"] != 0 or len(vals) < 4 or vals[0] is not True:
         return {"error": f"MSL {msl_version()} not loadable by omc: {vals[1] if len(vals) > 1 else vals!r}; install it with "
                          f"OpenModelica's package manager (BACKENDS.md)"}
-    return {"version": vals[2], "path": str(Path(vals[3]).parent) if vals[3] else None}
+    path = str(Path(vals[3]).parent) if vals[3] else None
+    if str(vals[2]) != msl_version():
+        # omc falls back to a newer compatible MSL when the requested one is missing: builds refuse it
+        return {"error": f"omc loads MSL {vals[2]} ({path}) when asked for {msl_version()}: MSL {msl_version()} is not "
+                         f"installed; install it with OpenModelica's package manager (BACKENDS.md)",
+                "version": vals[2], "path": path}
+    return {"version": vals[2], "path": path}
 
 
 # ---- _init.xml ------------------------------------------------------------------------------------------

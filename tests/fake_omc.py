@@ -26,7 +26,8 @@ FIX = HERE / "fixtures"
 def build(mos: Path):
     text = mos.read_text()
     if "getSourceFile" in text:
-        print('true\n""\n"4.0.0"\n"/fake/libraries/Modelica 4.0.0+maint.om/package.mo"')
+        v = os.environ.get("OMCT_FAKE_MSL", "4.0.0")      # what omc loads (it falls back to a newer MSL)
+        print(f'true\n""\n"{v}"\n"/fake/libraries/Modelica {v}/package.mo"')
         return 0
     cwd = Path.cwd()
     print('true\n""\ntrue\n""\n"4.0.0"\ntrue\n""')

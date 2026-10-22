@@ -1,5 +1,5 @@
 """ref.py — an independent implementation of the study's equations, without OpenModelica.
-Version: 2026.10.21.26
+Version: 2026.10.21.27
 
 Built from the study (network.Net), never from the generated Modelica text, so a translation mistake shows up as
 a mismatch. Each catalog kind writes its equations (the MSL 4.0.0 ones, read from the library's sources) into a
@@ -2284,9 +2284,13 @@ class Ref:
             # rounding in these products scales with |Vp| |Az| |P|: the floor of what counts as zero
             mag = np.abs(Vp).max(initial=0) * max(np.abs(Az).max(initial=0), 1.0) * max(np.abs(P).max(initial=0), 1.0)
             sc = 1e-9 * max(1.0, np.abs(C0).max(initial=0), np.abs(sub.Ad).max(initial=0), mag * 1e-3)
-            if np.abs(C2).max(initial=0) > sc or np.abs(Vp @ Gz[:, d2]).max(initial=0) > sc:
-                self._nlode_why += (f"; u'' in the dynamics ({np.abs(C2).max(initial=0):.3g}, "
-                                    f"{np.abs(Vp @ Gz[:, d2]).max(initial=0):.3g} > {sc:.3g})")
+            # the coefficient of each higher derivative u^(o), o >= 2, in w' (P's u^(o-1) column feeds it too:
+            # judging Gz's column alone flags terms that cancel, as on Spark1)
+            Cs = [C2] + [Vp @ (Az @ P[:, [col(j, o) for j in range(nu)]] + Gz[:, [col(j, o) for j in range(nu)]]
+                               - P[:, [col(j, o - 1) for j in range(nu)]]) for o in range(3, K)]
+            worst = max(np.abs(Co).max(initial=0) for Co in Cs)
+            if worst > sc:
+                self._nlode_why += f"; u'' (or higher) in the dynamics ({worst:.3g} > {sc:.3g})"
                 return None
             if L and (np.abs(C0[:, L]).max(initial=0) > sc or np.abs(C1[:, L]).max(initial=0) > sc):
                 self._nlode_why += "; a late term drives the dynamics"

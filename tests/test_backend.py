@@ -1,6 +1,6 @@
 """test_backend.py — the omc driver, the runner and the result reading: on outputs recorded on mochi
 (tests/fixtures), with a fake omc (tests/fake_omc.py), and with the real OpenModelica when it is installed.
-Version: 2026.10.21.4
+Version: 2026.10.21.27
 """
 import json
 import math
@@ -235,3 +235,13 @@ def test_fake_sweep_one_build(fake, monkeypatch):
     assert len(params) == 6
     assert r["sweep"]["table"][5]["params"] == {"R.R": 2000, "C.v0": 0.5}
     assert r["sweep"]["table"][5]["params_si"] == {"R.R": 2000.0, "C.v0": 0.5}
+
+
+def test_msl_status_refuses_a_fallback_version(fake, monkeypatch):
+    """omc loads a newer MSL when 4.0.0 is missing: status must say so (carbonio, 2026-10-21)."""
+    monkeypatch.setenv("OMCT_FAKE_MSL", "4.1.0")
+    st = omc.msl_status()
+    assert "error" in st and "4.1.0" in st["error"] and "not installed" in st["error"]
+    omc.msl_status.cache_clear()
+    monkeypatch.setenv("OMCT_FAKE_MSL", "4.0.0")
+    assert omc.msl_status() == {"version": "4.0.0", "path": "/fake/libraries/Modelica 4.0.0"}
