@@ -1,6 +1,6 @@
 """mcp_server.py — MCP server: lets LLM-based tools simulate systems (circuits, drives, heat paths, controllers)
 with OpenModelica and the Modelica Standard Library.
-Version: 2026.10.23.2
+Version: 2026.10.23.3
 
 Tools (all JSON):
   study_format      the study format: component kinds, ports, parameters, analyses, conventions. Read it first.
@@ -18,6 +18,11 @@ Tools (all JSON):
 
 Log:  $OMCT_OUT/.server/<time>_<host>_<pid>.log: every tool call (start, end, duration, failure with traceback), signals,
       fatal errors (faulthandler), exit; the last 20 servers' logs are kept.
+Stale: a server keeps the code it started with. When a newer release is installed (shared install: <prefix>/current
+      points elsewhere; checkout: __init__.py has another version), a call that finds the server idle is refused
+      with STALE_SERVER (the router repeats it on a new server) and the server exits; an idle server exits within
+      20 s by itself. Busy servers answer (old code, with a server_stale warning) and exit once idle.
+      OMCT_EXIT_WHEN_STALE=1 always, 0 never; default: shared installs only.
 Run:  omct-mcp                       (stdio)
       omct-mcp --http 8770 [--host 0.0.0.0]
 """
@@ -29,10 +34,13 @@ import faulthandler
 import functools
 import os
 import resource
+import re
 import signal
 import sys
+import threading
 import time
 import traceback
+from pathlib import Path
 
 import anyio.to_thread
 
@@ -41,10 +49,12 @@ from . import api
 try:  # MCP Python SDK 2.x
     from mcp.server.mcpserver import Image
     from mcp.server.mcpserver import MCPServer as _Server
+    from mcp.server.mcpserver.exceptions import ToolError
     _V2 = True
 except ImportError:  # 1.x
     from mcp.server.fastmcp import FastMCP as _Server
     from mcp.server.fastmcp import Image
+    from mcp.server.fastmcp.exceptions import ToolError
     _V2 = False
 
 INSTRUCTIONS = """openmodelica-translator simulates whole systems over time with OpenModelica and the Modelica
@@ -120,6 +130,104 @@ def _summary(kwargs: dict) -> str:
     return " ".join(out)
 
 
+# ---- a stale server: a newer version installed since this process started ----------------------------------
+# A server keeps the code it started with. The router keeps its servers for hours, so after a deploy requests
+# still ran the old release (carbonio, 2026-10-23: 2026.10.23.2 installed, 2026.10.22.1 running). Now a stale
+# server that has nothing running exits: a call that finds it stale gets STALE_MARK (the router then opens a new
+# server, which runs the installed release, and repeats the call there), and a watcher exits it when idle.
+STALE_MARK = "STALE_SERVER"
+VERSION_RE = re.compile(r'^__version__\s*=\s*"([^"]+)"', re.M)
+_STATE = {"inflight": 0, "exiting": False, "checked": 0.0, "why": None, "shared": False}
+_LOCK = threading.Lock()
+
+
+def stale_reason(pkg_dir: Path, running: str) -> tuple[str | None, bool]:
+    """(why this process runs old code or None, shared install?). Shared install (a release under
+    <prefix>/releases with RELEASE.json): <prefix>/current now points to another release. Otherwise: the
+    package's __init__.py on disk carries another version (a checkout or editable install updated in place)."""
+    rel = pkg_dir.parent.parent
+    if (rel / "RELEASE.json").is_file() and rel.parent.name == "releases":
+        cur = rel.parent.parent / "current"
+        try:
+            if cur.exists() and cur.resolve() != rel.resolve():
+                return f"release {cur.resolve().name} is installed; this server runs {rel.name} ({running})", True
+        except OSError:
+            pass
+        return None, True
+    try:
+        m = VERSION_RE.search((pkg_dir / "__init__.py").read_text())
+    except OSError:
+        return None, False
+    if m and m.group(1) != running:
+        return f"version {m.group(1)} is installed; this server runs {running}", False
+    return None, False
+
+
+def _stale() -> str | None:
+    """stale_reason for this process, checked at most every 2 s."""
+    now = time.time()
+    if now - _STATE["checked"] > 2.0:
+        _STATE["why"], _STATE["shared"] = stale_reason(Path(api.__file__).resolve().parent, api.__version__)
+        _STATE["checked"] = now
+    return _STATE["why"]
+
+
+def _may_exit() -> bool:
+    """OMCT_EXIT_WHEN_STALE: 1 always, 0 never; default: in a shared install (its servers are the router's)."""
+    v = os.environ.get("OMCT_EXIT_WHEN_STALE", "").strip()
+    return v == "1" or (v != "0" and _STATE["shared"])
+
+
+def _pool_busy() -> bool:
+    """Studies still running in this process's worker pool (they would die with it)."""
+    return any(not r.ready() for jobs in api._POOL.jobs.values() for r in jobs.values())
+
+
+def _exit_soon(why: str, delay: float) -> None:
+    """Exits in `delay` s (an answer in flight reaches the caller first). Caller holds _LOCK."""
+    if _STATE["exiting"]:
+        return
+    _STATE["exiting"] = True
+    slog(f"exit: {why}")
+    sys.stderr.write(f"omct: {STALE_MARK}: exiting to pick up the new code: {why}\n")
+    sys.stderr.flush()
+
+    def go():
+        time.sleep(delay)
+        api._close_pool()
+        os._exit(0)
+    threading.Thread(target=go, daemon=True, name="omct-exit").start()
+
+
+def _enter_call() -> str | None:
+    """Counts a call in. Returns a STALE_MARK message (the call is refused) when this server is stale, may exit
+    and has nothing else running; otherwise None."""
+    with _LOCK:
+        why = _stale()
+        if why and _may_exit() and (_STATE["exiting"] or (not _STATE["inflight"] and not _pool_busy())):
+            _exit_soon(why, 1.0)
+            return (f"{STALE_MARK}: {why}. This server is exiting so that the next one runs the installed version: "
+                    f"call again.")
+        _STATE["inflight"] += 1
+        return None
+
+
+def _leave_call() -> None:
+    with _LOCK:
+        _STATE["inflight"] -= 1
+
+
+def _watch_install(period: float = 20.0) -> None:
+    """Exits this server when it is stale, may exit and is idle (no calls, no pool studies)."""
+    def loop():
+        while True:
+            time.sleep(period)
+            with _LOCK:
+                if _stale() and _may_exit() and not _STATE["inflight"] and not _pool_busy():
+                    _exit_soon(_STATE["why"], 0.0)
+    threading.Thread(target=loop, daemon=True, name="omct-watch-install").start()
+
+
 def _logged(fn):
     """Logs the call, and runs the (blocking) tool in a worker thread: run_studies and study_status wait up to 50 s,
     and on an event loop they would block every other request and ping of the connection meanwhile (MCP SDK
@@ -128,13 +236,30 @@ def _logged(fn):
     async def wrap(*args, **kwargs):
         t0 = time.time()
         slog(f"call {fn.__name__} {_summary(kwargs)}")
+        refused = _enter_call()
+        if refused:
+            slog(f"refused {fn.__name__}: {refused}")
+            raise ToolError(refused)
         try:
             r = await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
-        except BaseException as exc:                     # noqa: BLE001 - logged, then raised as before
+        except Exception as exc:                         # noqa: BLE001 - logged, then raised as a ToolError
             slog(f"FAIL {fn.__name__} after {time.time() - t0:.1f} s: {type(exc).__name__}: {exc}\n"
                  + traceback.format_exc())
+            if isinstance(exc, ToolError):
+                raise
+            # as a ToolError the message reaches the caller (SDK 2.x hides the text of any other exception)
+            where = f" (traceback: {_LOG['path']})" if _LOG.get("path") else ""
+            raise ToolError(f"{type(exc).__name__}: {exc}{where}") from exc
+        except BaseException as exc:                     # noqa: BLE001 - cancellation, exit: logged, re-raised
+            slog(f"FAIL {fn.__name__} after {time.time() - t0:.1f} s: {type(exc).__name__}")
             raise
+        finally:
+            _leave_call()
         slog(f"done {fn.__name__} {time.time() - t0:.1f} s")
+        if _STATE["why"] and isinstance(r, dict):
+            r = {**r, "server_stale": f"{_STATE['why']}: this answer comes from the old code"
+                                      + ("; the server restarts when idle" if _may_exit() else
+                                         "; restart the MCP server")}
         return r
     return wrap
 
@@ -143,6 +268,7 @@ def _start_log() -> None:
     try:
         p = _log_path()
         _LOG["file"] = open(p, "a", buffering=1)
+        _LOG["path"] = str(p)
     except OSError:
         return
     faulthandler.enable(file=_LOG["file"])              # a fatal signal (segfault, abort) dumps every thread here
@@ -268,6 +394,7 @@ def main() -> None:
     ap.add_argument("--host", default="127.0.0.1")
     a = ap.parse_args()
     _start_log()
+    _watch_install()
     if a.http is None:
         server.run()
     elif _V2:
