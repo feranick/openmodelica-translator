@@ -1,6 +1,6 @@
 """test_slurm.py — SLURM execution (llm-translators docs/EXECUTION.md) against a fake SLURM (tests/fake_slurm.py),
 with the reference solver (no OpenModelica needed).
-Version: 2026.10.21.8
+Version: 2026.10.22.1
 """
 from __future__ import annotations
 
@@ -114,6 +114,28 @@ def test_sizing_sweep_cpus_mem_time(slurm, monkeypatch):
     s = out["studies"]["sw"]
     assert s["ok"] and s["sweep"]["points"] == 6 and s["sweep"]["procs"] == 3, s
     assert s["execution"]["procs_requested"] == 3 and s["execution"]["procs_used"] == 3
+
+
+def test_validation_gives_the_job_estimate(slurm, monkeypatch):
+    """docs/EXECUTION.md "Estimates in validation": {minutes, procs, mem_mb} from the job sizing, valid studies only."""
+    sw = study(RC, sweep={"params": {"R.R": [500, 1000, 2000, 4000, 8000, 16000]}}, run={"procs": 3})
+    monkeypatch.setenv("OMCT_SOLVER", "ref")
+    r = api.validate({"sw": sw, "rc": study(RC), "bad": {"components": {}}})
+    e = r["studies"]["sw"]["estimate"]
+    assert e == {"minutes": executor.estimate(sw, "ref")["minutes"], "procs": 3, "mem_mb": 1024 + 256 * 3}
+    assert e["minutes"] == round(executor.estimate_minutes(sw, "ref"), 3)
+    assert r["studies"]["rc"]["estimate"]["procs"] == 1
+    assert "estimate" not in r["studies"]["bad"]
+    # memory as for --mem: the study's run.mem, else --mem in OMCT_SLURM_ARGS, else OMCT_SLURM_MEM
+    assert executor.estimate(study(RC, run={"mem": "3G"}), "ref")["mem_mb"] == 3072
+    monkeypatch.setenv("OMCT_SLURM_ARGS", "--mem=16G --partition=x")
+    assert executor.estimate(study(RC), "ref")["mem_mb"] == 16384
+    monkeypatch.delenv("OMCT_SLURM_ARGS")
+    monkeypatch.setenv("OMCT_SLURM_MEM", "2G")
+    assert executor.estimate(study(RC), "ref")["mem_mb"] == 2048
+    # a build to do with omc: the compile CPUs, and its time in the minutes
+    e = executor.estimate(study(RC), "omc")
+    assert e["procs"] == 4 and e["minutes"] > executor.estimate(study(RC), "ref")["minutes"]
 
 
 def test_queued_then_cancelled(slurm, monkeypatch):

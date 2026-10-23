@@ -92,6 +92,8 @@ A value from another tool goes into the study as `{"value", "unit", "from", "wha
 
 `outputs.<name>.{final, min, max, initial, t_min, t_max}`, `derived.<name>.*`, `steady.<name>.*`, `linearization.{eigenvalues, modes, dc_gain, bode}`, `sweep.table`.
 
+`validate_studies` → `studies.<name>.estimate: {minutes, procs, mem_mb}` for each valid study: what its run would ask for (the same sizing as a SLURM job; minutes an upper bound), read by llm-translators' router to place runs.
+
 ## The checker
 
 - **Validation** before anything runs: kinds, parameters and ranges, units, ports and connector types, a ground in every circuit, a reference or inertia in every mechanical system, a capacitor or a temperature boundary in every thermal network, every signal input driven once, outputs, analysis, sweep (only values that can be overridden), `expect`, `run` within the machine's caps; then the reference system finds singular models and initial values that are not free.
@@ -192,6 +194,7 @@ Pictures: `"images": true` in a study writes `images/outputs.png` (one panel per
 
 | Version | Changes |
 |---|---|
+| 2026.10.22.1 | `validate_studies` returns, for each valid study, `estimate: {minutes, procs, mem_mb}` from the job sizing (llm-translators docs/EXECUTION.md "Estimates in validation"; its router places runs with it): procs as the job asks (size cap, compile CPUs on a cache miss), memory as for `--mem`, minutes the upper estimate (now with the transient AC machines' reference time) |
 | 2026.10.21.28 | MSL is loaded with `requireExactVersion=true` (builds and status): with several MSL versions installed, omc took the newest compatible one (4.1.0) for "4.0.0" although 4.0.0+maint.om was there (carbonio, probed) |
 | 2026.10.21.27 | The nonlinear reference's ODE path judges u'' and higher derivatives in the dynamics by their whole coefficient (a separate check on one piece flagged terms that cancel: Spark1); the MSL status check compares the version omc actually loads: omc falls back to a newer compatible MSL (4.1.0) when 4.0.0 is missing, and status said "ok" while every build refused it (carbonio) |
 | 2026.10.21.26 | The nonlinear reference's ODE path is less sensitive to rounding (Spark1 rejected the current-fed damper PMSM): the particular solution's rank and residual are judged relative to the system's size, with one refinement step; the "is it zero" floor for the dynamics' u'' terms scales with |Vp| |Az| |P|; when the path gives up it says why (`_nlode_why`) |

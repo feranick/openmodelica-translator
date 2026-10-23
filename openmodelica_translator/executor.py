@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study (kind: threads).
-Version: 2026.10.21.9
+Version: 2026.10.22.1
 
 Implements llm-translators' docs/EXECUTION.md (from cfd-translator's executor). Settings (environment):
     OMCT_EXECUTOR          local | slurm (local)
@@ -121,6 +121,9 @@ def _intervals(study: dict) -> int:
     return 1 if an.get("kind") == "linearize" else int(an.get("intervals", 500))
 
 
+AC_TRANSIENT = {"induction_machine", "pmsm", "pmsm_damper"}
+
+
 def estimate_minutes(study: dict, solver: str = "omc") -> float:
     """An upper estimate of the study's time: the build, then every point (convergence runs twice)."""
     if solver == "ref":
@@ -134,6 +137,9 @@ def estimate_minutes(study: dict, solver: str = "omc") -> float:
         one = 1.5 * float(rec["study_s"]) * (_intervals(study) / max(int(rec.get("intervals") or 1), 1)) ** 0.5
     else:
         one = per * _intervals(study) + 2.0 + 1e-4 * _intervals(study)   # start-up, reading, checks, reference
+        kinds = {str(c.get("kind")) for c in (study.get("components") or {}).values() if isinstance(c, dict)}
+        if kinds & AC_TRANSIENT:
+            one += 0.01 * _intervals(study)       # the nonlinear reference of a transient AC machine (12-40 s at 5000)
     secs = (0 if hit else 6.0) + runs * one / max(1, min(procs_of(study), _points(study)))
     return secs / 60.0
 
@@ -156,6 +162,27 @@ def mem_for_job(study: dict, cpus: int) -> str | None:
     if s == "auto":
         return f"{1024 + 256 * cpus}M"
     return os.environ["OMCT_SLURM_MEM"].strip()
+
+
+def mem_mb_for_job(study: dict, cpus: int) -> int:
+    """The memory a job reserves, in MB: the study's run.mem, else --mem from OMCT_SLURM_ARGS, else
+    OMCT_SLURM_MEM (auto: 1024 + 256 per CPU, as submit asks for)."""
+    from .format import mem_mb
+    m = mem_for_job(study, cpus)
+    if m is None:
+        for a in shlex.split(os.environ.get("OMCT_SLURM_ARGS", "")):
+            if a.startswith("--mem="):
+                m = a.split("=", 1)[1]
+    v = mem_mb(m) if m else None
+    return int(math.ceil(v)) if v else 1024 + 256 * cpus
+
+
+def estimate(study: dict, solver: str = "omc") -> dict:
+    """{minutes, procs, mem_mb}: what the job would ask for (llm-translators' router places runs with it;
+    docs/EXECUTION.md "Estimates in validation"). The same functions size SLURM jobs: procs after the size cap
+    (compile threads on a cache miss), memory as for --mem, minutes the upper estimate of the run time."""
+    cpus = cpus_for_job(study, solver)
+    return {"minutes": round(estimate_minutes(study, solver), 3), "procs": cpus, "mem_mb": mem_mb_for_job(study, cpus)}
 
 
 def use_slurm(study: dict, solver: str) -> bool:

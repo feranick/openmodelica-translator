@@ -1,5 +1,5 @@
 """api.py — what the CLI and the MCP server call. JSON in, JSON out.
-Version: 2026.10.21.23
+Version: 2026.10.22.1
 
     tool_status()                  versions; omc, MSL, the C compiler, the build cache; the executor and its caps
     study_format()                 the study format, with status
@@ -83,7 +83,20 @@ def study_format() -> dict:
 
 
 def validate(studies: dict) -> dict:
-    return _validate(studies)
+    """Static checks; each valid study also gets "estimate": {minutes, procs, mem_mb} (the router's placement)."""
+    from .executor import estimate
+    out = _validate(studies)
+    try:
+        solver = _solver(None)
+    except ValueError:
+        solver = "omc"
+    for name, r in out.get("studies", {}).items():
+        if r.get("ok"):
+            try:
+                r["estimate"] = estimate(studies[name], solver)
+            except Exception:  # noqa: BLE001 - an estimate is optional; validation stands without it
+                pass
+    return out
 
 
 # ---- the worker pool ---------------------------------------------------------------------------------

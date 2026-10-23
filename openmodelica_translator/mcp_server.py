@@ -1,6 +1,6 @@
 """mcp_server.py — MCP server: lets LLM-based tools simulate systems (circuits, drives, heat paths, controllers)
 with OpenModelica and the Modelica Standard Library.
-Version: 2026.10.21.25
+Version: 2026.10.22.1
 
 Tools (all JSON):
   study_format      the study format: component kinds, ports, parameters, analyses, conventions. Read it first.
@@ -77,7 +77,8 @@ def study_format() -> dict:
 
 @server.tool()
 def validate_studies(studies: dict) -> dict:
-    """Static checks of studies given as {name: study}. Returns per study ok, errors (each says the fix), warnings."""
+    """Static checks of studies given as {name: study}. Returns per study ok, errors (each says the fix), warnings,
+    and for a valid study estimate {minutes (upper bound), procs, mem_mb}: what its run would ask for."""
     return api.validate(studies)
 
 
