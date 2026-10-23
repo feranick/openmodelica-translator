@@ -1,6 +1,6 @@
 """test_backend.py — the omc driver, the runner and the result reading: on outputs recorded on mochi
 (tests/fixtures), with a fake omc (tests/fake_omc.py), and with the real OpenModelica when it is installed.
-Version: 2026.10.23.1
+Version: 2026.10.23.4
 """
 import json
 import math
@@ -261,3 +261,43 @@ def test_no_override_file_when_nothing_to_override(tmp_path, monkeypatch):
     assert not any(c.startswith("-overrideFile") for c in seen["cmd"])
     simrun.simulate(tmp_path, tmp_path / "r", {"R.R": 1.0}, start=0.0, stop=1.0, intervals=10, tolerance=1e-6)
     assert any(c.startswith("-overrideFile") for c in seen["cmd"])
+
+
+def test_converge_constant_outputs_are_noise_not_failures():
+    """Balance outputs constant by design (total water, energy error): their range is solver noise that shrinks
+    with the tolerance; dividing a change by it flagged converged studies unreliable (2026-10-23)."""
+    import numpy as np
+    from openmodelica_translator.runner import judge_converge
+    t = np.linspace(0, 1, 501)
+    rng = np.random.default_rng(1)
+    tol, lim = 1e-7, 1e-5
+    # an energy error around 0: noise 1e-6 at tol, 1e-7 at tol/10
+    e1, e2 = 1e-6 * rng.standard_normal(t.size), 1e-7 * rng.standard_normal(t.size)
+    j = judge_converge(e1, e2, lim, tol)
+    assert j["ok"] and j["judged"] is False and "noise" in j["why"]
+    # a total that is constant up to noise
+    w1, w2 = 0.5 + 1e-12 * rng.standard_normal(t.size), 0.5 + 1e-13 * rng.standard_normal(t.size)
+    assert judge_converge(w1, w2, lim, tol)["ok"]
+    # a physical output is still judged on its range: 3.5e-5 of it is over lim = 1e-5 (tol 1e-7), 5e-6 is not
+    y1 = np.sin(6 * t)
+    assert judge_converge(y1, y1 + 3.5e-5 * np.ptp(y1), lim, tol)["ok"] is False
+    assert judge_converge(y1, y1 + 5e-6 * np.ptp(y1), lim, tol)["ok"]
+    # a physical output that is badly unconverged is not taken for noise (its range does not shrink)
+    assert judge_converge(y1, 0.9 * y1, lim, tol)["ok"] is False
+    # abs_tol judges by the absolute change
+    j = judge_converge(e1, e2, lim, tol, abs_tol=1e-5)
+    assert j["ok"] and j["abs_tol"] == 1e-5 and j["change_abs"] < 1e-5
+    assert not judge_converge(e1, e2 + 1e-3, lim, tol, abs_tol=1e-5)["ok"]
+    assert judge_converge(np.zeros(5), np.zeros(5), lim, tol)["ok"]
+
+
+def test_converge_abs_tol_validation():
+    from openmodelica_translator import api
+    good = study(RC, converge={"abs_tol": {"v": "1 mV"}})
+    assert api.validate({"s": good})["studies"]["s"]["ok"], api.validate({"s": good})
+    for bad, msg in (({"abs_tol": {"nope": 1}}, "not an output"), ({"abs_tol": {"v": "1 s"}}, "abs_tol.v"),
+                     ({"abs_tol": {"v": 0}}, "> 0"), ({"other": 1}, "abs_tol"), ("yes", "abs_tol")):
+        r = api.validate({"s": study(RC, converge=bad)})["studies"]["s"]
+        assert not r["ok"] and any(msg in e for e in r["errors"]), (bad, r["errors"])
+    from openmodelica_translator.runner import converge_abs_tol
+    assert abs(converge_abs_tol(good, {"v": "V"})["v"] - 1e-3) < 1e-15

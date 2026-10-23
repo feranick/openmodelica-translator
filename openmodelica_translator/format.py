@@ -1,5 +1,5 @@
 """format.py — the study format (study_format) and the static checks (validate, validate_study).
-Version: 2026.10.23.2
+Version: 2026.10.23.4
 
 validate_study(study) -> {ok, errors, warnings}: nothing runs (no omc). It resolves the network (network.build),
 checks outputs, analysis, derived quantities, sweep, expect, run (against the OMCT_MAX_* caps) and images, then
@@ -25,7 +25,10 @@ STUDY_KEYS = {
     "sweep": "{params: {'comp.param' or 'comp.v0': [values]}, mode: grid | zip (grid), report: [result paths] "
              "(default: outputs.*.final and derived.*)}: one build, one run per point (run.procs at a time) -> "
              "sweep.table[i].{params, params_si, values, ok, reliable}",
-    "converge": "true: rerun at tolerance/10; outputs that change more than 10 x tolerance x range -> unreliable",
+    "converge": "true | {abs_tol: {output: value}}: rerun at tolerance/10; an output that changes by more than "
+                "max(1e-6, 100 x tolerance) of its range (more on large offsets) -> unreliable; abs_tol: those outputs "
+                "judged by their absolute change instead; outputs constant by design (balance totals, energy errors: "
+                "their variation is solver noise, shrinking with the tolerance) are reported in not_judged",
     "expect": "[{quantity: dotted result path, value, tol (relative, 0.02) | abs}]",
     "run": "{timeout_s, mem, procs (parallel sweep points), queue}: within this machine's caps (status.executor.caps)",
     "images": "true: time plots of the outputs (+ Bode for linearize, a sweep plot); false: none",
@@ -476,11 +479,35 @@ def validate_study(st: dict) -> dict:
     _expect_errors(st, errs)
     errs += run_errors(st)
     _images_errors(st, errs)
-    if "converge" in st and not isinstance(st["converge"], bool):
-        errs.append("converge: true or false")
+    _converge_errors(st, units, errs)
     if not errs:
         errs += _reference_errors(st, net, warns)
     return {"ok": not errs, "errors": errs, "warnings": warns}
+
+
+def _converge_errors(st, units, errs) -> None:
+    c = st.get("converge")
+    if c is None or isinstance(c, bool):
+        return
+    if not isinstance(c, dict) or set(c) - {"abs_tol"}:
+        errs.append("converge: true, false or {abs_tol: {output: value}}")
+        return
+    at = c.get("abs_tol") or {}
+    if not isinstance(at, dict):
+        errs.append("converge.abs_tol: {output name: absolute tolerance (number or with units)}")
+        return
+    from .units import UnitError, to_si
+    for o, v in at.items():
+        if o not in units:
+            errs.append(f"converge.abs_tol.{o}: not an output ({', '.join(sorted(units)) or 'none'})")
+            continue
+        try:
+            x = float(to_si(v, units[o] or "1", where=f"converge.abs_tol.{o}")[0])
+        except UnitError as exc:
+            errs.append(str(exc))
+            continue
+        if not x > 0:
+            errs.append(f"converge.abs_tol.{o}: must be > 0")
 
 
 def _reference_errors(st, net, warns) -> list[str]:
@@ -544,6 +571,7 @@ def _validate_escape(st, errs, warns):
     _analysis_errors(st.get("analysis"), errs, warns)
     _derived_errors(st, outs if isinstance(outs, dict) else {}, {}, errs)
     _expect_errors(st, errs)
+    _converge_errors(st, {o: "1" for o in outs} if isinstance(outs, dict) else {}, errs)   # SI numbers
     errs += run_errors(st)
     warns.append("escape hatch: no catalog checks and no reference implementation")
     return {"ok": not errs, "errors": errs, "warnings": warns}

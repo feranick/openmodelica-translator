@@ -1,5 +1,5 @@
 """runner.py — one study end to end: validate, translate, build (or reuse), run, read, check, write the result.
-Version: 2026.10.21.22
+Version: 2026.10.23.4
 
 run_study(name, study, folder, solver, timeout, cancel) -> the result dict, also written atomically to
 <folder>/<name>.json. solver: "omc" (OpenModelica) or "ref" (the reference implementation only: linear
@@ -365,7 +365,8 @@ def _run(name, study, folder, solver, timeout, cancel) -> dict:
             if "modelica" not in study:
                 _reference(out, study, tr, r.time, vals, tol)
             if study.get("converge"):
-                _converge(out, b, folder, run_overrides, tr, r, vals, t0, t1, n, tol, method, filt, timeout, cancel)
+                _converge(out, b, folder, run_overrides, tr, r, vals, t0, t1, n, tol, method, filt, timeout, cancel,
+                          converge_abs_tol(study, units))
     if lin:
         from .linear import analyse, bode_freqs, read
         L = read(sim["linear"])
@@ -375,7 +376,46 @@ def _run(name, study, folder, solver, timeout, cancel) -> dict:
     return _verdict(out, study)
 
 
-def _converge(out, b, folder, overrides, tr, r, vals, t0, t1, n, tol, method, filt, timeout, cancel):
+def converge_abs_tol(study, units) -> dict:
+    """converge.abs_tol {output: value (with units)} in SI; {} for converge: true."""
+    from .units import to_si
+    c = study.get("converge")
+    if not isinstance(c, dict):
+        return {}
+    return {o: float(to_si(v, units.get(o, "1") or "1", where=f"converge.abs_tol.{o}")[0])
+            for o, v in (c.get("abs_tol") or {}).items()}
+
+
+NOISE_SHRINK = 0.3      # an output whose range at tolerance/10 is at most this fraction of its range at tolerance ...
+NOISE_CHANGE = 2.0      # ... and whose change is at most this many times that range is solver noise around a constant
+
+
+def judge_converge(y1, y2, lim, tol, abs_tol=None) -> dict:
+    """One output of the converge check: y1 at the tolerance, y2 at tolerance/10 on the same points.
+    abs_tol: judged by the largest absolute change. Otherwise by the change relative to the range, except an output
+    that is constant by design (a balance total, an energy error): its range is solver noise, shrinking with the
+    tolerance, and dividing by it made any change look huge (2026-10-23): reported as noise, not judged."""
+    y1, y2 = np.asarray(y1, float), np.asarray(y2, float)
+    if y1.size == 0:
+        return {"ok": True, "change_rel": 0.0, "tol": lim}
+    d = float(np.max(np.abs(y1 - y2)))
+    if abs_tol is not None:
+        return {"ok": d <= abs_tol, "change_abs": d, "abs_tol": abs_tol}
+    r1, r2 = float(np.max(y1) - np.min(y1)), float(np.max(y2) - np.min(y2))
+    mag = max(float(np.max(np.abs(y1))), float(np.max(np.abs(y2))))
+    if mag == 0.0:
+        return {"ok": True, "change_rel": 0.0, "tol": lim}
+    if r1 > 0 and r2 <= NOISE_SHRINK * r1 and d <= NOISE_CHANGE * r1:
+        return {"ok": True, "judged": False, "change_abs": d, "range": r1, "range_tol10": r2,
+                "why": "constant up to solver noise (its variation shrinks with the tolerance): not judged; "
+                       "converge.abs_tol judges it by an absolute change"}
+    rng = r1 or mag
+    rel = d / rng
+    lt = allowed(y1, lim, tol)
+    return {"ok": rel <= lt, "change_rel": rel, "tol": lt}
+
+
+def _converge(out, b, folder, overrides, tr, r, vals, t0, t1, n, tol, method, filt, timeout, cancel, abs_tol):
     """A second run at tolerance / 10; outputs compared on the first run's non-event points."""
     from . import simrun
     from .matfile import Result
@@ -389,18 +429,22 @@ def _converge(out, b, folder, overrides, tr, r, vals, t0, t1, n, tol, method, fi
     r2 = Result(sim["result"])
     m1, m2 = not_events(r.time), not_events(r2.time)
     lim = max(1e-6, 100 * tol)
-    diffs, lims, ok = {}, {}, True
+    per = {}
     for oname, (terms, _) in tr.outputs.items():
         y2 = combine(r2, terms)
         yi = np.interp(r.time[m1], r2.time[m2], y2[m2])
-        y1 = vals[oname][m1]
-        rng = float(np.max(y1) - np.min(y1)) or max(float(np.max(np.abs(y1))), 1e-300)
-        diffs[oname] = float(np.max(np.abs(y1 - yi)) / rng) if y1.size else 0.0
-        lims[oname] = allowed(y1, lim, tol) if y1.size else lim
-        ok = ok and diffs[oname] <= lims[oname]
-    worst = max(diffs.values()) if diffs else 0.0
-    out["checks"]["converge"] = {"ok": ok, "tolerance": tol / 10, "max_change_rel": worst, "tol": lim,
-                                 "per_output": diffs, "tol_per_output": lims}
+        per[oname] = judge_converge(vals[oname][m1], yi, lim, tol, abs_tol.get(oname))
+    ok = all(p["ok"] for p in per.values())
+    rels = [p["change_rel"] for p in per.values() if "change_rel" in p]
+    out["checks"]["converge"] = {"ok": ok, "tolerance": tol / 10, "max_change_rel": max(rels, default=0.0),
+                                 "tol": lim, "per_output": {o: p.get("change_rel", p.get("change_abs"))
+                                                            for o, p in per.items()},
+                                 "tol_per_output": {o: p.get("tol", p.get("abs_tol")) for o, p in per.items()
+                                                    if p.get("judged", True)},
+                                 "detail": {o: p for o, p in per.items() if "change_rel" not in p or not p["ok"]}}
+    noise = sorted(o for o, p in per.items() if p.get("judged") is False)
+    if noise:
+        out["checks"]["converge"]["not_judged"] = noise
 
 
 def _run_ref(study, tr, out, units) -> dict:
