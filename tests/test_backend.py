@@ -1,6 +1,6 @@
 """test_backend.py — the omc driver, the runner and the result reading: on outputs recorded on mochi
 (tests/fixtures), with a fake omc (tests/fake_omc.py), and with the real OpenModelica when it is installed.
-Version: 2026.10.21.27
+Version: 2026.10.23.1
 """
 import json
 import math
@@ -245,3 +245,19 @@ def test_msl_status_refuses_a_fallback_version(fake, monkeypatch):
     omc.msl_status.cache_clear()
     monkeypatch.setenv("OMCT_FAKE_MSL", "4.0.0")
     assert omc.msl_status() == {"version": "4.0.0", "path": "/fake/libraries/Modelica 4.0.0"}
+
+
+def test_no_override_file_when_nothing_to_override(tmp_path, monkeypatch):
+    """OpenModelica 1.27.1 cannot read an empty override file: an escape-hatch model runs without the flag."""
+    from openmodelica_translator import simrun
+    seen = {}
+
+    def fake_run(cmd, cwd, timeout, log, cancel=None, env=None):
+        seen["cmd"] = [str(c) for c in cmd]
+        Path(log).write_text("")
+        return {"exit": 0, "seconds": 0.0, "timed_out": False, "cancelled": False}
+    monkeypatch.setattr(simrun, "run_proc", fake_run)
+    simrun.simulate(tmp_path, tmp_path / "r", {}, start=0.0, stop=1.0, intervals=10, tolerance=1e-6)
+    assert not any(c.startswith("-overrideFile") for c in seen["cmd"])
+    simrun.simulate(tmp_path, tmp_path / "r", {"R.R": 1.0}, start=0.0, stop=1.0, intervals=10, tolerance=1e-6)
+    assert any(c.startswith("-overrideFile") for c in seen["cmd"])

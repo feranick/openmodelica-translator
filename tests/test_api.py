@@ -1,6 +1,6 @@
 """test_api.py — the API (worker pool, request folders, status from files, cancel, jobs, benchmarks, pictures)
 and the MCP server's tool list. Runs with the reference solver: no OpenModelica needed.
-Version: 2026.10.21.23
+Version: 2026.10.23.2
 """
 import asyncio
 import json
@@ -98,3 +98,33 @@ def test_sweep_processes_outside_the_pool(out):
     if r["pending"]:
         r = api.status(r["request"], 40)
     assert r["studies"]["s"]["sweep"]["parallel"] == "threads"
+
+
+def test_escape_hatch_sweep_applies_values_by_path():
+    """A sweep over a custom model: the points' values are Modelica paths, applied with the override file."""
+    from openmodelica_translator import modelica as M
+    from openmodelica_translator.sweep import point_study
+    esc = {"modelica": {"model": "M", "text": "model M\n  parameter Real R = 1;\nend M;\n"}, "outputs": {"R": "R"},
+           "analysis": {"kind": "transient", "stop_time": 1}, "sweep": {"params": {"R": [1, 2]}}}
+    assert api.validate({"e": esc})["studies"]["e"]["ok"]
+    st = point_study(esc, {"R": 2})
+    assert M.escape_translation(st).overrides == {"R": 2.0}
+    assert M.escape_translation({k: v for k, v in esc.items() if k != "sweep"}).overrides == {}
+    bad = dict(esc, sweep={"params": {"R": ["x"]}})
+    assert not api.validate({"e": bad})["studies"]["e"]["ok"]
+
+
+def test_tools_run_off_the_event_loop_and_are_logged(tmp_path, monkeypatch):
+    """Each tool runs in a worker thread (a long wait must not block pings and other calls) and is logged."""
+    import inspect
+    from openmodelica_translator import mcp_server as S
+    assert inspect.iscoroutinefunction(S.run_studies) and inspect.iscoroutinefunction(S.jobs)
+    assert list(inspect.signature(S.run_studies).parameters) == ["studies", "solver", "wait_s"]
+    monkeypatch.setenv("OMCT_OUT", str(tmp_path))
+    p = S._log_path()                                    # (not _start_log: no signal handlers in the test process)
+    with open(p, "a") as f:
+        monkeypatch.setitem(S._LOG, "file", f)
+        out = asyncio.run(S.jobs(limit=1))
+    assert "requests" in out
+    log = p.read_text()
+    assert "call jobs" in log and "done jobs" in log

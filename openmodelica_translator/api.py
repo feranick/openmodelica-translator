@@ -1,5 +1,5 @@
 """api.py — what the CLI and the MCP server call. JSON in, JSON out.
-Version: 2026.10.22.1
+Version: 2026.10.23.2
 
     tool_status()                  versions; omc, MSL, the C compiler, the build cache; the executor and its caps
     study_format()                 the study format, with status
@@ -23,6 +23,7 @@ the same results; a local study still running in a process that ended is reporte
 """
 from __future__ import annotations
 
+import atexit
 import base64
 import json
 import multiprocessing as mp
@@ -120,6 +121,15 @@ class _Pool:
 
 
 _POOL = _Pool()
+
+
+def _close_pool():
+    if _POOL.pool is not None:
+        _POOL.pool.terminate()           # workers are daemons; quiet at exit (no Pool.__del__ noise)
+        _POOL.pool = None
+
+
+atexit.register(_close_pool)
 
 
 def _request_dir(prefix: str) -> Path:

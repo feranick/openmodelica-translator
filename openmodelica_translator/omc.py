@@ -1,5 +1,5 @@
 """omc.py — the only module that runs omc: finding it, its version and MSL, and the build cache.
-Version: 2026.10.21.28
+Version: 2026.10.23.1
 
 find_omc()          {exe, version} or {error}            (OMCT_OMC, else omc on PATH)
 msl_status()        {version, path} or {error}           (loadModel(Modelica, {"4.0.0"}, requireExactVersion=true))
@@ -62,7 +62,7 @@ def find_omc() -> dict:
     if not exe:
         return {"error": "omc not found (install OpenModelica, or set OMCT_OMC to the omc executable)"}
     try:
-        r = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=60)
+        r = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"error": f"{exe} --version failed: {exc}"}
     m = re.search(r"OpenModelica\s+v?([0-9][^\s]*)", r.stdout + r.stderr)

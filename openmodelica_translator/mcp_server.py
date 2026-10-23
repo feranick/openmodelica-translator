@@ -1,6 +1,6 @@
 """mcp_server.py — MCP server: lets LLM-based tools simulate systems (circuits, drives, heat paths, controllers)
 with OpenModelica and the Modelica Standard Library.
-Version: 2026.10.22.1
+Version: 2026.10.23.2
 
 Tools (all JSON):
   study_format      the study format: component kinds, ports, parameters, analyses, conventions. Read it first.
@@ -16,12 +16,25 @@ Tools (all JSON):
   render_images     more pictures of a finished study, without running again
   get_file          a written file as base64 (for callers on another machine)
 
+Log:  $OMCT_OUT/.server/<time>_<host>_<pid>.log: every tool call (start, end, duration, failure with traceback), signals,
+      fatal errors (faulthandler), exit; the last 20 servers' logs are kept.
 Run:  omct-mcp                       (stdio)
       omct-mcp --http 8770 [--host 0.0.0.0]
 """
 from __future__ import annotations
 
 import argparse
+import atexit
+import faulthandler
+import functools
+import os
+import resource
+import signal
+import sys
+import time
+import traceback
+
+import anyio.to_thread
 
 from . import api
 
@@ -68,7 +81,89 @@ sweep.table.<i>.{params, values, reliable}."""
 server = _Server("openmodelica-translator", instructions=INSTRUCTIONS)
 
 
+# ---- the server's own log: what it did before a disconnect (behind the router its stderr is not kept) --------
+def _log_path():
+    import socket
+    d = api.out_root() / ".server"
+    d.mkdir(parents=True, exist_ok=True)
+    logs = sorted(d.glob("*.log"), key=lambda p: p.stat().st_mtime)
+    for old in logs[:-20]:                               # keep the last 20 servers' logs
+        old.unlink(missing_ok=True)
+    return d / f"{time.strftime('%Y%m%d_%H%M%S')}_{socket.gethostname().split('.')[0]}_{os.getpid()}.log"
+
+
+_LOG = {"file": None}
+
+
+def slog(msg: str) -> None:
+    f = _LOG["file"]
+    if f is None:
+        return
+    try:
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} pid {os.getpid()} maxrss {rss} {msg}\n")
+        f.flush()
+    except Exception:  # noqa: BLE001 - logging never breaks a call
+        pass
+
+
+def _summary(kwargs: dict) -> str:
+    out = []
+    for k, v in kwargs.items():
+        if isinstance(v, dict):
+            names = list(v)[:6]
+            flags = sorted({f for st in v.values() if isinstance(st, dict) for f in ("sweep", "converge", "modelica", "run")
+                            if st.get(f)})
+            out.append(f"{k}={names}{' ' + ','.join(flags) if flags else ''}")
+        else:
+            out.append(f"{k}={str(v)[:80]}")
+    return " ".join(out)
+
+
+def _logged(fn):
+    """Logs the call, and runs the (blocking) tool in a worker thread: run_studies and study_status wait up to 50 s,
+    and on an event loop they would block every other request and ping of the connection meanwhile (MCP SDK
+    versions differ in whether they do this themselves)."""
+    @functools.wraps(fn)
+    async def wrap(*args, **kwargs):
+        t0 = time.time()
+        slog(f"call {fn.__name__} {_summary(kwargs)}")
+        try:
+            r = await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
+        except BaseException as exc:                     # noqa: BLE001 - logged, then raised as before
+            slog(f"FAIL {fn.__name__} after {time.time() - t0:.1f} s: {type(exc).__name__}: {exc}\n"
+                 + traceback.format_exc())
+            raise
+        slog(f"done {fn.__name__} {time.time() - t0:.1f} s")
+        return r
+    return wrap
+
+
+def _start_log() -> None:
+    try:
+        p = _log_path()
+        _LOG["file"] = open(p, "a", buffering=1)
+    except OSError:
+        return
+    faulthandler.enable(file=_LOG["file"])              # a fatal signal (segfault, abort) dumps every thread here
+    slog(f"start omct {api.__version__} argv {sys.argv[1:]} python {sys.version.split()[0]}")
+    atexit.register(lambda: slog("exit"))
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        def handler(signum, frame, prev=signal.getsignal(sig)):
+            slog(f"signal {signal.Signals(signum).name} received")
+            signal.signal(signum, prev if callable(prev) or prev in (signal.SIG_DFL, signal.SIG_IGN) else signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
+        signal.signal(sig, handler)
+    old_hook = sys.excepthook
+
+    def hook(t, v, tb):
+        slog("uncaught " + "".join(traceback.format_exception(t, v, tb)))
+        old_hook(t, v, tb)
+    sys.excepthook = hook
+
+
 @server.tool()
+@_logged
 def study_format() -> dict:
     """The study format: component kinds by domain (ports, parameters with SI units and defaults, variables,
     initial values), analyses, derived quantities, conventions, an example; and whether omc and MSL are found."""
@@ -76,6 +171,7 @@ def study_format() -> dict:
 
 
 @server.tool()
+@_logged
 def validate_studies(studies: dict) -> dict:
     """Static checks of studies given as {name: study}. Returns per study ok, errors (each says the fix), warnings,
     and for a valid study estimate {minutes (upper bound), procs, mem_mb}: what its run would ask for."""
@@ -83,6 +179,7 @@ def validate_studies(studies: dict) -> dict:
 
 
 @server.tool()
+@_logged
 def run_studies(studies: dict, solver: str = "auto", wait_s: float = 45) -> dict:
     """Builds (or reuses) the Modelica model of each study, runs it with OpenModelica and checks it. Per study:
     outputs, derived quantities, steady values or the linearisation, checks (balance, initialisation, solver,
@@ -92,6 +189,7 @@ def run_studies(studies: dict, solver: str = "auto", wait_s: float = 45) -> dict
 
 
 @server.tool()
+@_logged
 def study_status(request: str, wait_s: float = 45) -> dict:
     """The studies of a run_studies request (its 'request' path): finished ones with their results, the others in
     'pending' with their stage. Waits up to wait_s seconds (at most 50)."""
@@ -99,6 +197,7 @@ def study_status(request: str, wait_s: float = 45) -> dict:
 
 
 @server.tool()
+@_logged
 def get_model(study: dict, name: str = "study") -> dict:
     """The generated Modelica model (model.mo), the omc build script (build.mos) and the values applied at run
     time (params.txt) of one study, and which initial values are fixed; nothing runs."""
@@ -106,6 +205,7 @@ def get_model(study: dict, name: str = "study") -> dict:
 
 
 @server.tool()
+@_logged
 def run_benchmarks(names: list[str] | None = None, solver: str = "auto", wait_s: float = 30) -> dict:
     """Runs the benchmark studies with closed-form answers (RC, RLC step and poles, mass-spring-damper, inertia,
     DC motor, thermal RC and steady state, two-mass drive, PI loop, a sweep) and reports pass or fail per check;
@@ -115,6 +215,7 @@ def run_benchmarks(names: list[str] | None = None, solver: str = "auto", wait_s:
 
 
 @server.tool()
+@_logged
 def bench_status(bench: str, wait_s: float = 45) -> dict:
     """Pass/fail of benchmarks started by run_benchmarks (its 'bench' folder): finished cases with their checks,
     the others pending."""
@@ -122,6 +223,7 @@ def bench_status(bench: str, wait_s: float = 45) -> dict:
 
 
 @server.tool()
+@_logged
 def jobs(limit: int = 20, active: bool = False) -> dict:
     """Recent requests on this machine (from any conversation) with each study's state; active=True: only
     requests with studies still running."""
@@ -129,12 +231,14 @@ def jobs(limit: int = 20, active: bool = False) -> dict:
 
 
 @server.tool()
+@_logged
 def cancel(request: str, names: list[str] | None = None) -> dict:
     """Stops a request's studies (or the named ones) with a cancel flag; returns their states."""
     return api.cancel(request, names)
 
 
 @server.tool()
+@_logged
 def get_image(path: str) -> Image:
     """A PNG written by run_studies (results' images.<name>.path) or render_images: time plots of the outputs (one
     panel per unit) or Bode plots. You see it, but the user usually does not (tool results are hidden or collapsed
@@ -143,6 +247,7 @@ def get_image(path: str) -> Image:
 
 
 @server.tool()
+@_logged
 def render_images(study_folder: str, images: list | bool = True) -> dict:
     """New pictures of a finished study without running again: study_folder is <request>/<study name> (the folder
     holding <name>.json). images: true (the defaults) or [{name, outputs: [...], window: [t0, t1]} | {name,
@@ -151,6 +256,7 @@ def render_images(study_folder: str, images: list | bool = True) -> dict:
 
 
 @server.tool()
+@_logged
 def get_file(path: str, max_mb: float = 20) -> dict:
     """A file written by run_studies (a path from its result: model.mo, result.mat, sim.log, ...) as base64."""
     return api.read_file(path, max_mb)
@@ -161,6 +267,7 @@ def main() -> None:
     ap.add_argument("--http", type=int, help="serve MCP over streamable HTTP on this port (default: stdio)")
     ap.add_argument("--host", default="127.0.0.1")
     a = ap.parse_args()
+    _start_log()
     if a.http is None:
         server.run()
     elif _V2:

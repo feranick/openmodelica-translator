@@ -1,5 +1,5 @@
 """format.py — the study format (study_format) and the static checks (validate, validate_study).
-Version: 2026.10.21.25
+Version: 2026.10.23.2
 
 validate_study(study) -> {ok, errors, warnings}: nothing runs (no omc). It resolves the network (network.build),
 checks outputs, analysis, derived quantities, sweep, expect, run (against the OMCT_MAX_* caps) and images, then
@@ -29,8 +29,8 @@ STUDY_KEYS = {
     "expect": "[{quantity: dotted result path, value, tol (relative, 0.02) | abs}]",
     "run": "{timeout_s, mem, procs (parallel sweep points), queue}: within this machine's caps (status.executor.caps)",
     "images": "true: time plots of the outputs (+ Bode for linearize, a sweep plot); false: none",
-    "modelica": "escape hatch {text: Modelica source, model: name}: outputs are then Modelica paths; checked, but no "
-                "catalog checks and no reference",
+    "modelica": "escape hatch {text: Modelica source, model: name, values: {path: number}}: outputs, values and "
+                "sweep params are Modelica paths (values applied at run time, no rebuild); no catalog checks, no reference",
 }
 ANALYSES = {
     "transient": "{stop_time (s), start_time (0), intervals (500), tolerance (1e-6), method: dassl | ida}",
@@ -529,10 +529,18 @@ def _validate_escape(st, errs, warns):
     outs = st.get("outputs")
     if not isinstance(outs, dict) or not outs or not all(isinstance(v, str) for v in outs.values()):
         errs.append("outputs: {name: 'Modelica.path.of.variable'} (with the escape hatch, Modelica paths)")
+    if isinstance(m, dict) and m.get("values") is not None:
+        vals = m["values"]
+        if not isinstance(vals, dict) or not all(isinstance(k, str) and isinstance(v, (int, float)) and not isinstance(v, bool)
+                                                  for k, v in vals.items()):
+            errs.append("modelica.values: {'parameter.path': number} (applied at run time)")
     if st.get("sweep") is not None:
         sw = st["sweep"]
         if not isinstance(sw, dict) or not isinstance(sw.get("params"), dict):
             errs.append("sweep: {params: {'modelica.parameter.path': [values]}}")
+        elif not all(isinstance(k, str) and isinstance(v, list) and v and all(isinstance(x, (int, float)) and
+                     not isinstance(x, bool) for x in v) for k, v in sw["params"].items()):
+            errs.append("sweep.params: {'modelica.parameter.path': [numbers]} (with the escape hatch, SI numbers)")
     _analysis_errors(st.get("analysis"), errs, warns)
     _derived_errors(st, outs if isinstance(outs, dict) else {}, {}, errs)
     _expect_errors(st, errs)

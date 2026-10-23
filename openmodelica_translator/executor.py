@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study (kind: threads).
-Version: 2026.10.22.1
+Version: 2026.10.23.1
 
 Implements llm-translators' docs/EXECUTION.md (from cfd-translator's executor). Settings (environment):
     OMCT_EXECUTOR          local | slurm (local)
@@ -264,7 +264,7 @@ def submit(request: Path, name: str, study: dict, solver: str = "omc") -> dict:
     script.chmod(0o755)
     cmd = ["sbatch", "--parsable"] + sbatch_args(study, mem) + [str(script)]
     try:
-        r = subprocess.run(cmd, cwd=str(d), capture_output=True, text=True, timeout=60)
+        r = subprocess.run(cmd, cwd=str(d), capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
         ok, msg = r.returncode == 0 and r.stdout.strip(), (r.stderr or r.stdout).strip()
     except (OSError, subprocess.TimeoutExpired) as exc:
         ok, msg = False, str(exc)
@@ -303,7 +303,7 @@ def run_study_job(request: str, name: str) -> int:
 # ---- the queue ---------------------------------------------------------------------------------
 def _run(cmd: list[str], timeout: float = 20):
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
         return r.returncode, r.stdout, r.stderr
     except (OSError, subprocess.TimeoutExpired) as exc:
         return 1, "", str(exc)

@@ -1,5 +1,5 @@
 """modelica.py — a study -> the Modelica model, the omc build script, and the values applied at run time.
-Version: 2026.10.21.28
+Version: 2026.10.23.2
 
 translate(study, name) -> Translation with
   text        model.mo: `model omct_model` with one declaration per element (sorted), every value in SI with
@@ -238,7 +238,9 @@ def escape_translation(study: dict) -> Translation:
     tr.model, tr.text = m["model"], m["text"]
     tr.structure = m["model"] + "\n" + m["text"]
     tr.outputs = {k: ([(1.0, v)], "") for k, v in study["outputs"].items()}
-    tr.overrides, tr.fixed, tr.dependent, tr.missing, tr.net, tr.ref = {}, [], [], 0, None, None
+    # modelica.values {path: number}: applied with the override file (a sweep's points; no rebuild)
+    tr.overrides = {k: float(v) for k, v in (m.get("values") or {}).items()}
+    tr.fixed, tr.dependent, tr.missing, tr.net, tr.ref = [], [], 0, None, None
     return tr
 
 

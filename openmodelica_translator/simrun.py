@@ -1,5 +1,5 @@
 """simrun.py — run a compiled model from the cache, read its log, check the overrides.
-Version: 2026.10.21.2
+Version: 2026.10.23.1
 
 simulate(build_dir, run_dir, overrides, ...) -> {ok, exit, seconds, log, stats, result, linear, errors, warnings}
   - writes params.txt (every value, modelica.override_file) and runs
@@ -109,11 +109,14 @@ def simulate(build_dir, run_dir, overrides: dict, *, start: float, stop: float, 
     run_dir.mkdir(parents=True, exist_ok=True)
     pf = run_dir / f"params{tag}.txt"
     pf.write_text(override_file(overrides))
+    # OpenModelica 1.27.1 cannot read an empty override file ("could not read overrideFile ...: Success"): a
+    # model with nothing to override (an escape-hatch model) runs without the flag
     res = f"result{tag}.mat"
     stop_ = stop if linearize_at is None else max(linearize_at, start)
     if stop_ <= start:
         stop_ = start + 1e-6              # linearising at the start: a minimal run
-    cmd = [build_dir / MODEL, f"-inputPath={build_dir}", f"-outputPath={run_dir}", f"-overrideFile={pf}", f"-r={res}",
+    cmd = [build_dir / MODEL, f"-inputPath={build_dir}", f"-outputPath={run_dir}"] + \
+          ([f"-overrideFile={pf}"] if overrides else []) + [f"-r={res}",
            f"-startTime={start!r}", f"-stopTime={stop_!r}", f"-stepSize={(stop_ - start) / max(intervals, 1)!r}",
            f"-tolerance={tolerance!r}", f"-s={method}", "-lv=LOG_STATS", f"-alarm={max(1, int(timeout))}"]
     if variable_filter:

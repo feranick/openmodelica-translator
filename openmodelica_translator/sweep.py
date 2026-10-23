@@ -1,5 +1,5 @@
 """sweep.py — one study, many value sets: one build, one run per point, a table.
-Version: 2026.10.21.9
+Version: 2026.10.23.2
 
 run_sweep(name, study, folder, solver, timeout, cancel, run_point) -> the study's result with
     sweep: {points, ok_points, reliable_points, params, columns, table: [{point, params, values, ok, reliable,
@@ -29,6 +29,9 @@ def point_study(study: dict, values: dict) -> dict:
     st.pop("sweep", None)
     st.pop("images", None)
     st.pop("expect", None)
+    if "modelica" in st:                 # the escape hatch: the point's values are Modelica paths, applied at run time
+        st["modelica"] = dict(st["modelica"], values={**(st["modelica"].get("values") or {}), **values})
+        return st
     for key, v in values.items():
         comp, _, p = key.partition(".")
         st["components"][comp][p] = v
