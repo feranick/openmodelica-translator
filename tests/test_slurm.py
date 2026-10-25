@@ -1,6 +1,6 @@
 """test_slurm.py — SLURM execution (llm-translators docs/EXECUTION.md) against a fake SLURM (tests/fake_slurm.py),
 with the reference solver (no OpenModelica needed).
-Version: 2026.10.25.2
+Version: 2026.10.25.3
 """
 from __future__ import annotations
 
@@ -207,18 +207,18 @@ def test_bench_through_slurm(slurm, monkeypatch):
 
 
 # ---- clusters of several nodes (llm-translators docs/EXECUTION.md, "Clusters of several nodes") -------------
-SINFO = "spark-5da5 spark-5da5 20\nspark-0808 spark-0808 20\n"
-SCONTROL = ("NodeName=spark-5da5 Arch=aarch64 NodeAddr=100.77.175.91 NodeHostName=spark-5da5 CPUTot=20\n"
-            "NodeName=spark-0808 Arch=aarch64 NodeAddr=100.76.107.42 NodeHostName=spark-0808 CPUTot=20\n")
+SCONTROL = ("NodeName=spark-5da5 Arch=aarch64 CPUTot=20 NodeAddr=100.77.175.91 NodeHostName=spark-5da5\n"
+            "NodeName=spark-0808 Arch=aarch64 CPUTot=12 NodeAddr=100.76.107.42 NodeHostName=spark-0808\n")
 
 
 @pytest.fixture
 def cluster(monkeypatch):
+    """A fake two-node cluster (the sparks), seen from spark-5da5."""
     from openmodelica_translator import executor as X
     calls = []
-    answers = {"sinfo": (0, SINFO, ""), "scontrol": (0, SCONTROL, ""), "hostname": (0, "10.0.0.5 100.76.107.42\n", "")}
+    answers = {"scontrol": (0, SCONTROL, ""), "hostname": (0, "10.0.0.5 100.76.107.42\n", "")}
 
-    def run(cmd, timeout=20):
+    def run(cmd, timeout=10):
         calls.append(cmd[0])
         return answers[cmd[0]]
     monkeypatch.setattr(X, "_run", run)
@@ -238,7 +238,7 @@ def test_node_local_by_host_name_and_by_address(cluster, monkeypatch):
     assert st["nodes"] == [{"name": "spark-5da5", "cpus": 20}]
     monkeypatch.setattr(X, "_NODES", {})
     monkeypatch.setattr("socket.gethostname", lambda: "dgx-peer")       # host name unknown to SLURM: by address
-    assert X.local_node() == "spark-0808"
+    assert X.local_node() == "spark-0808" and X.node_cpus() == 12
 
 
 def test_node_any_list_args_and_one_node(cluster, monkeypatch):
@@ -253,19 +253,71 @@ def test_node_any_list_args_and_one_node(cluster, monkeypatch):
     assert X.node_list() is None
     monkeypatch.delenv("OMCT_SLURM_ARGS")
     monkeypatch.setattr(X, "_NODES", {})
-    answers["sinfo"] = (0, "mochi mochi 40\n", "")
+    answers["scontrol"] = (0, "NodeName=mochi CPUTot=40 NodeAddr=mochi NodeHostName=mochi\n", "")
     assert X.node_list() is None                                         # one node: nothing to pin
 
 
 def test_node_failure_is_not_remembered(cluster, monkeypatch):
     X, answers, calls = cluster
-    answers["sinfo"] = (1, "", "Unable to contact slurm controller")
-    assert X.node_list() is None
-    answers["sinfo"] = (0, SINFO, "")
+    answers["scontrol"] = (1, "", "Unable to contact slurm controller")
+    assert X.node_list() is None and X.local_node() is None
+    answers["scontrol"] = (0, SCONTROL, "")
     assert X.node_list() == "spark-5da5"                                 # asked again once the controller is back
-    n = calls.count("sinfo")
+    n = calls.count("scontrol")
     X.node_list()
-    assert calls.count("sinfo") == n                                     # then remembered
+    assert calls.count("scontrol") == n                                  # then remembered
+
+
+def test_job_size_capped_at_this_nodes_cpus(cluster, monkeypatch):
+    """A sweep asking 32 points at once gets this node's 20 CPUs (spark-5da5), not the cluster's 32; with any,
+    the largest node's."""
+    X, _, _ = cluster
+    st = study(RC, sweep={"params": {"R.R": [float(i + 1) for i in range(40)]}}, run={"procs": 32})
+    monkeypatch.setattr(X, "cache_hit", lambda s: True)
+    assert X.cpus_for_job(st) == 20 and X.estimate(st)["procs"] == 20
+    monkeypatch.setattr("socket.gethostname", lambda: "spark-0808")
+    monkeypatch.setattr(X, "_NODES", {})
+    assert X.cpus_for_job(st) == 12
+    monkeypatch.setenv("OMCT_SLURM_NODE", "any")
+    assert X.cpus_for_job(st) == 20
+
+
+def test_slurm_args_with_several_options(cluster, monkeypatch):
+    """OMCT_SLURM_ARGS holds several options: split like a shell; its --mem wins over OMCT_SLURM_MEM, its
+    --nodelist over OMCT_SLURM_NODE; the estimate asks what the job asks."""
+    X, _, _ = cluster
+    monkeypatch.setattr(X, "cache_hit", lambda s: True)
+    st = study(RC)
+    monkeypatch.setenv("OMCT_SLURM_ARGS", "--mem=8G --nodelist=spark-5da5")
+    monkeypatch.setenv("OMCT_SLURM_MEM", "2G")
+    assert X.mem_for_job(st, 1) is None and X.mem_mb_for_job(st, 1) == 8192 and X.estimate(st)["mem_mb"] == 8192
+    assert X.node_list() is None and "--nodelist" not in X.job_script(Path("/r"), "s", 1, 20)
+    assert X.sbatch_args(st, X.mem_for_job(st, 1)) == ["--mem=8G", "--nodelist=spark-5da5"]
+    monkeypatch.setenv("OMCT_SLURM_ARGS", "--mem 6G   -w spark-5da5")       # separate values, extra spaces
+    assert X.mem_mb_for_job(st, 1) == 6144 and X.node_list() is None
+    monkeypatch.setenv("OMCT_SLURM_ARGS", "--mem-per-cpu=1G --qos='high prio'")
+    assert X.mem_mb_for_job(st, 3) == 3072
+    assert X.sbatch_args(st, None) == ["--mem-per-cpu=1G", "--qos=high prio"]
+
+
+def test_sbatch_that_hangs_fails_the_rest_at_once(tmp_path, monkeypatch):
+    """A controller that does not answer: the first submit waits SBATCH_TIMEOUT, the others fail at once, so
+    run_studies ends within its wait."""
+    import subprocess as sp
+    from openmodelica_translator import executor as X
+    monkeypatch.setenv("OMCT_EXECUTOR", "slurm")
+    monkeypatch.setattr(X, "_SBATCH_DOWN", {})
+    monkeypatch.setattr(X, "node_list", lambda: None)
+    n = {"calls": 0}
+
+    def hang(cmd, **kw):
+        n["calls"] += cmd[0] == "sbatch"
+        raise sp.TimeoutExpired(cmd, kw.get("timeout"))
+    monkeypatch.setattr(X.subprocess, "run", hang)
+    for i in range(3):
+        r = X.submit(tmp_path, f"s{i}", study(RC))
+        assert not r["ok"] and "slurmctld" in r["why"]
+    assert n["calls"] == 1
 
 
 def test_job_lost_on_another_node(cluster, tmp_path, monkeypatch):
@@ -280,3 +332,22 @@ def test_job_lost_on_another_node(cluster, tmp_path, monkeypatch):
     assert out["s"]["state"] == "failed" and "node spark-0808" in out["s"]["why"] and "OMCT_SLURM_NODE" in out["s"]["why"]
     X._JOB_NODE["7"] = "spark-5da5"                                      # its own node: the usual diagnosis
     assert "OMCT_SLURM_NODE" not in X.slurm_states(req, ["s"], write=False)["s"]["why"]
+
+
+def test_status_ends_within_its_wait_when_the_queue_is_slow(monkeypatch, tmp_path):
+    """A slow squeue (a busy controller) must not push study_status past its wait: no collect starts that could
+    not end in time."""
+    from openmodelica_translator import api as A
+    req = tmp_path / "r"
+    req.mkdir()
+    (req / "request.json").write_text(json.dumps({"names": ["s"], "solver": "ref", "studies": {"s": {}}}))
+    calls = []
+
+    def slow(folder):
+        calls.append(time.time())
+        time.sleep(0.8)
+        return {"done": False, "progress": {"s": {"state": "queued"}}}
+    monkeypatch.setattr(A, "_collect", slow)
+    t0 = time.time()
+    A.status(str(req), 2.0)
+    assert time.time() - t0 <= 2.3 and len(calls) >= 1

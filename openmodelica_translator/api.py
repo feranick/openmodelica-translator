@@ -1,5 +1,5 @@
 """api.py — what the CLI and the MCP server call. JSON in, JSON out.
-Version: 2026.10.23.2
+Version: 2026.10.25.3
 
     tool_status()                  versions; omc, MSL, the C compiler, the build cache; the executor and its caps
     study_format()                 the study format, with status
@@ -279,8 +279,10 @@ def status(request: str, wait: float = 0.0) -> dict:
     t0 = time.time()
     t_end = t0 + max(0.0, float(wait))
     while True:
+        tc = time.time()
         res = _collect(folder)
-        if res["done"] or time.time() >= t_end:
+        took = time.time() - tc                  # another collect must also end by t_end (squeue can be slow)
+        if res["done"] or time.time() + took + 0.5 >= t_end:
             return res
         # SLURM jobs do not need this process: give quick ones up to 15 s, then return them pending
         prog = res.get("progress", {})
@@ -294,8 +296,9 @@ def run(studies: dict, solver: str | None = None, wait: float | None = None) -> 
     if wait is None:
         folder = start(studies, solver, inline=True)
         return status(str(folder), 0)
+    t0 = time.time()
     folder = start(studies, solver)
-    return status(str(folder), wait)
+    return status(str(folder), max(0.0, wait - (time.time() - t0)))     # submitting counts against the wait
 
 
 def _requests(limit: int, prefix: str = "run"):

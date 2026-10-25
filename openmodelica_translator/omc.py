@@ -1,5 +1,5 @@
 """omc.py — the only module that runs omc: finding it, its version and MSL, and the build cache.
-Version: 2026.10.23.1
+Version: 2026.10.25.3
 
 find_omc()          {exe, version} or {error}            (OMCT_OMC, else omc on PATH)
 msl_status()        {version, path} or {error}           (loadModel(Modelica, {"4.0.0"}, requireExactVersion=true))
@@ -153,8 +153,23 @@ def messages(err: str, text: str = "") -> list[dict]:
     return out
 
 
-@lru_cache(maxsize=1)
+_MSL: dict = {}
+
+
 def msl_status() -> dict:
+    """MSL as omc loads it; remembered only when it loads (a failure, e.g. a slow first load, is checked again)."""
+    if "ok" not in _MSL:
+        r = _msl_status()
+        if "error" in r:
+            return r
+        _MSL["ok"] = r
+    return _MSL["ok"]
+
+
+msl_status.cache_clear = _MSL.clear      # as with lru_cache (tests)
+
+
+def _msl_status() -> dict:
     o = find_omc()
     if "error" in o:
         return {"error": o["error"]}
@@ -163,7 +178,7 @@ def msl_status() -> dict:
         mos = Path(d) / "msl.mos"
         mos.write_text(f'loadModel(Modelica, {{"{msl_version()}"}}, requireExactVersion=true); getErrorString();\n'
                        'getVersion(Modelica);\ngetSourceFile(Modelica);\n')
-        r = run_proc([o["exe"], str(mos)], d, 120, Path(d) / "msl.log")
+        r = run_proc([o["exe"], str(mos)], d, 40, Path(d) / "msl.log")     # inside a tool call (study_format)
         vals = parse_values((Path(d) / "msl.log").read_text(errors="replace"))
     if r["exit"] != 0 or len(vals) < 4 or vals[0] is not True:
         return {"error": f"MSL {msl_version()} not loadable by omc: {vals[1] if len(vals) > 1 else vals!r}; install it with "

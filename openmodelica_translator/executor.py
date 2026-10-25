@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study (kind: threads).
-Version: 2026.10.25.2
+Version: 2026.10.25.3
 
 Implements llm-translators' docs/EXECUTION.md (from cfd-translator's executor). Settings (environment):
     OMCT_EXECUTOR          local | slurm (local)
@@ -153,7 +153,9 @@ def cpus_for_job(study: dict, solver: str = "omc") -> int:
     if solver != "ref" and not cache_hit(study):
         n = max(n, int(os.environ.get("OMCT_COMPILE_PROCS", "4") or 4))
     cap = caps().get("procs")
-    return max(1, min(n, int(cap)) if cap else n)
+    n = min(n, int(cap)) if cap else n
+    nc = node_cpus() if kind() == "slurm" else None     # a job cannot have more CPUs than its node
+    return max(1, min(n, nc) if nc else n)
 
 
 def mem_for_job(study: dict, cpus: int) -> str | None:
@@ -173,11 +175,18 @@ def mem_mb_for_job(study: dict, cpus: int) -> int:
     OMCT_SLURM_MEM (auto: 1024 + 256 per CPU, as submit asks for)."""
     from .format import mem_mb
     m = mem_for_job(study, cpus)
+    per_cpu = False
     if m is None:
-        for a in shlex.split(os.environ.get("OMCT_SLURM_ARGS", "")):
-            if a.startswith("--mem="):
-                m = a.split("=", 1)[1]
+        args = shlex.split(os.environ.get("OMCT_SLURM_ARGS", ""))
+        for i, a in enumerate(args):
+            for opt in ("--mem", "--mem-per-cpu"):
+                if a == opt and i + 1 < len(args):
+                    m, per_cpu = args[i + 1], opt == "--mem-per-cpu"
+                elif a.startswith(opt + "="):
+                    m, per_cpu = a.split("=", 1)[1], opt == "--mem-per-cpu"
     v = mem_mb(m) if m else None
+    if v and per_cpu:
+        v *= cpus
     return int(math.ceil(v)) if v else 1024 + 256 * cpus
 
 
@@ -205,24 +214,37 @@ _NODES: dict = {}
 _JOB_NODE: dict = {}
 
 
-def slurm_nodes(all_nodes: bool = False) -> list[dict]:
-    """The SLURM nodes jobs may go to (all of the cluster's with all_nodes): [{name, host, cpus}] from sinfo;
-    [] without SLURM."""
+def _cluster() -> list[dict]:
+    """The cluster's nodes from `scontrol -o show node`: [{name, host, addr, cpus}]; [] without SLURM. Remembered
+    only when scontrol answered: a controller that is down is asked again next time."""
     if kind() != "slurm":
         return []
-    nl = _NODES.get("v")
-    if nl is None:
-        rc, out, _ = _run(["sinfo", "-h", "-N", "-o", "%N %n %c"])
-        nodes = {}
-        for line in out.splitlines() if rc == 0 else []:
-            f = line.split()
-            if len(f) >= 3 and f[2].isdigit():
-                nodes[f[0]] = {"name": f[0], "host": f[1], "cpus": int(f[2])}
-        nl = list(nodes.values())
-        if rc == 0:                     # a failure (controller down) is asked again next time, not remembered
-            _NODES["v"] = nl
+    if "v" in _NODES:
+        return _NODES["v"]
+    rc, out, _ = _run(["scontrol", "-o", "show", "node"])
+    recs = []
+    for line in out.splitlines() if rc == 0 else []:
+        kv = dict(re.findall(r"(\w+)=(\S+)", line))
+        if kv.get("NodeName"):
+            cpus = kv.get("CPUTot", "")
+            recs.append({"name": kv["NodeName"], "host": kv.get("NodeHostName", kv["NodeName"]),
+                         "addr": kv.get("NodeAddr", ""), "cpus": int(cpus) if cpus.isdigit() else None})
+    if rc == 0:
+        _NODES["v"] = recs
+    return recs
+
+
+def slurm_nodes(all_nodes: bool = False) -> list[dict]:
+    """The SLURM nodes this machine's jobs may go to (all of the cluster's with all_nodes)."""
+    nl = _cluster()
     want = None if all_nodes else node_list()
     return [n for n in nl if not want or n["name"] in want.split(",")]
+
+
+def node_cpus() -> int | None:
+    """The most CPUs one job can get: the largest allowed node's (this node's with local), not the cluster's."""
+    c = [n["cpus"] for n in slurm_nodes() if n.get("cpus")]
+    return max(c) if c else None
 
 
 def _my_addresses() -> set:
@@ -240,24 +262,20 @@ def _my_addresses() -> set:
 
 
 def local_node() -> str | None:
-    """This machine's node in the SLURM cluster: `scontrol -o show node`, the host name matched to NodeName or
-    NodeHostName, else one of this machine's addresses to NodeAddr (the sparks use their Tailscale addresses)."""
+    """This machine's node in the SLURM cluster: the entry whose NodeName or NodeHostName is the host name, else
+    whose NodeAddr is one of this machine's addresses (the sparks use their Tailscale addresses)."""
+    import socket
+    recs = _cluster()
+    if not recs:
+        return None
     if "local" in _NODES:
         return _NODES["local"]
-    import socket
     host = socket.gethostname().split(".")[0]
-    rc, out, _ = _run(["scontrol", "-o", "show", "node"])
-    recs = []
-    for line in out.splitlines() if rc == 0 else []:
-        kv = dict(re.findall(r"(\w+)=(\S+)", line))
-        if kv.get("NodeName"):
-            recs.append(kv)
-    hit = next((r["NodeName"] for r in recs if host in (r["NodeName"], r.get("NodeHostName", "").split(".")[0])), None)
-    if hit is None and recs:
+    hit = next((r["name"] for r in recs if host in (r["name"], r["host"].split(".")[0])), None)
+    if hit is None:
         mine = _my_addresses()
-        hit = next((r["NodeName"] for r in recs if r.get("NodeAddr") in mine), None)
-    if rc == 0:
-        _NODES["local"] = hit
+        hit = next((r["name"] for r in recs if r["addr"] in mine), None)
+    _NODES["local"] = hit
     return hit
 
 
@@ -346,6 +364,10 @@ def job_script(request: Path, name: str, cpus: int, tmin: int) -> str:
         ""])
 
 
+SBATCH_TIMEOUT = 15.0
+_SBATCH_DOWN: dict = {}
+
+
 def submit(request: Path, name: str, study: dict, solver: str = "omc") -> dict:
     """Writes <request>/<name>/job.sh, submits it, writes job.json. On failure writes the study's result
     {"ok": false, "why": "could not submit: ..."} (never falls back to local)."""
@@ -359,11 +381,20 @@ def submit(request: Path, name: str, study: dict, solver: str = "omc") -> dict:
     script.write_text(job_script(request, name, cpus, tmin))
     script.chmod(0o755)
     cmd = ["sbatch", "--parsable"] + sbatch_args(study, mem) + [str(script)]
-    try:
-        r = subprocess.run(cmd, cwd=str(d), capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
-        ok, msg = r.returncode == 0 and r.stdout.strip(), (r.stderr or r.stdout).strip()
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        ok, msg = False, str(exc)
+    if _SBATCH_DOWN.get("until", 0) > time.time():
+        ok, msg = False, _SBATCH_DOWN["why"]
+    else:
+        try:
+            r = subprocess.run(cmd, cwd=str(d), capture_output=True, text=True, timeout=SBATCH_TIMEOUT,
+                               stdin=subprocess.DEVNULL)
+            ok, msg = r.returncode == 0 and r.stdout.strip(), (r.stderr or r.stdout).strip()
+        except subprocess.TimeoutExpired:
+            # the controller does not answer: the request's other studies fail at once instead of waiting too
+            # (a tool call must end within its wait_s, at most 50 s)
+            ok, msg = False, f"sbatch did not answer within {SBATCH_TIMEOUT:g} s (is slurmctld running?)"
+            _SBATCH_DOWN.update(until=time.time() + 30, why=msg)
+        except OSError as exc:
+            ok, msg = False, str(exc)
     if not ok:
         res = {"name": name, "ok": False, "state": "failed", "why": f"could not submit: {msg[-500:] or 'sbatch failed'}",
                "reliable": False, "unreliable_because": ["could not submit"],
@@ -398,7 +429,7 @@ def run_study_job(request: str, name: str) -> int:
 
 
 # ---- the queue ---------------------------------------------------------------------------------
-def _run(cmd: list[str], timeout: float = 20):
+def _run(cmd: list[str], timeout: float = 10):
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
         return r.returncode, r.stdout, r.stderr
