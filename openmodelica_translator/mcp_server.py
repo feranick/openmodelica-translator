@@ -1,6 +1,6 @@
 """mcp_server.py — MCP server: lets LLM-based tools simulate systems (circuits, drives, heat paths, controllers)
 with OpenModelica and the Modelica Standard Library.
-Version: 2026.10.23.3
+Version: 2026.10.25.1
 
 Tools (all JSON):
   study_format      the study format: component kinds, ports, parameters, analyses, conventions. Read it first.
@@ -137,7 +137,7 @@ def _summary(kwargs: dict) -> str:
 # server, which runs the installed release, and repeats the call there), and a watcher exits it when idle.
 STALE_MARK = "STALE_SERVER"
 VERSION_RE = re.compile(r'^__version__\s*=\s*"([^"]+)"', re.M)
-_STATE = {"inflight": 0, "exiting": False, "checked": 0.0, "why": None, "shared": False}
+_STATE = {"inflight": 0, "exiting": False, "checked": 0.0, "why": None, "shared": False, "serving": False}
 _LOCK = threading.Lock()
 
 
@@ -173,7 +173,12 @@ def _stale() -> str | None:
 
 
 def _may_exit() -> bool:
-    """OMCT_EXIT_WHEN_STALE: 1 always, 0 never; default: in a shared install (its servers are the router's)."""
+    """Only a server started by main() (never the tools called in-process: tests, scripts). Then
+    OMCT_EXIT_WHEN_STALE: 1 always, 0 never; default: in a shared install (its servers are the router's).
+    (2026.10.23.3 had no 'serving': llmt deploy --test runs the new release's tests before switching current to it,
+    so the tests saw a 'stale' install, were refused and os._exit(0) ended pytest with exit code 0.)"""
+    if not _STATE["serving"]:
+        return False
     v = os.environ.get("OMCT_EXIT_WHEN_STALE", "").strip()
     return v == "1" or (v != "0" and _STATE["shared"])
 
@@ -394,6 +399,7 @@ def main() -> None:
     ap.add_argument("--host", default="127.0.0.1")
     a = ap.parse_args()
     _start_log()
+    _STATE["serving"] = True
     _watch_install()
     if a.http is None:
         server.run()

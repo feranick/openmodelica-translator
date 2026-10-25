@@ -1,6 +1,6 @@
 """test_slurm.py — SLURM execution (llm-translators docs/EXECUTION.md) against a fake SLURM (tests/fake_slurm.py),
 with the reference solver (no OpenModelica needed).
-Version: 2026.10.22.1
+Version: 2026.10.25.2
 """
 from __future__ import annotations
 
@@ -204,3 +204,79 @@ def test_bench_through_slurm(slurm, monkeypatch):
         time.sleep(1)
         b = api.bench_status(b["bench"], 0)
     assert b["done"] and sorted(b["passed"]) == ["inertia_torque_step", "rc_step"]
+
+
+# ---- clusters of several nodes (llm-translators docs/EXECUTION.md, "Clusters of several nodes") -------------
+SINFO = "spark-5da5 spark-5da5 20\nspark-0808 spark-0808 20\n"
+SCONTROL = ("NodeName=spark-5da5 Arch=aarch64 NodeAddr=100.77.175.91 NodeHostName=spark-5da5 CPUTot=20\n"
+            "NodeName=spark-0808 Arch=aarch64 NodeAddr=100.76.107.42 NodeHostName=spark-0808 CPUTot=20\n")
+
+
+@pytest.fixture
+def cluster(monkeypatch):
+    from openmodelica_translator import executor as X
+    calls = []
+    answers = {"sinfo": (0, SINFO, ""), "scontrol": (0, SCONTROL, ""), "hostname": (0, "10.0.0.5 100.76.107.42\n", "")}
+
+    def run(cmd, timeout=20):
+        calls.append(cmd[0])
+        return answers[cmd[0]]
+    monkeypatch.setattr(X, "_run", run)
+    monkeypatch.setattr(X, "_NODES", {})
+    monkeypatch.setattr(X, "_JOB_NODE", {})
+    monkeypatch.setenv("OMCT_EXECUTOR", "slurm")
+    monkeypatch.setattr("socket.gethostname", lambda: "spark-5da5")
+    return X, answers, calls
+
+
+def test_node_local_by_host_name_and_by_address(cluster, monkeypatch):
+    X, answers, _ = cluster
+    assert X.local_node() == "spark-5da5" and X.node_list() == "spark-5da5"
+    assert "#SBATCH --nodelist=spark-5da5" in X.job_script(Path("/r"), "s", 2, 20)
+    st = X.status()
+    assert st["node"] == {"setting": "local", "nodelist": "spark-5da5", "cluster_nodes": 2}
+    assert st["nodes"] == [{"name": "spark-5da5", "cpus": 20}]
+    monkeypatch.setattr(X, "_NODES", {})
+    monkeypatch.setattr("socket.gethostname", lambda: "dgx-peer")       # host name unknown to SLURM: by address
+    assert X.local_node() == "spark-0808"
+
+
+def test_node_any_list_args_and_one_node(cluster, monkeypatch):
+    X, answers, _ = cluster
+    monkeypatch.setenv("OMCT_SLURM_NODE", "any")
+    assert X.node_list() is None and "--nodelist" not in X.job_script(Path("/r"), "s", 2, 20)
+    assert X.status()["node"]["nodelist"] is None
+    monkeypatch.setenv("OMCT_SLURM_NODE", "spark-0808,spark-5da5")
+    assert X.node_list() == "spark-0808,spark-5da5"
+    monkeypatch.setenv("OMCT_SLURM_NODE", "local")
+    monkeypatch.setenv("OMCT_SLURM_ARGS", "-w spark-0808")                # the machine's own --nodelist wins
+    assert X.node_list() is None
+    monkeypatch.delenv("OMCT_SLURM_ARGS")
+    monkeypatch.setattr(X, "_NODES", {})
+    answers["sinfo"] = (0, "mochi mochi 40\n", "")
+    assert X.node_list() is None                                         # one node: nothing to pin
+
+
+def test_node_failure_is_not_remembered(cluster, monkeypatch):
+    X, answers, calls = cluster
+    answers["sinfo"] = (1, "", "Unable to contact slurm controller")
+    assert X.node_list() is None
+    answers["sinfo"] = (0, SINFO, "")
+    assert X.node_list() == "spark-5da5"                                 # asked again once the controller is back
+    n = calls.count("sinfo")
+    X.node_list()
+    assert calls.count("sinfo") == n                                     # then remembered
+
+
+def test_job_lost_on_another_node(cluster, tmp_path, monkeypatch):
+    X, _, _ = cluster
+    req = tmp_path / "req"
+    (req / "s").mkdir(parents=True)
+    (req / "s" / "job.json").write_text(json.dumps({"job_id": "7", "nodelist": None}))
+    monkeypatch.setattr(X, "squeue", lambda ids: {})
+    monkeypatch.setattr(X, "sacct", lambda ids: None)
+    X._JOB_NODE["7"] = "spark-0808"
+    out = X.slurm_states(req, ["s"], write=False)
+    assert out["s"]["state"] == "failed" and "node spark-0808" in out["s"]["why"] and "OMCT_SLURM_NODE" in out["s"]["why"]
+    X._JOB_NODE["7"] = "spark-5da5"                                      # its own node: the usual diagnosis
+    assert "OMCT_SLURM_NODE" not in X.slurm_states(req, ["s"], write=False)["s"]["why"]

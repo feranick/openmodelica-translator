@@ -1,6 +1,6 @@
 """test_api.py — the API (worker pool, request folders, status from files, cancel, jobs, benchmarks, pictures)
 and the MCP server's tool list. Runs with the reference solver: no OpenModelica needed.
-Version: 2026.10.23.3
+Version: 2026.10.25.1
 """
 import asyncio
 import json
@@ -168,6 +168,7 @@ def test_stale_server_refuses_when_idle_and_warns_when_not(tmp_path, monkeypatch
     monkeypatch.setitem(S._STATE, "why", "release r2 is installed; this server runs r1 (1.0)")
     monkeypatch.setitem(S._STATE, "exiting", False)
     monkeypatch.setitem(S._STATE, "shared", False)
+    monkeypatch.setitem(S._STATE, "serving", True)
     monkeypatch.delenv("OMCT_EXIT_WHEN_STALE", raising=False)
     out = asyncio.run(S.jobs(limit=1))
     assert "requests" in out and "restart the MCP server" in out["server_stale"] and not exits
@@ -195,3 +196,19 @@ def test_tool_crash_message_reaches_the_caller(monkeypatch):
     monkeypatch.setattr(S.api, "jobs", boom)
     with pytest.raises(S.ToolError, match="KeyError: 'components'"):
         asyncio.run(S.jobs(limit=1))
+
+
+def test_stale_install_never_exits_outside_a_server(monkeypatch):
+    """Tools called in-process (tests run by llmt deploy --test before current is switched) are never refused and
+    never exit the process, however stale the install looks."""
+    from openmodelica_translator import mcp_server as S
+    exits = []
+    monkeypatch.setattr(S, "_stale", lambda: S._STATE["why"])
+    monkeypatch.setattr(S, "_exit_soon", lambda why, delay: exits.append(why))
+    monkeypatch.setitem(S._STATE, "why", "release r2 is installed; this server runs r1 (1.0)")
+    monkeypatch.setitem(S._STATE, "shared", True)
+    monkeypatch.setitem(S._STATE, "serving", False)
+    monkeypatch.setitem(S._STATE, "exiting", False)
+    monkeypatch.setenv("OMCT_EXIT_WHEN_STALE", "1")
+    out = asyncio.run(S.jobs(limit=1))
+    assert "requests" in out and not exits

@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study (kind: threads).
-Version: 2026.10.23.1
+Version: 2026.10.25.2
 
 Implements llm-translators' docs/EXECUTION.md (from cfd-translator's executor). Settings (environment):
     OMCT_EXECUTOR          local | slurm (local)
@@ -10,6 +10,9 @@ Implements llm-translators' docs/EXECUTION.md (from cfd-translator's executor). 
     OMCT_PROCS             sweep points at once per study (1); a study's run.procs overrides it
     OMCT_COMPILE_PROCS     the C compile's parallelism (4): a job that must build asks for at least these CPUs
     OMCT_TIMEOUT           seconds per study; the job's time limit is ceil(timeout / 60) + 10 minutes
+    OMCT_SLURM_NODE        local | any | a node list (local): where jobs may run in a cluster of several nodes
+                           (llm-translators docs/EXECUTION.md, "Clusters of several nodes"); a --nodelist / -w in
+                           OMCT_SLURM_ARGS wins
 A study's run.queue true (always SLURM) or false (always local) overrides the minimum, not OMCT_EXECUTOR=local.
 
 One job per study with --ntasks=1 --cpus-per-task=N: N = the sweep points it can run at once (at most the
@@ -33,6 +36,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -196,6 +200,94 @@ def use_slurm(study: dict, solver: str) -> bool:
     return estimate_minutes(study, solver) >= min_minutes()
 
 
+# ---- clusters of several nodes (llm-translators docs/EXECUTION.md; as cfdt 2026.10.25.2) -------------------
+_NODES: dict = {}
+_JOB_NODE: dict = {}
+
+
+def slurm_nodes(all_nodes: bool = False) -> list[dict]:
+    """The SLURM nodes jobs may go to (all of the cluster's with all_nodes): [{name, host, cpus}] from sinfo;
+    [] without SLURM."""
+    if kind() != "slurm":
+        return []
+    nl = _NODES.get("v")
+    if nl is None:
+        rc, out, _ = _run(["sinfo", "-h", "-N", "-o", "%N %n %c"])
+        nodes = {}
+        for line in out.splitlines() if rc == 0 else []:
+            f = line.split()
+            if len(f) >= 3 and f[2].isdigit():
+                nodes[f[0]] = {"name": f[0], "host": f[1], "cpus": int(f[2])}
+        nl = list(nodes.values())
+        if rc == 0:                     # a failure (controller down) is asked again next time, not remembered
+            _NODES["v"] = nl
+    want = None if all_nodes else node_list()
+    return [n for n in nl if not want or n["name"] in want.split(",")]
+
+
+def _my_addresses() -> set:
+    import socket
+    out = set()
+    try:
+        for a in socket.getaddrinfo(socket.gethostname(), None):
+            out.add(a[4][0])
+    except OSError:
+        pass
+    rc, txt, _ = _run(["hostname", "-I"])
+    if rc == 0:
+        out.update(txt.split())
+    return out
+
+
+def local_node() -> str | None:
+    """This machine's node in the SLURM cluster: `scontrol -o show node`, the host name matched to NodeName or
+    NodeHostName, else one of this machine's addresses to NodeAddr (the sparks use their Tailscale addresses)."""
+    if "local" in _NODES:
+        return _NODES["local"]
+    import socket
+    host = socket.gethostname().split(".")[0]
+    rc, out, _ = _run(["scontrol", "-o", "show", "node"])
+    recs = []
+    for line in out.splitlines() if rc == 0 else []:
+        kv = dict(re.findall(r"(\w+)=(\S+)", line))
+        if kv.get("NodeName"):
+            recs.append(kv)
+    hit = next((r["NodeName"] for r in recs if host in (r["NodeName"], r.get("NodeHostName", "").split(".")[0])), None)
+    if hit is None and recs:
+        mine = _my_addresses()
+        hit = next((r["NodeName"] for r in recs if r.get("NodeAddr") in mine), None)
+    if rc == 0:
+        _NODES["local"] = hit
+    return hit
+
+
+def _args_nodelist() -> bool:
+    a = shlex.split(os.environ.get("OMCT_SLURM_ARGS", ""))
+    return any(x in ("-w", "--nodelist") or x.startswith(("--nodelist=", "-w")) for x in a)
+
+
+def node_setting() -> str:
+    """OMCT_SLURM_NODE: local (default) | any | a node list."""
+    return os.environ.get("OMCT_SLURM_NODE", "").strip() or "local"
+
+
+def node_list() -> str | None:
+    """The --nodelist omct adds: with OMCT_SLURM_NODE=local (the default) this machine's node when the cluster has
+    several (the sparks: spark1 is spark-5da5, spark2 spark-0808; a job sent to the other node cannot see its run
+    folder unless the home folders are shared); 'any': none (SLURM chooses); a node list: those. A --nodelist / -w
+    in OMCT_SLURM_ARGS wins (then omct adds none). One-node clusters: none."""
+    if _args_nodelist():
+        return None
+    v = node_setting()
+    if v.lower() == "any":
+        return None
+    if v.lower() != "local":
+        return v
+    if len(slurm_nodes(all_nodes=True)) <= 1:
+        return None
+    return local_node()
+
+
 def status() -> dict:
     """The 'executor' key of tool_status (read by llmt status)."""
     base = {"procs": procs_of({}), "timeout_s": timeout_s(), "caps": caps(),
@@ -203,7 +295,10 @@ def status() -> dict:
     if kind() == "slurm":
         return {"kind": "slurm", "sbatch": shutil.which("sbatch"), "min_minutes": min_minutes(),
                 "time_limit_min": time_limit_min(), "time": os.environ.get("OMCT_SLURM_TIME", "timeout"),
-                "mem": os.environ.get("OMCT_SLURM_MEM", "auto"), "args": os.environ.get("OMCT_SLURM_ARGS", ""), **base}
+                "mem": os.environ.get("OMCT_SLURM_MEM", "auto"), "args": os.environ.get("OMCT_SLURM_ARGS", ""),
+                "nodes": [{k: n[k] for k in ("name", "cpus")} for n in slurm_nodes()],
+                "node": {"setting": node_setting(), "nodelist": node_list(),
+                         "cluster_nodes": len(slurm_nodes(all_nodes=True))}, **base}
     return {"kind": "local", "workers": int(os.environ.get("OMCT_WORKERS", "2")), **base}
 
 
@@ -241,6 +336,7 @@ def job_script(request: Path, name: str, cpus: int, tmin: int) -> str:
         f"#SBATCH --output={d / 'job.log'}",
         "#SBATCH --ntasks=1",
         f"#SBATCH --cpus-per-task={cpus}",
+        *([f"#SBATCH --nodelist={node_list()}"] if node_list() else []),
         f"#SBATCH --time={tmin}",
         "#SBATCH --export=ALL",
         # the package's folder first: the job finds this translator even when it is not installed in the venv
@@ -276,6 +372,7 @@ def submit(request: Path, name: str, study: dict, solver: str = "omc") -> dict:
         return res
     job_id = r.stdout.strip().splitlines()[-1].split(";")[0].strip()
     info = {"executor": "slurm", "job_id": job_id, "submitted": time.time(), "procs": cpus, "time_min": tmin,
+            "nodelist": node_list(),
             "time_from": os.environ.get("OMCT_SLURM_TIME", "timeout"), "timeout_s": timeout_s(study), "mem": mem,
             "estimate_min": round(est, 3), "command": cmd, "run": dict(study.get("run") or {})}
     write_atomic(d / "job.json", json.dumps(info, indent=1))
@@ -327,14 +424,16 @@ def _minutes(t: str) -> float | None:
 def squeue(ids: list[str]) -> dict | None:
     if not ids:
         return {}
-    rc, out, err = _run(["squeue", "-h", "-j", ",".join(ids), "-o", "%i|%T|%r|%S|%M"])
+    rc, out, err = _run(["squeue", "-h", "-j", ",".join(ids), "-o", "%i|%T|%r|%S|%M|%N"])
     if rc != 0 and "Invalid job id" not in err:
         return None
     q = {}
     for line in out.splitlines():
-        f = (line.split("|") + [""] * 5)[:5]
+        f = (line.split("|") + [""] * 6)[:6]
         q[f[0].strip()] = {"state": f[1].strip(), "reason": f[2].strip(), "start": f[3].strip(),
                            "elapsed_min": _minutes(f[4])}
+        if f[5].strip() and f[5].strip() != "(null)":
+            _JOB_NODE[f[0].strip()] = f[5].strip()
     return q
 
 
@@ -432,6 +531,13 @@ def slurm_states(request: Path, names: list[str], studies: dict | None = None, w
         if (request / n / f"{n}.json").is_file():           # finished between the calls
             continue
         state, why = final_state((acct or {}).get(jid), _tail(request / n / "job.log"))
+        node, here = _JOB_NODE.get(jid), local_node() if len(slurm_nodes(all_nodes=True)) > 1 else None
+        if (state in ("failed", "cancelled") and "by user" not in why and not (request / n / "job.log").exists()
+                and here and node and node != here):
+            state, why = "failed", (f"the job went to node {node} and left no job.log: "
+                                    f"that node cannot see {request} (its filesystem is not shared with this one). "
+                                    "Keep jobs on this node (OMCT_SLURM_NODE=local, the default, in config/env) or "
+                                    "share the home folders")
         if state == "failed" and (request / n / "cancel").exists():
             state, why = "cancelled", "cancelled with cancel(request) (it left the queue before running)"
         res = {"name": n, "ok": False, "state": state, "why": why, "job_id": jid, "reliable": False,
