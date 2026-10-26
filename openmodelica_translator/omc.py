@@ -1,5 +1,5 @@
 """omc.py — the only module that runs omc: finding it, its version and MSL, and the build cache.
-Version: 2026.10.25.3
+Version: 2026.10.26.1
 
 find_omc()          {exe, version} or {error}            (OMCT_OMC, else omc on PATH)
 msl_status()        {version, path} or {error}           (loadModel(Modelica, {"4.0.0"}, requireExactVersion=true))
@@ -280,7 +280,8 @@ def build(tr, *, timeout: float = 600, cancel: Path | None = None, procs: int | 
         meta = {k: res[k] for k in ("hash", "omc", "msl", "check", "seconds", "warnings") if k in res}
         meta["built"] = time.time()
         meta["changeable"] = res.get("changeable", {})
-        meta["compiled_values"] = dict(getattr(tr, "overrides", {}) or {})
+        # a custom model's text does not carry the study's values: nothing of them is compiled in
+        meta["compiled_values"] = {} if getattr(tr, "escape", False) else dict(getattr(tr, "overrides", {}) or {})
         meta["variant"] = variant or {}
         res["compiled_values"] = meta["compiled_values"]
         (tmp / "meta.json").write_text(json.dumps(meta, indent=1))

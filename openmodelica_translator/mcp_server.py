@@ -1,6 +1,6 @@
 """mcp_server.py — MCP server: lets LLM-based tools simulate systems (circuits, drives, heat paths, controllers)
 with OpenModelica and the Modelica Standard Library.
-Version: 2026.10.25.1
+Version: 2026.10.26.1
 
 Tools (all JSON):
   study_format      the study format: component kinds, ports, parameters, analyses, conventions. Read it first.
@@ -68,9 +68,9 @@ metrics, crossing times, window statistics) and expect checks. It takes other tr
 Workflow: call study_format once and follow its conventions; validate_studies and fix every error;
 run_studies (studies that take longer come back 'pending': collect them with study_status). Before trusting
 numbers check warnings and checks: balance, initialization, solver, events, overrides (every value read back),
-energy (the energy balance), reference (an independent solver: linear, switching, coolant, machines); if 'reliable' is false, do
-not report the numbers as results (fix what 'unreliable_because' says). For accuracy add "converge": true (a
-second run at tolerance/10). Units: SI everywhere (K, rad/s, m, kg, N.m); values may be strings with units
+energy (the energy balance), reference (an independent solver; custom models: cross_solver, another integrator;
+declare "invariants" for balances); if 'reliable' is false, do not report the numbers as results (fix what
+'unreliable_because' says). For accuracy add "converge": true (a second run at tolerance/10). Units: SI everywhere (K, rad/s, m, kg, N.m); values may be strings with units
 ("10 mH", "80 degC", "3000 rpm") or {value, unit, from} for chained values. Initial values (v0, i0, s0, w0, T0)
 are fixed only where they are free (a capacitor across a source follows it). Every electrical circuit needs a
 ground. Values change without recompiling: "sweep": {params: {"comp.param": [values]}, mode: grid | zip,

@@ -1,6 +1,6 @@
 """test_backend.py — the omc driver, the runner and the result reading: on outputs recorded on mochi
 (tests/fixtures), with a fake omc (tests/fake_omc.py), and with the real OpenModelica when it is installed.
-Version: 2026.10.23.4
+Version: 2026.10.26.1
 """
 import json
 import math
@@ -301,3 +301,115 @@ def test_converge_abs_tol_validation():
         assert not r["ok"] and any(msg in e for e in r["errors"]), (bad, r["errors"])
     from openmodelica_translator.runner import converge_abs_tol
     assert abs(converge_abs_tol(good, {"v": "V"})["v"] - 1e-3) < 1e-15
+
+
+def _fake_res(err, tol):
+    ok = err <= 1e-4
+    return {"ok": True, "reliable": ok, "solver": "omc", "warnings": [], "tol_used": tol,
+            "checks": {"solver": {"ok": True}, "energy": {"ok": True},
+                       "reference": {"ok": ok, "covered": True, "max_error_rel": err, "tol": 1e-4,
+                                     "per_output": {"P": err}}}}
+
+
+@pytest.mark.parametrize("closes", [True, False])
+def test_reference_failure_retried_at_tighter_tolerance(tmp_path, monkeypatch, closes):
+    """A reference check that fails while all else passes: integration error closes at tolerance/100 (the result
+    is the tighter run, with a warning); a model mismatch does not (the first result stays unreliable)."""
+    from openmodelica_translator import runner as R
+    calls = []
+
+    def fake_run(name, study, folder, solver, timeout, cancel):
+        tol = study["analysis"].get("tolerance", 1e-6)
+        calls.append(tol)
+        return _fake_res(1.2e-4 if tol >= 1e-6 or not closes else 4.5e-6, tol)
+    monkeypatch.setattr(R, "_run", fake_run)
+    monkeypatch.setattr(R, "_verdict", lambda out, st: out)
+    st = study(RC)
+    r = R.run_study("s", st, tmp_path / "s", "omc", 60)
+    assert calls == [1e-6, 1e-8]
+    if closes:
+        assert r["reliable"] and r["tol_used"] == 1e-8 and r["checks"]["reference"]["retry"]["first_max_error_rel"] == 1.2e-4
+        assert any("integration error" in w for w in r["warnings"])
+    else:
+        assert not r["reliable"] and r["tol_used"] == 1e-6
+        assert "not integration error" in r["checks"]["reference"]["retry"]["why"]
+
+
+def test_no_retry_when_another_check_fails(tmp_path, monkeypatch):
+    from openmodelica_translator import runner as R
+    calls = []
+
+    def fake_run(name, study, folder, solver, timeout, cancel):
+        calls.append(1)
+        r = _fake_res(1.2e-4, 1e-6)
+        r["checks"]["energy"]["ok"] = False
+        return r
+    monkeypatch.setattr(R, "_run", fake_run)
+    R.run_study("s", study(RC), tmp_path / "s", "omc", 60)
+    assert calls == [1]
+
+
+def _cross(monkeypatch, y_other, fail=False):
+    """runner._cross_solver with the second run stubbed: y_other(t) is what the other integrator returns."""
+    from types import SimpleNamespace
+    from openmodelica_translator import matfile, post, runner, simrun
+    t = np.linspace(0, 10, 101)
+    monkeypatch.setattr(simrun, "simulate", lambda *a, **k: {"ok": not fail, "result": "x", "errors": ["boom"]}
+                        if True else None)
+    monkeypatch.setattr(matfile, "Result", lambda p: SimpleNamespace(time=t))
+    monkeypatch.setattr(post, "combine", lambda r, terms: y_other(t))
+    tr = SimpleNamespace(outputs={"y": ([(1.0, "y")], "")})
+    out = {"checks": {}}
+    runner._cross_solver(out, {"dir": "."}, Path("."), {}, tr, SimpleNamespace(time=t), {"y": 1 - np.exp(-t)},
+                         0, 10, 100, 1e-6, "dassl", None, 60, Path("/nonexistent"))
+    return out["checks"]["cross_solver"]
+
+
+def test_cross_solver_agrees_and_disagrees(monkeypatch):
+    c = _cross(monkeypatch, lambda t: 1 - np.exp(-t) + 1e-7)
+    assert c["ok"] and c["covered"] and c["solver"] == "ida" and c["tolerance"] == 1e-7
+    c = _cross(monkeypatch, lambda t: 1 - np.exp(-1.01 * t))
+    assert not c["ok"] and c["max_error_rel"] > 1e-3
+    c = _cross(monkeypatch, lambda t: t, fail=True)
+    assert c["ok"] and not c["covered"] and "ida failed" in c["why"]
+
+
+def test_invariants_check_and_validation():
+    from openmodelica_translator import api, runner
+    t = np.linspace(0, 10, 11)
+    vals = {"E_err": 1e-9 * np.sin(t), "m": 2.0 + 1e-7 * t, "v": np.ones(11)}
+    st = {"invariants": [{"signal": "E_err", "kind": "zero", "abs": 1e-6},
+                         {"signal": "m", "kind": "constant", "rel": 1e-8, "name": "mass"},
+                         {"signal": "m", "kind": "constant", "abs": "1 g"}]}
+    out = {"checks": {}}
+    runner._invariants(out, st, t, vals, {"E_err": "J", "m": "kg"})
+    inv = out["checks"]["invariants"]
+    assert not inv["ok"] and inv["per_invariant"]["E_err_zero"]["ok"] and inv["per_invariant"]["m_constant"]["ok"]
+    assert not inv["per_invariant"]["mass"]["ok"] and inv["per_invariant"]["mass"]["worst_at_s"] == 10.0
+    good = study(RC, invariants=[{"signal": "v", "kind": "constant", "rel": 1e-3}])
+    assert api.validate({"s": good})["studies"]["s"]["ok"]
+    for bad, msg in (([{"signal": "nope", "kind": "zero", "abs": 1}], "signal"),
+                     ([{"signal": "v", "kind": "zero", "rel": 1}], "takes abs"),
+                     ([{"signal": "v", "kind": "flat", "abs": 1}], "kind"),
+                     ([{"signal": "v", "kind": "constant", "abs": "1 s"}], "abs"),
+                     ([{"signal": "v", "kind": "constant"}], "abs or rel")):
+        r = api.validate({"s": study(RC, invariants=bad)})["studies"]["s"]
+        assert not r["ok"] and any(msg in e for e in r["errors"]), (bad, r["errors"])
+    r = api.validate({"s": study(RC, cross_check=False)})["studies"]["s"]
+    assert not r["ok"] and any("only for custom models" in e for e in r["errors"])
+
+
+def test_cross_solver_failure_is_retried_too(tmp_path, monkeypatch):
+    from openmodelica_translator import runner as R
+    calls = []
+
+    def fake_run(name, study, folder, solver, timeout, cancel):
+        tol = study["analysis"].get("tolerance", 1e-6)
+        calls.append(tol)
+        err = 2e-4 if tol >= 1e-6 else 1e-6
+        return {"ok": True, "reliable": err <= 1e-4, "solver": "omc", "warnings": [],
+                "checks": {"cross_solver": {"ok": err <= 1e-4, "covered": True, "max_error_rel": err,
+                                            "per_output": {"y": err}}}}
+    monkeypatch.setattr(R, "_run", fake_run)
+    r = R.run_study("s", study(RC), tmp_path / "s", "omc", 60)
+    assert calls == [1e-6, 1e-8] and r["reliable"] and any("another integrator" in w for w in r["warnings"])

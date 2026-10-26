@@ -1,5 +1,5 @@
 """runner.py — one study end to end: validate, translate, build (or reuse), run, read, check, write the result.
-Version: 2026.10.23.4
+Version: 2026.10.26.1
 
 run_study(name, study, folder, solver, timeout, cancel) -> the result dict, also written atomically to
 <folder>/<name>.json. solver: "omc" (OpenModelica) or "ref" (the reference implementation only: linear
@@ -12,6 +12,7 @@ A study with a sweep runs every point (sweep.py) and reports a table.
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import time
@@ -56,6 +57,65 @@ def _times(an: dict):
     return t0, t1, int(an.get("intervals", 500)), float(an.get("tolerance", 1e-6)), an.get("method", "dassl")
 
 
+RETRY_FACTOR = 100.0
+
+
+INDEPENDENT = ("reference", "cross_solver")
+
+
+def _only_independent_failed(res: dict) -> str | None:
+    """The independent check (reference, or cross_solver for custom models) when it is the only check that
+    failed; else None."""
+    c = res.get("checks") or {}
+    if not res.get("ok") or res.get("sweep") or res.get("solver") == "ref":
+        return None
+    bad = [k for k, v in c.items() if not v.get("ok", True)]
+    if len(bad) == 1 and bad[0] in INDEPENDENT and c[bad[0]].get("covered") and "per_output" in c[bad[0]]:
+        return bad[0]
+    return None
+
+
+def _retry_tighter(name, study, folder, solver, timeout, cancel, res) -> dict:
+    """A reference check that fails while every other check passes: run once more at tolerance/100. OpenModelica's
+    global error at the default tolerance can reach ~1e-4 of an output's range on long runs (the motor heating
+    sweeps, 2026-10-26: rotor copper loss 8.5e-5 at 1e-6, 4.5e-6 at 1e-8), right at the check's limit. If the gap
+    closes, it was integration error: the tighter run is the result (with a warning). If it does not, the model
+    and the reference differ: the first result stays unreliable, with the retry's numbers."""
+    key = _only_independent_failed(res)
+    if key is None or cancel.exists():
+        return res
+    an = study.get("analysis") or {}
+    tol = _times(an)[3]
+    tight = tol / RETRY_FACTOR
+    if tight < 1e-12:
+        return res
+    st2 = copy.deepcopy(study)
+    st2["analysis"] = dict(an, tolerance=tight)
+    sub = folder / "tighter"
+    sub.mkdir(parents=True, exist_ok=True)
+    try:
+        res2 = _run(name, st2, sub, solver, timeout, cancel)
+    except Exception as exc:  # noqa: BLE001
+        res["checks"][key]["retry"] = {"tolerance": tight, "ok": False, "why": f"the rerun failed: {exc}"}
+        return res
+    ref1 = res["checks"][key]
+    ref2 = (res2.get("checks") or {}).get(key) or {}
+    if res2.get("ok") and res2.get("reliable") and ref2.get("ok"):
+        ref2["retry"] = {"first_tolerance": tol, "first_max_error_rel": ref1.get("max_error_rel"), "tolerance": tight}
+        res2.setdefault("warnings", []).append(
+            f"at tolerance {tol:g} OpenModelica differed from the {'reference' if key == 'reference' else 'run with another integrator'} by {ref1.get('max_error_rel'):.2g} of an "
+            f"output's range (integration error); these results are from a rerun at tolerance {tight:g}, which agrees "
+            f"({ref2.get('max_error_rel'):.2g})")
+        return res2
+    ref1["retry"] = {"tolerance": tight, "ok": False, "max_error_rel": ref2.get("max_error_rel"),
+                     "why": (("the difference does not shrink with the tolerance: the model and the reference differ "
+                              "(not integration error)") if key == "reference" else
+                             "the two integrators still disagree at tolerance/100: a numerical problem in the model "
+                             "(not ordinary integration error)") if ref2.get("covered") else
+                            (res2.get("why") or "rerun failed")}
+    return res
+
+
 def run_study(name: str, study: dict, folder, solver: str = "omc", timeout: float = 600, cancel=None) -> dict:
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
@@ -66,6 +126,7 @@ def run_study(name: str, study: dict, folder, solver: str = "omc", timeout: floa
             res = {"ok": False, "state": "cancelled", "why": "cancelled before it started"}
         else:
             res = _run(name, study, folder, solver, timeout, cancel)
+            res = _retry_tighter(name, study, folder, solver, timeout, cancel, res)
     except Exception as exc:  # noqa: BLE001
         res = {"ok": False, "why": f"internal error: {type(exc).__name__}: {exc}",
                "trace": traceback.format_exc()[-3000:]}
@@ -299,6 +360,13 @@ def _run(name, study, folder, solver, timeout, cancel) -> dict:
     run_overrides = dict(tr.overrides)
     ch = b.get("changeable") or {}
     fixed = sorted(k for k in tr.overrides if ch.get(k) is False)
+    if fixed and getattr(tr, "escape", False):
+        # a custom model: omct cannot write these values into the text, so they cannot be set at all
+        out.update({"ok": False, "why": "values the model cannot take at run time", "errors": [
+            f"{k}: OpenModelica fixed it when building (its default is an expression, or it was evaluated): a value "
+            f"set at run time is not used. Give it a plain number as default in the model, or set the parameters "
+            f"it is computed from" for k in fixed]})
+        return out
     if fixed:
         comp = b.get("compiled_values") or {}
         if any(comp.get(k) != tr.overrides[k] for k in fixed):
@@ -364,6 +432,10 @@ def _run(name, study, folder, solver, timeout, cancel) -> dict:
                 return out
             if "modelica" not in study:
                 _reference(out, study, tr, r.time, vals, tol)
+            elif study.get("cross_check", True):
+                _cross_solver(out, b, folder, run_overrides, tr, r, vals, t0, t1, n, tol, method, filt, timeout, cancel)
+            if study.get("invariants"):
+                _invariants(out, study, r.time, vals, units)
             if study.get("converge"):
                 _converge(out, b, folder, run_overrides, tr, r, vals, t0, t1, n, tol, method, filt, timeout, cancel,
                           converge_abs_tol(study, units))
@@ -374,6 +446,68 @@ def _run(name, study, folder, solver, timeout, cancel) -> dict:
         if "modelica" not in study:
             _ref_eigen(out, tr)
     return _verdict(out, study)
+
+
+def _cross_solver(out, b, folder, overrides, tr, r, vals, t0, t1, n, tol, method, filt, timeout, cancel):
+    """Custom models have no reference implementation: the same model run again with the other integrator (IDA
+    for DASSL and back) at tolerance/10, compared like the reference. It catches numerical trouble (a wrong
+    step, a missed event, a drifting constraint), not modelling errors (invariants do that)."""
+    from . import simrun
+    from .matfile import Result
+    from .post import combine, compare, not_events
+
+    other = "ida" if method == "dassl" else "dassl"
+    sim = simrun.simulate(b["dir"], folder, overrides, start=t0, stop=t1, intervals=n, tolerance=tol / 10,
+                          method=other, variable_filter=filt, timeout=timeout, cancel=cancel, tag="_cross")
+    if not sim["ok"]:
+        out["checks"]["cross_solver"] = {"ok": True, "covered": False, "solver": other,
+                                         "why": f"the run with {other} failed: " + "; ".join(sim["errors"])[:500]}
+        return
+    r2 = Result(sim["result"])
+    m1, m2 = not_events(r.time), not_events(r2.time)
+    lim = max(1e-4, 100 * tol)
+    errs, lims, ok = {}, {}, True
+    big = max((float(np.max(np.abs(v))) for v in vals.values() if np.size(v)), default=0.0)
+    for oname, (terms, _) in tr.outputs.items():
+        y2 = combine(r2, terms)
+        yi = np.interp(r.time[m1], r2.time[m2], y2[m2])
+        y1 = vals[oname][m1]
+        errs[oname] = compare(y1, yi, floor=1e-9 * big)
+        lims[oname] = allowed(yi, lim, tol)
+        ok = ok and errs[oname] <= lims[oname]
+    out["checks"]["cross_solver"] = {"ok": ok, "covered": True, "solver": other, "tolerance": tol / 10,
+                                     "max_error_rel": max(errs.values(), default=0.0), "tol": lim,
+                                     "per_output": errs, "tol_per_output": lims,
+                                     "note": "the same equations with another integrator: numerical errors only"}
+
+
+def _invariants(out, study, t, vals, units):
+    """invariants: [{signal, kind: zero | constant, abs (with the output's unit) | rel}]: what the model writer
+    knows must hold (a balance error stays 0, a total stays constant)."""
+    from .units import to_si
+    per, ok = {}, True
+    for i, inv in enumerate(study["invariants"]):
+        y = np.asarray(vals[inv["signal"]], float)
+        u = units.get(inv["signal"]) or "1"
+        name = inv.get("name") or f"{inv['signal']}_{inv['kind']}"
+        if inv["kind"] == "zero":
+            got, lim = float(np.max(np.abs(y))), float(to_si(inv["abs"], u)[0])
+            rec = {"max_abs": got, "abs": lim}
+        else:
+            got = float(np.max(y) - np.min(y))
+            if "abs" in inv:
+                lim = float(to_si(inv["abs"], u)[0])
+                rec = {"change": got, "abs": lim}
+            else:
+                lim = float(inv["rel"]) * max(float(np.max(np.abs(y))), 1e-300)
+                rec = {"change": got, "change_rel": got / max(float(np.max(np.abs(y))), 1e-300), "rel": inv["rel"]}
+        rec["ok"] = got <= lim
+        if not rec["ok"]:
+            k = int(np.argmax(np.abs(y) if inv["kind"] == "zero" else np.abs(y - y[0])))
+            rec["worst_at_s"] = float(t[k])
+        per[name] = rec
+        ok = ok and rec["ok"]
+    out["checks"]["invariants"] = {"ok": ok, "per_invariant": per}
 
 
 def converge_abs_tol(study, units) -> dict:

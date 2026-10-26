@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study (kind: threads).
-Version: 2026.10.25.3
+Version: 2026.10.26.1
 
 Implements llm-translators' docs/EXECUTION.md (from cfd-translator's executor). Settings (environment):
     OMCT_EXECUTOR          local | slurm (local)
@@ -136,7 +136,7 @@ def estimate_minutes(study: dict, solver: str = "omc") -> float:
     hit = bool(d and (d / "meta.json").is_file())
     rec = _runs(d) if d else {}
     per = max(float(rec["s_per_interval"]) * 3, 1e-7) if "s_per_interval" in rec else S_PER_INTERVAL
-    runs = _points(study) * (2 if study.get("converge") else 1)
+    runs = _points(study) * (1 + bool(study.get("converge")) + ("modelica" in study and study.get("cross_check", True)))
     if "study_s" in rec:                                 # measured: a whole study on this build, with its checks
         one = 1.5 * float(rec["study_s"]) * (_intervals(study) / max(int(rec.get("intervals") or 1), 1)) ** 0.5
     else:

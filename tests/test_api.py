@@ -1,6 +1,6 @@
 """test_api.py — the API (worker pool, request folders, status from files, cancel, jobs, benchmarks, pictures)
 and the MCP server's tool list. Runs with the reference solver: no OpenModelica needed.
-Version: 2026.10.25.1
+Version: 2026.10.26.1
 """
 import asyncio
 import json
@@ -212,3 +212,51 @@ def test_stale_install_never_exits_outside_a_server(monkeypatch):
     monkeypatch.setenv("OMCT_EXIT_WHEN_STALE", "1")
     out = asyncio.run(S.jobs(limit=1))
     assert "requests" in out and not exits
+
+
+ESC_TEXT = """
+model Box
+  parameter Real C = 1000 "heat capacity";
+  parameter Real G = 2.0;
+  parameter Real tau = C / G "time constant: an expression";
+  Wall w(k = 0.5);
+  Wall w2(k = 2 * G);
+  Real T(start = 300, fixed = true);
+equation
+  C * der(T) = G * (290 - T);
+end Box;
+model Wall
+  parameter Real k = 1.0;
+  parameter Real r = 1 / k;
+end Wall;
+"""
+
+
+def test_escape_expression_defaults_rejected_in_validation():
+    """A parameter whose default is an expression cannot be set at run time: validation says so (before: only the
+    run, with 'values were not applied')."""
+    from openmodelica_translator.modelica import bound_parameters
+    b = bound_parameters(ESC_TEXT, "Box")
+    assert set(b) == {"tau", "w.r", "w2.k", "w2.r"} and b["tau"] == "C / G"
+    base = {"modelica": {"text": ESC_TEXT, "model": "Box"}, "outputs": {"T": "T"},
+            "analysis": {"kind": "transient", "stop_time": 10}}
+    ok = dict(base, sweep={"params": {"C": [500, 1000], "w.k": [1, 2]}})
+    assert api.validate({"s": ok})["studies"]["s"]["ok"], api.validate({"s": ok})
+    bad = dict(base, sweep={"params": {"tau": [1, 2]}})
+    r = api.validate({"s": bad})["studies"]["s"]
+    assert not r["ok"] and any("tau" in e and "expression" in e for e in r["errors"])
+    bad = dict(base, modelica=dict(base["modelica"], values={"w2.k": 3.0}))
+    r = api.validate({"s": bad})["studies"]["s"]
+    assert not r["ok"] and any("w2.k" in e for e in r["errors"])
+
+
+def test_escape_unchangeable_value_fails_right_after_the_build(tmp_path, monkeypatch):
+    """A custom model's value that the build marks not changeable fails at once, with what to do (before: compiled
+    values were taken as the study's values, the run dropped it, and only the read-back noticed)."""
+    from openmodelica_translator import omc, runner
+    monkeypatch.setattr(omc, "build", lambda tr, **kw: {"ok": True, "hash": "h", "dir": str(tmp_path),
+                                                       "changeable": {"x": False}, "compiled_values": {}})
+    st = {"modelica": {"text": "model M parameter Real x = 1; Real y; equation y = x; end M;", "model": "M",
+                       "values": {"x": 2.0}}, "outputs": {"y": "y"}, "analysis": {"kind": "transient", "stop_time": 1}}
+    r = runner.run_study("m", st, tmp_path / "m", "omc", 30)
+    assert not r["ok"] and r["why"] == "values the model cannot take at run time" and "plain number" in r["errors"][0]

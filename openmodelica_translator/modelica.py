@@ -1,5 +1,5 @@
 """modelica.py — a study -> the Modelica model, the omc build script, and the values applied at run time.
-Version: 2026.10.23.2
+Version: 2026.10.26.1
 
 translate(study, name) -> Translation with
   text        model.mo: `model omct_model` with one declaration per element (sorted), every value in SI with
@@ -16,6 +16,7 @@ build_mos(...) -> the .mos script for omc; override_file(overrides) -> its text.
 from __future__ import annotations
 
 import hashlib
+import re
 
 from . import __version__
 from . import catalog as C
@@ -241,7 +242,51 @@ def escape_translation(study: dict) -> Translation:
     # modelica.values {path: number}: applied with the override file (a sweep's points; no rebuild)
     tr.overrides = {k: float(v) for k, v in (m.get("values") or {}).items()}
     tr.fixed, tr.dependent, tr.missing, tr.net, tr.ref = [], [], 0, None, None
+    tr.escape = True
     return tr
+
+
+_LITERAL = re.compile(r"^\s*[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?\s*$")
+_DECL = re.compile(r"\bparameter\s+(?:\w+\s+)*?([A-Za-z_][\w.]*)\s+([A-Za-z_]\w*)\s*(?:\[[^\]]*\])?\s*"
+                   r"(\((?:[^()]|\([^()]*\))*\))?\s*=\s*([^;\"]+?)\s*(?:\"[^\"]*\")?\s*(?:annotation\b[^;]*)?;")
+
+
+def _class_body(text: str, name: str) -> str | None:
+    short = name.split(".")[-1]
+    m = re.search(rf"\b(?:model|block|class|record|connector)\s+{re.escape(short)}\b(.*?)\bend\s+{re.escape(short)}\s*;",
+                  text, re.S)
+    return m.group(1) if m else None
+
+
+def bound_parameters(text: str, model: str) -> dict:
+    """{path: expression} for parameters of the model (and one level into components of classes defined in the
+    same text) whose default is an expression, not a number: OpenModelica computes them from it, so a value set
+    at run time is not used (a sweep over one fails with 'values were not applied')."""
+    body = _class_body(text, model)
+    if body is None:
+        return {}
+    text_nc = re.sub(r"//[^\n]*|/\*.*?\*/", "", text, flags=re.S)
+    body = re.sub(r"//[^\n]*|/\*.*?\*/", "", body, flags=re.S)
+    out = {}
+    for m in _DECL.finditer(body):
+        if not _LITERAL.match(m.group(4)) and m.group(4).strip() not in ("true", "false"):
+            out[m.group(2)] = m.group(4).strip()
+    # components: Type name(mods) ; of classes defined in this text
+    for cm in re.finditer(r"^\s*([A-Za-z_][\w.]*)\s+([A-Za-z_]\w*)\s*(\((?:[^()]|\([^()]*\))*\))?\s*(?:\"[^\"]*\")?\s*;",
+                          body, re.M):
+        typ, comp, mods = cm.group(1), cm.group(2), cm.group(3) or ""
+        if typ in ("parameter", "constant", "input", "output", "equation", "algorithm", "end", "extends", "import"):
+            continue
+        sub = _class_body(text_nc, typ)
+        if sub is None:
+            continue
+        for m in _DECL.finditer(sub):
+            name = m.group(2)
+            mod = re.search(rf"\b{re.escape(name)}\s*=\s*([^,)]+)", mods)
+            expr = mod.group(1) if mod else m.group(4)
+            if not _LITERAL.match(expr) and expr.strip() not in ("true", "false"):
+                out[f"{comp}.{name}"] = expr.strip()
+    return out
 
 
 def structure_hash(structure: str, omc_version: str, msl_version: str, flags: str = BUILD_FLAGS) -> str:

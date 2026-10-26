@@ -1,5 +1,5 @@
 """format.py — the study format (study_format) and the static checks (validate, validate_study).
-Version: 2026.10.23.4
+Version: 2026.10.26.1
 
 validate_study(study) -> {ok, errors, warnings}: nothing runs (no omc). It resolves the network (network.build),
 checks outputs, analysis, derived quantities, sweep, expect, run (against the OMCT_MAX_* caps) and images, then
@@ -8,6 +8,7 @@ fix. Every error says the fix.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 
@@ -25,10 +26,11 @@ STUDY_KEYS = {
     "sweep": "{params: {'comp.param' or 'comp.v0': [values]}, mode: grid | zip (grid), report: [result paths] "
              "(default: outputs.*.final and derived.*)}: one build, one run per point (run.procs at a time) -> "
              "sweep.table[i].{params, params_si, values, ok, reliable}",
-    "converge": "true | {abs_tol: {output: value}}: rerun at tolerance/10; an output that changes by more than "
-                "max(1e-6, 100 x tolerance) of its range (more on large offsets) -> unreliable; abs_tol: those outputs "
-                "judged by their absolute change instead; outputs constant by design (balance totals, energy errors: "
-                "their variation is solver noise, shrinking with the tolerance) are reported in not_judged",
+    "cross_check": "modelica only (true): rerun with the other integrator -> checks.cross_solver; false skips",
+    "invariants": "[{signal, kind: zero (abs) | constant (abs | rel), name?}] -> checks.invariants",
+    "converge": "true | {abs_tol: {output: value}}: rerun at tolerance/10; a change over max(1e-6, 100 x tolerance) "
+                "of an output's range -> unreliable; abs_tol: judged by absolute change; outputs constant by design "
+                "(solver noise only) -> not_judged",
     "expect": "[{quantity: dotted result path, value, tol (relative, 0.02) | abs}]",
     "run": "{timeout_s, mem, procs (parallel sweep points), queue}: within this machine's caps (status.executor.caps)",
     "images": "true: time plots of the outputs (+ Bode for linearize, a sweep plot); false: none",
@@ -480,9 +482,46 @@ def validate_study(st: dict) -> dict:
     errs += run_errors(st)
     _images_errors(st, errs)
     _converge_errors(st, units, errs)
+    _invariant_errors(st, units, errs)
+    if "cross_check" in st:
+        errs.append("cross_check: only for custom models (modelica); catalog studies have the reference check")
     if not errs:
         errs += _reference_errors(st, net, warns)
     return {"ok": not errs, "errors": errs, "warnings": warns}
+
+
+def _invariant_errors(st, units, errs) -> None:
+    inv = st.get("invariants")
+    if inv is None:
+        return
+    if not isinstance(inv, list) or not all(isinstance(x, dict) for x in inv):
+        errs.append("invariants: [{signal, kind: zero | constant, abs | rel}]")
+        return
+    from .units import UnitError, to_si
+    for i, x in enumerate(inv):
+        w = f"invariants[{i}]"
+        bad = set(x) - {"signal", "kind", "abs", "rel", "name"}
+        if bad:
+            errs.append(f"{w}: unknown keys {sorted(bad)} (signal, kind, abs, rel, name)")
+        if x.get("signal") not in units:
+            errs.append(f"{w}.signal: an output name ({', '.join(sorted(units)) or 'none'})")
+            continue
+        if x.get("kind") not in ("zero", "constant"):
+            errs.append(f"{w}.kind: zero | constant")
+            continue
+        if ("abs" in x) == ("rel" in x):
+            errs.append(f"{w}: give abs or rel (one)")
+            continue
+        if x["kind"] == "zero" and "rel" in x:
+            errs.append(f"{w}: kind zero takes abs (a value with the output's unit)")
+            continue
+        try:
+            v = float(to_si(x["abs"], units[x["signal"]] or "1", where=f"{w}.abs")[0]) if "abs" in x else float(x["rel"])
+        except (UnitError, TypeError, ValueError) as exc:
+            errs.append(str(exc))
+            continue
+        if not v > 0:
+            errs.append(f"{w}: abs / rel must be > 0")
 
 
 def _converge_errors(st, units, errs) -> None:
@@ -545,6 +584,33 @@ def _composite_init_name(net, comp, part, name):
     return f"{part}.{name}"
 
 
+def _escape_value_errors(st, errs) -> None:
+    """Values and sweep parameters a custom model cannot take at run time, found before running: parameters whose
+    default in the text is an expression (OpenModelica computes them from it), and, when the model is already in the
+    build cache, every value its build marks as not changeable."""
+    m = st["modelica"]
+    paths = list((m.get("values") or {})) + list(((st.get("sweep") or {}).get("params") or {}))
+    if not paths:
+        return
+    from .modelica import bound_parameters, escape_translation
+    bound = bound_parameters(m["text"], m["model"])
+    for p in dict.fromkeys(paths):
+        if p in bound:
+            errs.append(f"{p}: its default in the model is an expression ({bound[p]}): OpenModelica computes it from "
+                        "that and ignores a value set at run time, so it cannot be set or swept. Give it a plain number "
+                        "as default, or set the parameters it is computed from")
+    try:
+        from .omc import cache_root, structure_key
+        meta = cache_root() / structure_key(escape_translation(st)) / "meta.json"
+        ch = json.loads(meta.read_text()).get("changeable", {}) if meta.is_file() else {}
+    except Exception:  # noqa: BLE001 - no omc here, no cache: the run checks it after the build
+        ch = {}
+    for p in dict.fromkeys(paths):
+        if ch.get(p) is False and p not in bound:
+            errs.append(f"{p}: the built model cannot change it at run time (OpenModelica fixed it when building: an "
+                        "expression default, or an evaluated parameter); give it a plain number as default in the model")
+
+
 def _validate_escape(st, errs, warns):
     m = st["modelica"]
     if not isinstance(m, dict) or not isinstance(m.get("text"), str) or not isinstance(m.get("model"), str):
@@ -572,6 +638,11 @@ def _validate_escape(st, errs, warns):
     _derived_errors(st, outs if isinstance(outs, dict) else {}, {}, errs)
     _expect_errors(st, errs)
     _converge_errors(st, {o: "1" for o in outs} if isinstance(outs, dict) else {}, errs)   # SI numbers
+    _invariant_errors(st, {o: "1" for o in outs} if isinstance(outs, dict) else {}, errs)
+    if "cross_check" in st and not isinstance(st["cross_check"], bool):
+        errs.append("cross_check: true or false")
+    if not errs:
+        _escape_value_errors(st, errs)
     errs += run_errors(st)
     warns.append("escape hatch: no catalog checks and no reference implementation")
     return {"ok": not errs, "errors": errs, "warnings": warns}
