@@ -413,3 +413,36 @@ def test_cross_solver_failure_is_retried_too(tmp_path, monkeypatch):
     monkeypatch.setattr(R, "_run", fake_run)
     r = R.run_study("s", study(RC), tmp_path / "s", "omc", 60)
     assert calls == [1e-6, 1e-8] and r["reliable"] and any("another integrator" in w for w in r["warnings"])
+
+
+def test_fake_custom_model_sweep_on_a_cache_hit_runs_the_cross_check(fake, monkeypatch):
+    """A custom-model sweep, built once, then run again from the build cache: every point has cross_solver (the
+    second integrator), the table rows and sweep.checks show it, and no 'no reference' warning is left
+    (2026-10-26: P_M18/22/30 on carbonio, cache_hit true; the check ran but only the point files said so)."""
+    _with_study(monkeypatch, fake, study(RC))              # what the fake executable simulates
+    text = "model Box parameter Real x = 1.0; Real y; equation y = x; end Box;"
+    st = {"modelica": {"text": text, "model": "Box"}, "outputs": {"v": "C.v"},
+          "analysis": {"kind": "transient", "stop_time": 0.01, "intervals": 100},
+          "sweep": {"params": {"x": [1.0, 2.0, 3.0]}}, "run": {"procs": 2}}
+    first = run_study("p", st, fake / "a" / "p", "omc", 60)
+    assert first["ok"], first
+    sims = []
+    real = simrun.simulate
+
+    def spy(*a, **k):
+        sims.append(k.get("method"))
+        return real(*a, **k)
+    monkeypatch.setattr(simrun, "simulate", spy)
+    st1 = dict(st, run={"procs": 1})                      # threads in this process, so the spy sees the runs
+    r = run_study("p", st1, fake / "b" / "p", "omc", 60)
+    assert r["ok"] and r["reliable"], r.get("unreliable_because")
+    assert r["model_info"]["cache_hit"] is True
+    assert sims.count("ida") == 3 and sims.count("dassl") == 3
+    for row in r["sweep"]["table"]:
+        assert row["checks"]["cross_solver"]["ok"], row
+    assert r["sweep"]["checks"]["cross_solver"] == {"points": 3, "failed": 0, "not_covered": 0, "retried": 0,
+                                                     "max_error_rel": r["sweep"]["checks"]["cross_solver"]["max_error_rel"]}
+    assert r["checks"]["cross_solver"]["ok"] and r["checks"]["cross_solver"]["points"] == 3
+    assert not any("reference implementation" in w for w in r["warnings"])
+    p0 = json.loads((fake / "b" / "p" / "points" / "p0000" / "p0000.json").read_text())
+    assert p0["checks"]["cross_solver"]["solver"] == "ida" and p0["checks"]["cross_solver"]["covered"]

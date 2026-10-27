@@ -1,5 +1,5 @@
 """sweep.py — one study, many value sets: one build, one run per point, a table.
-Version: 2026.10.23.2
+Version: 2026.10.26.2
 
 run_sweep(name, study, folder, solver, timeout, cancel, run_point) -> the study's result with
     sweep: {points, ok_points, reliable_points, params, columns, table: [{point, params, values, ok, reliable,
@@ -36,6 +36,46 @@ def point_study(study: dict, values: dict) -> dict:
         comp, _, p = key.partition(".")
         st["components"][comp][p] = v
     return st
+
+
+INDEPENDENT = ("reference", "cross_solver", "invariants", "converge")
+
+
+def _point_checks(r: dict) -> dict:
+    """A point's independent checks in a line: {check: {ok, max_error_rel | covered: false, retried}}, so a sweep
+    shows that they ran (2026-10-26: the custom models' cross_solver ran on every point but only the point files
+    said so)."""
+    out = {}
+    for k in INDEPENDENT:
+        c = (r.get("checks") or {}).get(k)
+        if not c:
+            continue
+        d = {"ok": bool(c.get("ok", True))}
+        if c.get("covered") is False:
+            d["covered"] = False
+        for f in ("max_error_rel", "max_change_rel"):
+            if f in c:
+                d[f] = c[f]
+        if "retry" in c:
+            d["retried_at_tolerance"] = c["retry"].get("tolerance")
+        out[k] = d
+    return out
+
+
+def _checks_summary(table: list) -> dict:
+    """{check: {points, failed, not_covered, retried, max_error_rel}} over the sweep."""
+    out = {}
+    for row in table:
+        for k, d in (row.get("checks") or {}).items():
+            s = out.setdefault(k, {"points": 0, "failed": 0, "not_covered": 0, "retried": 0})
+            s["points"] += 1
+            s["failed"] += not d["ok"]
+            s["not_covered"] += d.get("covered") is False
+            s["retried"] += "retried_at_tolerance" in d
+            e = d.get("max_error_rel", d.get("max_change_rel"))
+            if e is not None:
+                s["max_error_rel"] = max(s.get("max_error_rel", 0.0), e)
+    return out
 
 
 def default_report(study: dict, first: dict) -> list[str]:
@@ -122,6 +162,9 @@ def run_sweep(name, study, folder: Path, solver, timeout, cancel, run_point) -> 
             except (KeyError, IndexError, TypeError):
                 vals[c] = None
         row = {"point": i, "params": pts[i], "params_si": si, "values": vals, "ok": bool(r.get("ok")), "reliable": bool(r.get("reliable"))}
+        ck = _point_checks(r)
+        if ck:
+            row["checks"] = ck
         if not r.get("ok") or not r.get("reliable"):
             row["why"] = r.get("why") or r.get("unreliable_because")
             failed.append(i)
@@ -134,6 +177,11 @@ def run_sweep(name, study, folder: Path, solver, timeout, cancel, run_point) -> 
                      "seconds": round(time.perf_counter() - t0, 3)},
            "warnings": list(first.get("warnings") or []), "files": {"points": str(folder / "points")},
            "model_info": first.get("model_info"), "inputs": first.get("inputs")}
+    summ = _checks_summary(table)
+    if summ:
+        out["sweep"]["checks"] = summ
+        # the same place as a single study's checks, so study_status shows them for sweeps too
+        out["checks"] = {k: {"ok": v["failed"] == 0, "covered": v["not_covered"] < v["points"], **v} for k, v in summ.items()}
     builds = {(r.get("model_info") or {}).get("hash") for r in results.values() if r.get("model_info")}
     out["sweep"]["builds"] = len(builds)
     if not out["reliable"]:

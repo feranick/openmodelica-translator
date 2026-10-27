@@ -150,4 +150,7 @@ def test_escape_hatch():
     s = {"modelica": {"text": "model M Real x(start=1, fixed=true); equation der(x) = -x; end M;", "model": "M"},
          "outputs": {"x": "x"}, "analysis": {"kind": "transient", "stop_time": 1}}
     v = validate_study(s)
-    assert v["ok"] and "escape hatch" in v["warnings"][0]
+    assert v["ok"] and not v["warnings"]                     # checked by cross_solver: nothing to warn about
+    v = validate_study(dict(s, cross_check=False))
+    assert v["ok"] and "no independent check" in v["warnings"][0]
+    assert not validate_study(dict(s, cross_check=False, invariants=[{"signal": "x", "kind": "zero", "abs": 2}]))["warnings"]

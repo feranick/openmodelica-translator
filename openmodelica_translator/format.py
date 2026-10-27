@@ -1,5 +1,5 @@
 """format.py — the study format (study_format) and the static checks (validate, validate_study).
-Version: 2026.10.26.1
+Version: 2026.10.26.2
 
 validate_study(study) -> {ok, errors, warnings}: nothing runs (no omc). It resolves the network (network.build),
 checks outputs, analysis, derived quantities, sweep, expect, run (against the OMCT_MAX_* caps) and images, then
@@ -644,7 +644,10 @@ def _validate_escape(st, errs, warns):
     if not errs:
         _escape_value_errors(st, errs)
     errs += run_errors(st)
-    warns.append("escape hatch: no catalog checks and no reference implementation")
+    if st.get("cross_check") is False and not st.get("invariants"):
+        # the only case without an independent check (2026.10.26.2: the old 'no reference implementation' warning
+        # stayed on every custom model and read as if the cross-check had not run)
+        warns.append("custom model with cross_check: false and no invariants: no independent check of the results")
     return {"ok": not errs, "errors": errs, "warnings": warns}
 
 

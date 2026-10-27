@@ -1,6 +1,6 @@
 """test_api.py — the API (worker pool, request folders, status from files, cancel, jobs, benchmarks, pictures)
 and the MCP server's tool list. Runs with the reference solver: no OpenModelica needed.
-Version: 2026.10.26.1
+Version: 2026.10.26.2
 """
 import asyncio
 import json
@@ -260,3 +260,16 @@ def test_escape_unchangeable_value_fails_right_after_the_build(tmp_path, monkeyp
                        "values": {"x": 2.0}}, "outputs": {"y": "y"}, "analysis": {"kind": "transient", "stop_time": 1}}
     r = runner.run_study("m", st, tmp_path / "m", "omc", 30)
     assert not r["ok"] and r["why"] == "values the model cannot take at run time" and "plain number" in r["errors"][0]
+
+
+def test_sweep_rows_show_the_independent_checks():
+    from openmodelica_translator.sweep import _checks_summary, _point_checks
+    r1 = {"checks": {"solver": {"ok": True}, "cross_solver": {"ok": True, "covered": True, "max_error_rel": 7e-5}}}
+    r2 = {"checks": {"reference": {"ok": True, "covered": True, "max_error_rel": 2e-6, "retry": {"tolerance": 1e-8}}}}
+    r3 = {"checks": {"cross_solver": {"ok": True, "covered": False, "why": "ida failed"}}}
+    rows = [{"checks": _point_checks(r)} for r in (r1, r2, r3)]
+    assert rows[0]["checks"] == {"cross_solver": {"ok": True, "max_error_rel": 7e-5}}
+    assert rows[1]["checks"]["reference"]["retried_at_tolerance"] == 1e-8
+    s = _checks_summary(rows)
+    assert s["cross_solver"] == {"points": 2, "failed": 0, "not_covered": 1, "retried": 0, "max_error_rel": 7e-5}
+    assert s["reference"]["retried"] == 1
