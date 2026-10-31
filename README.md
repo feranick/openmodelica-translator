@@ -12,7 +12,7 @@ It is part of [llm-translators](https://github.com/feranick/llm-translators), wi
 |---|---|
 | Key = CLI | `omct` |
 | MCP server | `omct-mcp` (port 8770 over HTTP) |
-| Backend | OpenModelica 1.27.1 (`omc`), MSL 4.0.0 |
+| Backend | OpenModelica 1.27.2 (`omc`; 1.27.1 before 2026-10-31), MSL 4.0.0 |
 | Settings prefix | `OMCT_` |
 | Output folder | `~/omct_runs` (`OMCT_OUT`) |
 
@@ -197,6 +197,7 @@ Pictures: `"images": true` in a study writes `images/outputs.png` (one panel per
 
 | Version | Changes |
 |---|---|
+| 2026.10.31.1 | Checked with OpenModelica 1.27.2 (all four machines): the 37 benchmarks pass on carbonio, unchanged; custom models: the IDA cross-check, invariants, and the after-build refusal of a parameter whose default is an expression (two levels deep, beyond the static check) all work; builds made with 1.27.1 are not reused (the cache key holds the omc version), so first runs rebuild. Fix: `run_benchmarks` counts the time spent starting its studies against its wait (the first call after the update ran past the router's limit) |
 | 2026.10.26.2 | Sweeps show their independent checks: each table row has `checks` ({reference / cross_solver / invariants / converge: ok, max_error_rel, retried_at_tolerance, covered}) `sweep.checks` sums them over the points and `checks` holds the same per check (as for a single study) (the custom models' cross_solver ran on every point in 2026.10.26.1, but only the point files said so); custom models no longer carry the old 'no reference implementation' warning (it read as if the cross-check had not run); they warn only with `cross_check: false` and no invariants. Test: a custom-model sweep on a cache hit runs IDA on every point |
 | 2026.10.26.1 | (1) A reference check that fails while every other check passes is retried once at tolerance/100: OpenModelica's integration error at the default 1e-6 reached ~1e-4 of an output's range on 6-hour motor-heating runs, at the check's limit (rotor copper loss 8.5e-5 at 1e-6, 4.5e-6 at 1e-8), so values that agreed with their neighbours were flagged. If the gap closes, the tighter run is the result (with a warning); if not, it stays a failure, now labelled a model difference. (2) Custom Modelica models get `checks.cross_solver` (the same model with the other integrator at tolerance/10; `cross_check: false` skips it), and any study can declare `invariants` (`zero` / `constant`, `abs` or `rel`) checked over the whole run. (3) A custom model's value or sweep parameter whose default is an expression is rejected by `validate_studies` (and by the cached build's record); after a build, an unchangeable value fails at once with what to do, where before the run dropped it and only the read-back noticed |
 | 2026.10.25.3 | Checked against llm-translators' translator checklist: node detection from `scontrol -o show node` (was `sinfo`), job CPUs capped at this node's (`any`: the largest node's), `--mem 8G`/`--mem-per-cpu` in `OMCT_SLURM_ARGS` read for estimates; tools end within their wait with a slow controller (sbatch 15 s then fail fast, queue queries 10 s, status loop deadline-aware, run_studies counts submitting against the wait); a failed MSL check is no longer cached for the server's lifetime |

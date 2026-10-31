@@ -1,5 +1,5 @@
 """api.py — what the CLI and the MCP server call. JSON in, JSON out.
-Version: 2026.10.25.3
+Version: 2026.10.31.1
 
     tool_status()                  versions; omc, MSL, the C compiler, the build cache; the executor and its caps
     study_format()                 the study format, with status
@@ -423,10 +423,13 @@ def bench(names=None, solver: str | None = None, wait_s: float | None = None) ->
             studies.pop(n)
             checks.pop(n, None)
             skipped[n] = "needs OpenModelica (not covered by the reference yet)"
+    t0 = time.time()
     folder = start(studies, solver, prefix="bench", inline=wait_s is None)
     (folder / "bench_request.json").write_text(json.dumps({"names": list(studies), "skipped": skipped,
                                                            "checks": checks, "translator": __version__}, default=float))
-    return bench_status(str(folder), 0 if wait_s is None else wait_s)
+    # starting 37 studies counts against the wait (2026-10-31: the first call after the OpenModelica 1.27.2 update
+    # ran past the router's limit)
+    return bench_status(str(folder), 0 if wait_s is None else max(0.0, wait_s - (time.time() - t0)))
 
 
 def bench_status(bench_folder: str, wait_s: float = 0) -> dict:
