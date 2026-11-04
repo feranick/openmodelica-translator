@@ -239,4 +239,4 @@ Pictures: `"images": true` in a study writes `images/outputs.png` (one panel per
 | 2026.10.21.1 | M1: catalog (82 kinds), units, validation, Modelica generation with structure hash and override file, reference implementation, CLI `format`/`validate`/`model`; 173 tests (Modelica syntax checked with modparc) |
 | 2026.10.20.1 | M0: research and plan (`planning.md`, `tools/m0_probe.sh`) |
 
-Author: Nicola Ferralis <ferralis@generalflash.com>. License: MIT.
+Author: Nicola Ferralis <feranick@hotmail.com>. 
