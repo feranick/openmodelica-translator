@@ -1,5 +1,5 @@
 """sweep.py — one study, many value sets: one build, one run per point, a table.
-Version: 2026.10.26.2
+Version: 2026.11.07.1
 
 run_sweep(name, study, folder, solver, timeout, cancel, run_point) -> the study's result with
     sweep: {points, ok_points, reliable_points, params, columns, table: [{point, params, values, ok, reliable,
@@ -130,7 +130,9 @@ def run_sweep(name, study, folder: Path, solver, timeout, cancel, run_point) -> 
             kind = "processes"
             jobs = [(f"p{i:04d}", point_study(study, pts[i]), str(folder / "points" / f"p{i:04d}"), solver, timeout,
                      str(cancel)) for i in range(1, len(pts))]
-            with ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("spawn")) as ex:
+            from .workers import watch_parent
+            with ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("spawn"),
+                                     initializer=watch_parent, initargs=(os.getpid(),)) as ex:
                 for i, r in zip(range(1, len(pts)), ex.map(_point_job, jobs)):
                     results[i] = r
         else:

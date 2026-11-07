@@ -1,5 +1,5 @@
 """api.py — what the CLI and the MCP server call. JSON in, JSON out.
-Version: 2026.10.31.1
+Version: 2026.11.07.1
 
     tool_status()                  versions; omc, MSL, the C compiler, the build cache; the executor and its caps
     study_format()                 the study format, with status
@@ -28,6 +28,7 @@ import base64
 import json
 import multiprocessing as mp
 import os
+import re
 import shutil
 import time
 import uuid
@@ -115,7 +116,11 @@ class _Pool:
 
     def submit(self, folder: Path, jobs: list[dict]) -> None:
         if self.pool is None:
-            self.pool = mp.get_context("spawn").Pool(int(os.environ.get("OMCT_WORKERS", "2")), maxtasksperchild=20)
+            from .workers import watch_parent
+            # each worker ends when this server is gone (crash, kill -9): llm-translators "Worker pools never
+            # outlive the server"
+            self.pool = mp.get_context("spawn").Pool(int(os.environ.get("OMCT_WORKERS", "2")), maxtasksperchild=20,
+                                                     initializer=watch_parent, initargs=(os.getpid(),))
         self.jobs.setdefault(str(folder), {}).update(
             {j["name"]: self.pool.apply_async(_run_one, (j,)) for j in jobs})
 
@@ -138,9 +143,18 @@ def _request_dir(prefix: str) -> Path:
     return d
 
 
-def start(studies: dict, solver: str | None = None, prefix: str = "run", inline: bool = False) -> Path:
-    """The request folder; the valid studies go to the pool (inline: run here, one after the other)."""
-    folder = _request_dir(prefix)
+REQUEST_NAME = re.compile(r"^run_[A-Za-z0-9_.-]{1,80}$")
+
+
+def start(studies: dict, solver: str | None = None, prefix: str = "run", inline: bool = False,
+          request_name: str | None = None) -> Path:
+    """The request folder; the valid studies go to the pool (inline: run here, one after the other).
+    request_name: the folder's name, chosen by the caller (llm-translators' router) so it knows the path first."""
+    if request_name:
+        folder = out_root() / request_name
+        folder.mkdir(parents=True, exist_ok=False)
+    else:
+        folder = _request_dir(prefix)
     s = _solver(solver)
     (folder / "studies.json").write_text(json.dumps(studies, indent=1))
     invalid, jobs = {}, []
@@ -291,13 +305,26 @@ def status(request: str, wait: float = 0.0) -> dict:
         time.sleep(0.5 if time.time() - t0 < 5 else 2.0)
 
 
-def run(studies: dict, solver: str | None = None, wait: float | None = None) -> dict:
-    """wait None: run here, one after the other, and return everything (the CLI); otherwise in the pool."""
+def run(studies: dict, solver: str | None = None, wait: float | None = None, request_name: str | None = None) -> dict:
+    """wait None: run here, one after the other, and return everything (the CLI); otherwise in the pool.
+    request_name ('run_<id>'): the request folder's name, so a caller that loses the answer (llm-translators' router:
+    'submitted_unconfirmed') knows where to look; a repeated call with the same name returns that request's status
+    and submits nothing again (ROUTER.md, "Requests named by the router"; as cfdt 2026.11.06.1)."""
+    if request_name is not None:
+        if not isinstance(request_name, str) or not REQUEST_NAME.match(request_name):
+            return {"error": "request_name: 'run_' followed by letters, digits, _ . - (up to 80)"}
+        folder = out_root() / request_name
+        if (folder / "request.json").is_file():
+            res = status(str(folder), 0.0 if wait is None else min(wait, 15.0))
+            return dict(res, note="this request_name was submitted before: its status, nothing submitted again")
+        if folder.exists():
+            return {"error": f"request_name {request_name!r}: the folder exists but holds no request yet (being "
+                             "submitted?): call study_status(request) in a minute", "request": str(folder)}
     if wait is None:
-        folder = start(studies, solver, inline=True)
+        folder = start(studies, solver, inline=True, request_name=request_name)
         return status(str(folder), 0)
     t0 = time.time()
-    folder = start(studies, solver)
+    folder = start(studies, solver, request_name=request_name)
     return status(str(folder), max(0.0, wait - (time.time() - t0)))     # submitting counts against the wait
 
 

@@ -1,6 +1,6 @@
 """test_slurm.py — SLURM execution (llm-translators docs/EXECUTION.md) against a fake SLURM (tests/fake_slurm.py),
 with the reference solver (no OpenModelica needed).
-Version: 2026.10.25.3
+Version: 2026.11.07.1
 """
 from __future__ import annotations
 
@@ -207,8 +207,8 @@ def test_bench_through_slurm(slurm, monkeypatch):
 
 
 # ---- clusters of several nodes (llm-translators docs/EXECUTION.md, "Clusters of several nodes") -------------
-SCONTROL = ("NodeName=spark-5da5 Arch=aarch64 CPUTot=20 NodeAddr=100.77.175.91 NodeHostName=spark-5da5\n"
-            "NodeName=spark-0808 Arch=aarch64 CPUTot=12 NodeAddr=100.76.107.42 NodeHostName=spark-0808\n")
+SCONTROL = ("NodeName=spark-5da5 Arch=aarch64 CPUTot=20 NodeAddr=100.77.175.91 NodeHostName=spark-5da5 RealMemory=124000\n"
+            "NodeName=spark-0808 Arch=aarch64 CPUTot=12 NodeAddr=100.76.107.42 NodeHostName=spark-0808 RealMemory=60000\n")
 
 
 @pytest.fixture
@@ -351,3 +351,31 @@ def test_status_ends_within_its_wait_when_the_queue_is_slow(monkeypatch, tmp_pat
     t0 = time.time()
     A.status(str(req), 2.0)
     assert time.time() - t0 <= 2.3 and len(calls) >= 1
+
+
+def test_caps_report_this_nodes_memory_for_the_router(cluster, monkeypatch):
+    """caps.mem / caps.mem_mb from the SLURM node's RealMemory (llm-translators' router leaves out a machine whose
+    limit is below run.mem); OMCT_MAX_MEM wins when lower; validation refuses more (2026-11-07: caps {} before)."""
+    from openmodelica_translator import api, format as F
+    X, answers, _ = cluster
+    c = F.caps()
+    assert c["mem"] == "121G" and c["mem_mb"] == 121 * 1024 and "RealMemory" in c["mem_from"]
+    assert X.status()["caps"]["mem_mb"] == 121 * 1024
+    monkeypatch.setattr("socket.gethostname", lambda: "spark-0808")
+    monkeypatch.setattr(X, "_NODES", {})
+    assert F.caps()["mem"] == "58G"                                   # spark2's own node, not the cluster's largest
+    monkeypatch.setenv("OMCT_MAX_MEM", "16G")
+    assert F.caps() == {"mem": "16G", "mem_mb": 16384}
+    monkeypatch.delenv("OMCT_MAX_MEM")
+    r = api.validate({"s": study(RC, run={"mem": "90G"})})["studies"]["s"]
+    assert not r["ok"] and any("at most 58G" in e and "RealMemory" in e for e in r["errors"])
+    assert api.validate({"s": study(RC, run={"mem": "8G"})})["studies"]["s"]["ok"]
+    monkeypatch.setattr(X, "_NODES", {})
+    answers["scontrol"] = (0, "NodeName=mochi CPUTot=40 RealMemory=1\n", "")    # memory not configured: no cap
+    assert "mem" not in F.caps()
+
+
+def test_caps_without_slurm_have_no_memory(monkeypatch):
+    from openmodelica_translator import format as F
+    monkeypatch.delenv("OMCT_EXECUTOR", raising=False)
+    assert F.caps() == {}

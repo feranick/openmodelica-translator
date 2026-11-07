@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study (kind: threads).
-Version: 2026.10.26.1
+Version: 2026.11.07.1
 
 Implements llm-translators' docs/EXECUTION.md (from cfd-translator's executor). Settings (environment):
     OMCT_EXECUTOR          local | slurm (local)
@@ -226,9 +226,10 @@ def _cluster() -> list[dict]:
     for line in out.splitlines() if rc == 0 else []:
         kv = dict(re.findall(r"(\w+)=(\S+)", line))
         if kv.get("NodeName"):
-            cpus = kv.get("CPUTot", "")
+            cpus, mem = kv.get("CPUTot", ""), kv.get("RealMemory", "")
             recs.append({"name": kv["NodeName"], "host": kv.get("NodeHostName", kv["NodeName"]),
-                         "addr": kv.get("NodeAddr", ""), "cpus": int(cpus) if cpus.isdigit() else None})
+                         "addr": kv.get("NodeAddr", ""), "cpus": int(cpus) if cpus.isdigit() else None,
+                         "mem_mb": int(mem) if mem.isdigit() else None})
     if rc == 0:
         _NODES["v"] = recs
     return recs
@@ -239,6 +240,14 @@ def slurm_nodes(all_nodes: bool = False) -> list[dict]:
     nl = _cluster()
     want = None if all_nodes else node_list()
     return [n for n in nl if not want or n["name"] in want.split(",")]
+
+
+def node_mem_mb() -> float | None:
+    """The most memory one job can ask for (MB): the largest RealMemory among the nodes this machine's jobs go to
+    (this node with OMCT_SLURM_NODE=local), or None without SLURM or when it is unknown (unset nodes report 1 MB).
+    A larger --mem fails only at submission ('Memory specification can not be satisfied': cfdt on mochi, 90G)."""
+    vals = [n["mem_mb"] for n in slurm_nodes() if (n.get("mem_mb") or 0) >= 1024]
+    return float(max(vals)) if vals else None
 
 
 def node_cpus() -> int | None:

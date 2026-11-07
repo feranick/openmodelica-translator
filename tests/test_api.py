@@ -1,6 +1,6 @@
 """test_api.py — the API (worker pool, request folders, status from files, cancel, jobs, benchmarks, pictures)
 and the MCP server's tool list. Runs with the reference solver: no OpenModelica needed.
-Version: 2026.10.26.2
+Version: 2026.11.07.1
 """
 import asyncio
 import json
@@ -119,7 +119,7 @@ def test_tools_run_off_the_event_loop_and_are_logged(tmp_path, monkeypatch):
     import inspect
     from openmodelica_translator import mcp_server as S
     assert inspect.iscoroutinefunction(S.run_studies) and inspect.iscoroutinefunction(S.jobs)
-    assert list(inspect.signature(S.run_studies).parameters) == ["studies", "solver", "wait_s"]
+    assert list(inspect.signature(S.run_studies).parameters) == ["studies", "solver", "wait_s", "request_name"]
     monkeypatch.setenv("OMCT_OUT", str(tmp_path))
     p = S._log_path()                                    # (not _start_log: no signal handlers in the test process)
     with open(p, "a") as f:
@@ -273,3 +273,25 @@ def test_sweep_rows_show_the_independent_checks():
     s = _checks_summary(rows)
     assert s["cross_solver"] == {"points": 2, "failed": 0, "not_covered": 1, "retried": 0, "max_error_rel": 7e-5}
     assert s["reference"]["retried"] == 1
+
+
+def test_request_name_names_the_folder_and_is_idempotent(tmp_path, monkeypatch):
+    """llm-translators' router names the request so it knows the path before the answer ('submitted_unconfirmed'
+    when a machine is slow); the same name again returns the status and submits nothing (as cfdt)."""
+    monkeypatch.setenv("OMCT_OUT", str(tmp_path))
+    calls = []
+    real = api.start
+
+    def spy(*a, **k):
+        calls.append(k.get("request_name"))
+        return real(*a, **k)
+    monkeypatch.setattr(api, "start", spy)
+    r = api.run({"rc": study(RC)}, "ref", wait=20, request_name="run_20261107_120000_abc123")
+    assert r["request"] == str(tmp_path / "run_20261107_120000_abc123") and r["done"], r
+    again = api.run({"rc": study(RC)}, "ref", wait=20, request_name="run_20261107_120000_abc123")
+    assert "submitted before" in again["note"] and again["studies"]["rc"]["ok"] and calls == ["run_20261107_120000_abc123"]
+    assert "error" in api.run({"rc": study(RC)}, "ref", wait=5, request_name="../evil")
+    assert "error" in api.run({"rc": study(RC)}, "ref", wait=5, request_name="bench_x")
+    (tmp_path / "run_half").mkdir()                       # a folder without request.json: being submitted
+    r = api.run({"rc": study(RC)}, "ref", wait=5, request_name="run_half")
+    assert "error" in r and r["request"] == str(tmp_path / "run_half")

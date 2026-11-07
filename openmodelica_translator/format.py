@@ -1,5 +1,5 @@
 """format.py — the study format (study_format) and the static checks (validate, validate_study).
-Version: 2026.10.26.2
+Version: 2026.11.07.1
 
 validate_study(study) -> {ok, errors, warnings}: nothing runs (no omc). It resolves the network (network.build),
 checks outputs, analysis, derived quantities, sweep, expect, run (against the OMCT_MAX_* caps) and images, then
@@ -35,7 +35,7 @@ STUDY_KEYS = {
     "run": "{timeout_s, mem, procs (parallel sweep points), queue}: within this machine's caps (status.executor.caps)",
     "images": "true: time plots of the outputs (+ Bode for linearize, a sweep plot); false: none",
     "modelica": "escape hatch {text: Modelica source, model: name, values: {path: number}}: outputs, values and "
-                "sweep params are Modelica paths (values applied at run time, no rebuild); no catalog checks, no reference",
+                "sweep params are Modelica paths (values applied at run time, no rebuild); no catalog checks; cross_solver, not the reference",
 }
 ANALYSES = {
     "transient": "{stop_time (s), start_time (0), intervals (500), tolerance (1e-6), method: dassl | ida}",
@@ -188,11 +188,21 @@ def mem_mb(text):
 
 
 def caps() -> dict:
+    """The ceilings set in config/env (OMCT_MAX_TIMEOUT s, OMCT_MAX_MEM, OMCT_MAX_PROCS); unset: none. With SLURM,
+    mem is also at most a node's memory, and mem_mb (MB) gives it to llm-translators' router, which leaves out a
+    machine whose limit is below a study's run.mem (2026.11.07: omct reported caps {} everywhere)."""
     out = {}
     for k, env in (("timeout_s", "OMCT_MAX_TIMEOUT"), ("mem", "OMCT_MAX_MEM"), ("procs", "OMCT_MAX_PROCS")):
         v = os.environ.get(env, "").strip()
         if v:
             out[k] = v
+    from .executor import node_mem_mb
+    nm = node_mem_mb()
+    if nm and (not out.get("mem") or (mem_mb(out["mem"]) or 0) > nm):
+        out["mem"] = f"{int(nm // 1024)}G" if nm >= 1024 else f"{int(nm)}M"
+        out["mem_from"] = "a node's memory (SLURM RealMemory)"
+    if out.get("mem") and mem_mb(out["mem"]):
+        out["mem_mb"] = int(mem_mb(out["mem"]))
     return out
 
 
@@ -219,7 +229,8 @@ def run_errors(st: dict) -> list[str]:
         if not mb:
             errs.append("run.mem: SLURM memory per job, e.g. '2G' or '500M'")
         elif "mem" in cap and mem_mb(cap["mem"]) and mb > mem_mb(cap["mem"]):
-            errs.append(f"run.mem: at most {cap['mem']} on this machine (OMCT_MAX_MEM)")
+            errs.append(f"run.mem: at most {cap['mem']} on this machine ({cap.get('mem_from', 'OMCT_MAX_MEM')}); "
+                        "choose a machine with more (machines(): executor.caps.mem) or ask for less")
     n = r.get("procs")
     if n is not None:
         if not isinstance(n, int) or isinstance(n, bool) or n < 1:

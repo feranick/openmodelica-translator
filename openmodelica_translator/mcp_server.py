@@ -1,6 +1,6 @@
 """mcp_server.py — MCP server: lets LLM-based tools simulate systems (circuits, drives, heat paths, controllers)
 with OpenModelica and the Modelica Standard Library.
-Version: 2026.10.26.1
+Version: 2026.11.07.1
 
 Tools (all JSON):
   study_format      the study format: component kinds, ports, parameters, analyses, conventions. Read it first.
@@ -282,6 +282,7 @@ def _start_log() -> None:
     for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         def handler(signum, frame, prev=signal.getsignal(sig)):
             slog(f"signal {signal.Signals(signum).name} received")
+            api._close_pool()            # re-raising skips atexit: stop the workers first (llmt servers --stop)
             signal.signal(signum, prev if callable(prev) or prev in (signal.SIG_DFL, signal.SIG_IGN) else signal.SIG_DFL)
             os.kill(os.getpid(), signum)
         signal.signal(sig, handler)
@@ -311,12 +312,14 @@ def validate_studies(studies: dict) -> dict:
 
 @server.tool()
 @_logged
-def run_studies(studies: dict, solver: str = "auto", wait_s: float = 45) -> dict:
+def run_studies(studies: dict, solver: str = "auto", wait_s: float = 45, request_name: str | None = None) -> dict:
     """Builds (or reuses) the Modelica model of each study, runs it with OpenModelica and checks it. Per study:
     outputs, derived quantities, steady values or the linearisation, checks (balance, initialisation, solver,
     events, overrides read back, energy, reference), reliable, expect, warnings and files. Returns after at most
-    wait_s seconds: studies still running are listed in 'pending'; collect them with study_status."""
-    return api.run(studies, solver, wait=min(max(float(wait_s), 0.0), 50.0))
+    wait_s seconds: studies still running are listed in 'pending'; collect them with study_status.
+    request_name ('run_<id>', optional): the request folder's name, so a caller knows the path before the answer;
+    the same name again returns that request's status without submitting twice."""
+    return api.run(studies, solver, wait=min(max(float(wait_s), 0.0), 50.0), request_name=request_name)
 
 
 @server.tool()
