@@ -1,5 +1,5 @@
 """format.py — the study format (study_format) and the static checks (validate, validate_study).
-Version: 2026.11.07.1
+Version: 2026.11.09.2
 
 validate_study(study) -> {ok, errors, warnings}: nothing runs (no omc). It resolves the network (network.build),
 checks outputs, analysis, derived quantities, sweep, expect, run (against the OMCT_MAX_* caps) and images, then
@@ -190,7 +190,10 @@ def mem_mb(text):
 def caps() -> dict:
     """The ceilings set in config/env (OMCT_MAX_TIMEOUT s, OMCT_MAX_MEM, OMCT_MAX_PROCS); unset: none. With SLURM,
     mem is also at most a node's memory, and mem_mb (MB) gives it to llm-translators' router, which leaves out a
-    machine whose limit is below a study's run.mem (2026.11.07: omct reported caps {} everywhere)."""
+    machine whose limit is below a study's run.mem (2026.11.07: omct reported caps {} everywhere). The node's memory
+    is written exactly as SLURM gives it (llmt-runtime's mem_text: '124000M'; until 2026.11.09.1 rounded down to whole
+    GB, '121G', which refused a run.mem of the node's own size)."""
+    from llmt_runtime.slurm import mem_text
     out = {}
     for k, env in (("timeout_s", "OMCT_MAX_TIMEOUT"), ("mem", "OMCT_MAX_MEM"), ("procs", "OMCT_MAX_PROCS")):
         v = os.environ.get(env, "").strip()
@@ -199,7 +202,7 @@ def caps() -> dict:
     from .executor import node_mem_mb
     nm = node_mem_mb()
     if nm and (not out.get("mem") or (mem_mb(out["mem"]) or 0) > nm):
-        out["mem"] = f"{int(nm // 1024)}G" if nm >= 1024 else f"{int(nm)}M"
+        out["mem"] = mem_text(nm)
         out["mem_from"] = "a node's memory (SLURM RealMemory)"
     if out.get("mem") and mem_mb(out["mem"]):
         out["mem_mb"] = int(mem_mb(out["mem"]))

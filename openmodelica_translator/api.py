@@ -1,5 +1,5 @@
 """api.py — what the CLI and the MCP server call. JSON in, JSON out.
-Version: 2026.11.09.1
+Version: 2026.11.09.2
 
     tool_status()                  versions; omc, MSL, the C compiler, the build cache; the executor and its caps
     study_format()                 the study format, with status
@@ -19,7 +19,9 @@ Version: 2026.11.09.1
 Studies run in worker processes (OMCT_WORKERS, default 2) that live across calls of one server process, or as
 SLURM jobs (OMCT_EXECUTOR=slurm, executor.py: one job per study). Every state is read from the files
 (request.json, <name>/<name>.json, job.json, model.mo, sim.log) and the queue, so another server process sees
-the same results; a local study still running in a process that ended is reported failed.
+the same results; a local study still running in a process that ended is reported failed. From 2026.11.09.2 the
+SLURM states and the queue's CPUs behind jobs() are llmt-runtime's (through executor.slurm_states and
+executor.queue_summary), and cancel()'s flags and scancel are its cancel_request; the answers keep omct's shapes.
 """
 from __future__ import annotations
 
@@ -211,6 +213,14 @@ def _progress(d: Path, timeout: float) -> dict:
             "note": "eta_min_max is the time limit left; most studies take seconds"}
 
 
+def job_progress(folder: Path, study: dict) -> dict:
+    """Where a running SLURM study is (llmt-runtime's hooks.running_progress, for its list_jobs): stage, points_done,
+    points, elapsed_min, eta_min_max from _progress, with the timeout its job was sized with (job.json)."""
+    from llmt_runtime import jobs as J
+    pr = _progress(Path(folder), J.job_timeout_s(Path(folder), timeout_s(study or {})))
+    return {k: pr[k] for k in ("stage", "points_done", "points", "elapsed_min", "eta_min_max") if k in pr}
+
+
 def _collect(folder: Path) -> dict:
     from . import executor as X
     meta = json.loads((folder / "request.json").read_text())
@@ -377,28 +387,29 @@ def jobs(limit: int = 20, active: bool = False) -> dict:
 
 
 def cancel(request: str, names: list[str] | None = None) -> dict:
+    """Stops the request's studies (or the named ones): a cancel flag in each unfinished study's folder (the runner
+    checks it in whatever process runs the study) and scancel for SLURM jobs, queued or running: llmt-runtime's
+    cancel_request (2026.11.09.2); 'error' when scancel failed. Then their states."""
+    from .runtime import RT
     folder = Path(request).expanduser()
     if not (folder / "request.json").is_file():
         return {"error": f"no request {folder}"}
     meta = json.loads((folder / "request.json").read_text())
-    names = names or meta["names"]
-    unknown = [n for n in names if n not in meta["names"]]
-    if unknown:
-        return {"error": f"no studies {unknown} in this request ({meta['names']})"}
-    from . import executor as X
-    todo = [n for n in names if not (folder / n / f"{n}.json").is_file()]
-    for n in todo:
-        (folder / n).mkdir(parents=True, exist_ok=True)
-        (folder / n / "cancel").write_text(str(time.time()))
-    ids = X.cancel_slurm(folder, todo)
+    c = RT.jobs.cancel_request(folder, meta, names)
+    if "want" not in c:                      # unknown names
+        return c
+    names, todo, ids = c["want"], c["todo"], c["cancelled_jobs"]
     time.sleep(1.0 if ids else 0.0)
     res = status(str(folder), 3.0 if todo else 0.0)
-    return {"request": str(folder), "cancelled": todo, "cancelled_jobs": ids,
-            "already_finished": [n for n in names if n not in todo],
-            "states": {n: ("done" if n in res["studies"] and res["studies"][n].get("ok") else
-                           res["studies"].get(n, {}).get("state") or res["studies"].get(n, {}).get("why") or
-                           res.get("progress", {}).get(n, {}).get("state")) for n in names},
-            "note": "a queued study is skipped when a worker reaches it; a running one stops within a second"}
+    out = {"request": str(folder), "cancelled": todo, "cancelled_jobs": ids,
+           "already_finished": c["already_finished"],
+           "states": {n: ("done" if n in res["studies"] and res["studies"][n].get("ok") else
+                          res["studies"].get(n, {}).get("state") or res["studies"].get(n, {}).get("why") or
+                          res.get("progress", {}).get(n, {}).get("state")) for n in names},
+           "note": "a queued study is skipped when a worker reaches it; a running one stops within a second"}
+    if c.get("error"):
+        out["error"] = c["error"]
+    return out
 
 
 def model(study: dict, name: str = "study") -> dict:
