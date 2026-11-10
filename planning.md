@@ -2,8 +2,9 @@
 
 Session context for Claude (the user documentation is README.md). Start a chat with: "Read planning.md and start."
 
-Version: 2026.11.07.1 (2026-11-07). Done: M0-M8 (v1), V2 (coolant, DC machine, heat ports, events), V3 (AC
-machines, transient and quasi-static, nonlinear reference), and the fixes from use since (docs/history.md).
+Version: 2026.11.09.3 (2026-11-09). Done: M0-M8 (v1), V2 (coolant, DC machine, heat ports, events), V3 (AC
+machines, transient and quasi-static, nonlinear reference), the fixes from use since (docs/history.md), and the
+move onto **llmt-runtime** (2026.11.09.1-.3: workers, SLURM layer and MCP server common code are the runtime's).
 
 ## What this is
 
@@ -57,7 +58,12 @@ lumped parameters.
   controllers. Analyses transient, steady, linearize; sweeps on one build.
 - **Checked:** 37 benchmarks with closed forms pass with OpenModelica 1.27.2 (carbonio, 2026-10-31; the same with
   1.27.1 on mochi before); 381 tests pass without OpenModelica (3 skipped).
-- **Code:** 25 modules, about 11,500 lines (`ref.py` alone ~3,000).
+- **Runtime:** omct runs on llmt-runtime (`llmt_runtime`, a submodule of llm-translators at
+  `~/Software/llmt-runtime`; pinned 2026.11.09.6; omct declares the floor `llmt-runtime>=2026.11.09.6`). Read its
+  `README.md` (API, hooks, settings) and `PLANNING.md` (open items) before touching SLURM, jobs, memory, workers,
+  requests or the MCP server's common code.
+- **Code:** 27 modules (`runtime.py`, `workers.py` thin), about 11,000 lines (`ref.py` alone ~3,000); 405 tests pass
+  in the sandbox with the runtime (3 skipped), 404 on carbonio (release 2026.11.09.27).
 
 ## Open items
 
@@ -70,8 +76,16 @@ lumped parameters.
 - **A21 on 1.27.2:** whether the compiled model still cannot read an empty `-overrideFile` (omct omits the flag
   anyway; harmless).
 - **`jobs()` lists `run_*` requests only,** not `bench_*` ones.
-- **lammps-translator:** the same `project.license` deprecation as omct had (its own chat: `license = "MIT"`,
-  `setuptools>=77`).
+- **Deploy 2026.11.09.3 to mochi, spark1, spark2** (carbonio has it) and run the runtime's machine tests there: omct
+  `rc_step` through SLURM, two benchmarks at once from two servers (they queue), a result collected after the MCP
+  connection was closed and reopened (llmt-runtime PLANNING.md, section 1).
+- **Shared items to fix in llmt-runtime, not here** (its PLANNING.md, section 2): a `Server` hook for the log's
+  argument summary (omct logged study names and flags; the runtime logs `name=value`); `list_jobs` hooks (omct keeps
+  its own `jobs()`, which reports `_collect` per request); `queue_summary` counting only `$USER`'s jobs (omct's
+  behaviour); one meaning for `job.json`'s `time_min` / `estimate_min` (omct passes its own through `extra`);
+  `requests.until` for omct's `status()` deadline (its own copy today).
+- **`extend` for omct:** read `take_extension(folder)` in the simulation's wait loop (proc.run), add
+  `hooks.solver_left_s` and an `extend` tool, as feat (llmt-runtime PLANNING.md, section 2).
 - **llm-translators `BACKENDS.md`:** still says OpenModelica 1.27.1 on mochi.
 
 ## Interconnections
@@ -106,6 +120,19 @@ lumped parameters.
 - Git: no `git` commands that write in the connected folders from the sandbox (it leaves `.git/index.lock`);
   read-only ones with `--no-optional-locks` are fine. llm-translators is changed only when Nicola asks: he updates
   it himself after the translators.
+- **llmt-runtime rules** (llmt-runtime's TRANSLATOR_CHATS.md, common part):
+  - Shared behaviour (SLURM, job states, memory and out of memory, workers, requests, the MCP server's common code)
+    is fixed once, in llmt-runtime, never in omct's wrappers; runtime changes are additions only, with its own
+    version bump, test and tag.
+  - Floors only: `llmt-runtime>=X` in `pyproject.toml`, `requirements-standalone.txt`'s git tag and the README
+    install line; raise it only when omct needs something newer; never an upper bound.
+  - Pin order: push the runtime, then omct, then in llm-translators `./llmt pin runtime omct`.
+  - What stays omct's: sizing (CPUs, sweep points and rounds), estimates, `run_errors` / `caps`, the sweep pools,
+    `run_study_job`, failures written as `<name>.json`, `jobs()`'s shape, the advice texts given through hooks.
+  - Tests use the runtime's fake SLURM (`llmt_runtime.testing.fake_slurm`, `FAKE_*`); patch the runtime's names
+    where its code runs (`llmt_runtime.slurm.cluster_nodes`, `.addresses`, `.forget()`); a test of the MCP server's
+    answers pins `GUARD.stale` to None.
+  - A file that becomes a stub: `git rm -f`.
 
 ## Environment
 
@@ -114,17 +141,25 @@ lumped parameters.
   the Mac) places each call on one of them (`run.host` chooses). mochi: 40 hardware threads, 61.5 GB; carbonio: 12
   CPUs, also has MSL 3.2.3 and 4.1.0 installed (hence `requireExactVersion`, A20); sparks: 20 CPUs each, aarch64.
 - **Deploying a new omct version:**
-  1. Mac: commit and push openmodelica-translator, then
-     `cd ~/Software/llm-translators && ./llmt pin omct --commit --push` (Nicola, when he updates llm-translators).
+  1. Mac: commit and push openmodelica-translator (and llmt-runtime first, when it changed), then in
+     llm-translators `./llmt pin runtime omct && git add -A && git commit -m "Pin ..." && git push` (Nicola).
+     `llmt deploy` refuses a build whose omct floor is above the pinned runtime.
+  1a. Before users get it (on a server, in tmux): `sudo ./llmt deploy --no-switch`, then
+     `R=/opt/llm-translators/releases/$(ls /opt/llm-translators/releases | sort -V | tail -1); $R/llmt test runtime omct`,
+     the MCP tool list (`( printf '<initialize>\n<initialized>\n<tools/list>\n'; sleep 30 ) | $R/bin/mcp omct`),
+     then `sudo ./llmt rollback $(basename $R)` to switch.
   2. On each machine:
      `cd /opt/llm-translators/src && sudo git pull && sudo git submodule update --init && sudo ./llmt deploy --test`
      (the tests run from the new release before `current` switches), then `/opt/llm-translators/current/llmt
      status omct`.
-  3. Running servers notice the new release and exit when idle; the router starts new ones (2026.10.23.3). An app
-     restart is needed only when the servers predate that.
+  3. Running servers notice the new release (every `OMCT_STALE_CHECK_S`, 10 s) and exit when idle; the router
+     starts new ones. `machines()` shows `runtime` and `runtime_commit` too.
   4. Check from the Mac: `./llmt router status omct`, or `machines()`: `version` and `serving` are omct's version;
      `llmt_release` is the llm-translators bundle.
-- **Sandbox** (aarch64 Ubuntu 22.04, no sudo, small disk): no OpenModelica (the proxy blocks build.openmodelica.org).
+- **Sandbox** (aarch64 Ubuntu 22.04, no sudo): `/sessions` is a shared disk that fills up (then tests fail with
+  odd errors): run them with `TMPDIR=/tmp`. llmt-runtime is visible through a `.pth` file in the user site-packages
+  (`llmt_runtime_dev.pth` -> `mnt/llm-translators/llmt-runtime`), which the SLURM tests' subprocesses need (they
+  clear `PYTHONPATH`, as on the machines); the MSL sources are in `/tmp/keep/msl` (symlink `~/msl`). No OpenModelica (the proxy blocks build.openmodelica.org).
   PyPI and github.com work. Background processes die when the shell call ends. The backend driver is developed
   against stored mochi output (fixtures) and fakes (`tests/fake_omc.py`, `tests/fake_slurm.py`); `ref.py` runs here;
   anything with OpenModelica runs on the machines through the omct MCP tools.
@@ -286,10 +321,15 @@ openmodelica_translator/
   sweep.py      points, one build, a process pool inside one study; rows with their checks
   render.py     time, Bode and sweep plots;  chains.py  b3dt mass and inertia, feat stiffness
   bench.py      37 benchmarks with closed forms (+ chain cases by name)
-  executor.py   local pool or one SLURM job per study (kind threads): sizing, estimates, node pinning,
-                states from files and the queue
-  api.py, cli.py, mcp_server.py, proc.py   as cfdt; the MCP server runs tools off the event loop, keeps a log,
-                exits when a newer release is installed and it is idle
+  runtime.py    RT = llmt_runtime.Runtime(prefix OMCT, cli omct, kind threads, hooks: procs=job_cpus,
+                mem_auto 1 GB + 256 MB per CPU, solves=sweep_rounds, script_lines (PYTHONPATH), job_extra,
+                running_progress, oom_advice, timeout_hint; slurm_time_default timeout)
+  executor.py   omct's sizing and estimates; its old public names as thin wrappers over RT.slurm / RT.jobs
+  workers.py    wrappers over llmt_runtime.workers (watch_parent, track/untrack)
+  mcp_server.py GUARD = llmt_runtime.server.Server(RT, ...): every tool under @GUARD.tool (worker thread, 48 s
+                deadline, ToolError, server_stale), stale exit, log in $OMCT_OUT/.server; slog = GUARD.log
+  api.py, cli.py, proc.py   requests (request_name, ran_with through the runtime), the local pool, jobs/cancel;
+                proc.run starts omc and simulations in their own process groups, tracked
 tests/  16 test files, studies.py, fake_omc.py, fake_slurm.py, fixtures/ (mochi outputs)
 tools/  m0/v2/v3 probes and their mochi reports, check_catalog_msl.py, m6_slurm_test.py, mcp_smoke.py
 docs/   history.md (the State log 2026-10-20 to 2026-10-31)
@@ -358,9 +398,9 @@ load, and the quasi-static versions of the machine cases. Chains by name: `chain
 - **Executor kind `threads`:** one SLURM job per study with `--cpus-per-task` = sweep points at once (≤ points, ≤
   `OMCT_PROCS`), at least `OMCT_COMPILE_PROCS` on a cache miss; studies under `OMCT_SLURM_MIN_MINUTES` stay in the
   local pool. Clusters of several nodes: jobs pinned to this node (`OMCT_SLURM_NODE`).
-- **Every tool returns within its `wait_s` (≤ 50 s):** builds and runs are in the pool or SLURM; `sbatch` gets
-  15 s (a timeout fails the request's other studies at once), queue queries 10 s; status starts no check it cannot
-  finish in time; submitting counts against the wait (`run_studies`, `run_benchmarks`).
+- **Every tool returns within its `wait_s`:** the runtime's 48 s deadline per call; builds and runs are in the
+  pool or SLURM; submitting counts against the wait. A sweep's SLURM time limit covers all its rounds (the first
+  point alone, then groups of the job's CPUs: 12 points on 4 CPUs get 50 min, not 20).
 
 ## Settings (`translators.json` `env` in llm-translators)
 
@@ -371,12 +411,12 @@ load, and the quasi-static versions of the machine cases. Chains by name: `chain
 | `OMCT_SOLVER` | `auto` \| `omc` \| `ref` (auto: omc when found) |
 | `OMCT_WORKERS`, `OMCT_TIMEOUT` | local pool size (2); seconds per study (600) |
 | `OMCT_PROCS`, `OMCT_COMPILE_PROCS`, `OMCT_OMP_THREADS` | sweep points at once (1); omc `-n` (4); threads in one simulation (1) |
-| `OMCT_EXECUTOR`, `OMCT_SLURM_MIN_MINUTES` (1), `OMCT_SLURM_ARGS` (split like a shell; its `--mem` and `--nodelist` win), `OMCT_SLURM_MEM` (auto: 1 GB + 256 MB per CPU), `OMCT_SLURM_TIME` (timeout), `OMCT_SLURM_TIME_MIN` (20), `OMCT_SLURM_TIME_FACTOR` (3) | SLURM (llm-translators docs/EXECUTION.md) |
+| `OMCT_EXECUTOR`, `OMCT_SLURM_MIN_MINUTES` (1), `OMCT_SLURM_ARGS` (split like a shell; its `--mem` and `--nodelist` win), `OMCT_SLURM_MEM` (auto: 1 GB + 256 MB per CPU), `OMCT_SLURM_TIME` (`timeout` \| `estimate` \| `max` \| minutes), `OMCT_SLURM_TIME_MIN` (20), `OMCT_SLURM_TIME_FACTOR` (3) | SLURM (llmt-runtime's meanings) |
 | `OMCT_SLURM_NODE` | `local` (this machine's node) \| `any` \| a node list, in a cluster of several nodes |
 | `OMCT_MAX_TIMEOUT`, `OMCT_MAX_MEM`, `OMCT_MAX_PROCS` | caps for a study's `run`; with SLURM, `caps.mem` is at most the node's memory (`mem_mb` for the router) |
 | `OMCT_REF_NONLINEAR` | the reference's nonlinear terms (on; `0` switches them off) |
 | `OMCT_REF_MAX_EVENTS` | switchings before the reference gives up on a piecewise-linear study (5000) |
-| `OMCT_EXIT_WHEN_STALE` | a server exits when a newer release is installed and it is idle (shared installs; `1` always, `0` never) |
+| `OMCT_EXIT_WHEN_STALE`, `OMCT_STALE_CHECK_S` | a server exits when a newer release (of omct or the runtime) is installed and it is idle (shared installs; `1` always, `0` never); checked every 10 s |
 
 ## Decisions
 
@@ -405,6 +445,16 @@ load, and the quasi-static versions of the machine cases. Chains by name: `chain
 Details: docs/history.md (everything to 2026-10-31) and the README's version table.
 
 ## Recent changes
+
+**2026.11.09.1-.3 (2026-11-09, the llmt-runtime migration, done in the llm-translators chat)**: phase 1: workers
+(SIGTERM now also ends a worker's omc build or simulation), out-of-memory wording, version recording (`ran_with`,
+`translator_now`), request names; phase 2: the SLURM layer (settings, nodes and pinning, node memory, `job.sh` with
+`--mem` inside, `job.json`, submit with late-sbatch adoption, job states, queue, cancel), omct's sizing as hooks, a
+sweep's limit covering all its rounds, `OMCT_SLURM_TIME` `max` and minutes, `--mem-bind` no longer taken for
+`--mem`; phase 3: the MCP server's common code (`GUARD`; every tool under the 48 s deadline; stale check every
+10 s). `tests/fake_slurm.py` removed (the runtime's fake); `tests/test_runtime.py` added. Checked in this chat on
+2026-11-09: 405 tests pass in the sandbox against runtime 2026.11.09.6; planning.md updated to the runtime (this
+entry, conventions, environment, architecture, settings, open items).
 
 **2026.11.07.1 (2026-11-07)**: from the llm-translators chat (router 2026.11.07.1 compares run.mem with each machine's `executor.caps.mem_mb`; omct reported `caps: {}` everywhere). (1) format.caps(): with SLURM, mem = the largest RealMemory (scontrol, values >= 1024 MB) among the nodes this machine's jobs go to (this node with OMCT_SLURM_NODE=local), or OMCT_MAX_MEM when lower; mem_mb and mem_from; run.mem above it fails validation (as cfdt 2026.11.07.1, which reads sinfo %m; omct reads RealMemory from the scontrol records it already keeps). (2) Worker pools (create_new_translators.md, 'Worker pools never outlive the server'): workers.py as feat's (os.getppid() polled every 1 s, not PR_SET_PDEATHSIG: omct's pool is created inside a tool call's worker thread); initializer on api._POOL and on the sweep's ProcessPoolExecutor; proc.run tracks the programs it starts (own process groups) so an orphaned worker kills them; the signal handler (SIGTERM/HUP/INT) now stops the pool before re-raising (re-raising skips atexit, so `llmt servers --stop` used to leave the workers). The stale-server exit already stopped the pool. Test: a real server process that dies with os._exit: its worker and the worker's program are gone within 10 s. (3) request_name on run_studies (optional item; ROUTER.md 'Requests named by the router'). Sandbox note: /sessions is full; run the tests with TMPDIR=/tmp.
 
