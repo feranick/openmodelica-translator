@@ -1,5 +1,9 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study (kind: threads).
-Version: 2026.11.07.1
+Version: 2026.11.09.1
+
+From 2026.11.09.1 how a job that left the queue ended (final_state) is llmt-runtime's (llmt_runtime.jobs.classify_end,
+with omct's out-of-memory advice), and status() reports llmt-runtime's version ("runtime"); the rest of the SLURM layer
+moves in phase 2.
 
 Implements llm-translators' docs/EXECUTION.md (from cfd-translator's executor). Settings (environment):
     OMCT_EXECUTOR          local | slurm (local)
@@ -317,8 +321,10 @@ def node_list() -> str | None:
 
 def status() -> dict:
     """The 'executor' key of tool_status (read by llmt status)."""
+    from llmt_runtime import __version__ as runtime_version
     base = {"procs": procs_of({}), "timeout_s": timeout_s(), "caps": caps(),
-            "compile_procs": int(os.environ.get("OMCT_COMPILE_PROCS", "4") or 4)}
+            "compile_procs": int(os.environ.get("OMCT_COMPILE_PROCS", "4") or 4),
+            "runtime": runtime_version}         # llmt-runtime's version (machines() and llmt status show it)
     if kind() == "slurm":
         return {"kind": "slurm", "sbatch": shutil.which("sbatch"), "min_minutes": min_minutes(),
                 "time_limit_min": time_limit_min(), "time": os.environ.get("OMCT_SLURM_TIME", "timeout"),
@@ -510,21 +516,22 @@ def _tail(path: Path, n: int = 30) -> str:
         return "(no job.log)"
 
 
-def final_state(acct: str | None, log: str) -> tuple[str, str]:
-    a = (acct or "").upper()
-    if a.startswith("TIMEOUT") or (not acct and "DUE TO TIME LIMIT" in log):
-        return "timed_out", ("the SLURM time limit ended the job: give the study a longer run.timeout_s (the job asks "
-                             "for it plus 10 minutes), or with OMCT_SLURM_TIME=estimate rerun with "
-                             "OMCT_SLURM_TIME=timeout; or shorten the stop time / the sweep")
-    if a.startswith("OUT_OF_MEMORY") or (not acct and ("oom-kill" in log.lower() or "out of memory" in log.lower())):
-        return "out_of_memory", "out of memory: give the study run.mem (e.g. '4G'), or set OMCT_SLURM_MEM"
-    if a.startswith("CANCELLED") or (not acct and "CANCELLED" in log):
-        who = a.split("BY", 1)[1].strip() if "BY" in a else None
-        return "cancelled", "cancelled" + (f" by user {who}" if who else "")
-    if not acct and log == "(no job.log)":
-        return "cancelled", ("left the queue without starting (no job.log): cancelled while queued (scancel), or "
-                             "SLURM dropped it; submit it again if it was not cancelled on purpose")
-    return "failed", f"the job ended without a result ({acct or 'no accounting'}); the end of job.log:\n{log}"
+def final_state(acct: str | None, log: str, folder: Path | None = None) -> tuple[str, str]:
+    """(state, why) of a job that left the queue without a result, from sacct's state and the end of job.log ('(no
+    job.log)' when there is none): llmt-runtime's rules (jobs.classify_end), with omct's out-of-memory advice and
+    time-limit hint. SLURM's out-of-memory wording 'Detected N oom_kill events' counts whatever sacct says (before
+    2026.11.09.1 only 'oom-kill', and only without accounting: such jobs came back as 'failed')."""
+    from llmt_runtime import jobs as J
+
+    from .runtime import RT
+    has_log = log != "(no job.log)"
+    job = {}
+    if folder is not None:
+        try:
+            job = json.loads((Path(folder) / "job.json").read_text())
+        except (OSError, ValueError):
+            pass
+    return J.classify_end(RT, acct, log if has_log else "", has_log=has_log, folder=folder, job=job)
 
 
 def slurm_states(request: Path, names: list[str], studies: dict | None = None, write: bool = True) -> dict:
@@ -570,9 +577,9 @@ def slurm_states(request: Path, names: list[str], studies: dict | None = None, w
             continue
         if (request / n / f"{n}.json").is_file():           # finished between the calls
             continue
-        state, why = final_state((acct or {}).get(jid), _tail(request / n / "job.log"))
+        state, why = final_state((acct or {}).get(jid), _tail(request / n / "job.log"), request / n)
         node, here = _JOB_NODE.get(jid), local_node() if len(slurm_nodes(all_nodes=True)) > 1 else None
-        if (state in ("failed", "cancelled") and "by user" not in why and not (request / n / "job.log").exists()
+        if (state in ("failed", "cancelled") and " by " not in why and not (request / n / "job.log").exists()
                 and here and node and node != here):
             state, why = "failed", (f"the job went to node {node} and left no job.log: "
                                     f"that node cannot see {request} (its filesystem is not shared with this one). "

@@ -1,5 +1,5 @@
 """api.py — what the CLI and the MCP server call. JSON in, JSON out.
-Version: 2026.11.07.1
+Version: 2026.11.09.1
 
     tool_status()                  versions; omc, MSL, the C compiler, the build cache; the executor and its caps
     study_format()                 the study format, with status
@@ -28,7 +28,6 @@ import base64
 import json
 import multiprocessing as mp
 import os
-import re
 import shutil
 import time
 import uuid
@@ -143,7 +142,7 @@ def _request_dir(prefix: str) -> Path:
     return d
 
 
-REQUEST_NAME = re.compile(r"^run_[A-Za-z0-9_.-]{1,80}$")
+from llmt_runtime.requests import REQUEST_NAME  # noqa: E402,F401 (run_<id>: the router names requests)
 
 
 def start(studies: dict, solver: str | None = None, prefix: str = "run", inline: bool = False,
@@ -165,10 +164,14 @@ def start(studies: dict, solver: str | None = None, prefix: str = "run", inline:
                           "reliable": False, "unreliable_because": ["invalid study"]}
         else:
             jobs.append({"name": n, "study": st, "folder": str(folder), "solver": s, "timeout": timeout_s(st)})
+    from llmt_runtime import requests as R
+
     from . import executor as X
-    (folder / "request.json").write_text(json.dumps({
-        "names": [j["name"] for j in jobs], "invalid": invalid, "solver": s, "started": time.time(),
-        "executor": X.kind(), "pid": os.getpid(), "studies": {j["name"]: j["study"] for j in jobs}}, default=float))
+    from .runtime import RT
+    # with the versions it is submitted with ("translator", llmt-runtime's "runtime"): status says what it ran with
+    (folder / "request.json").write_text(json.dumps(R.request_meta(
+        RT, names=[j["name"] for j in jobs], invalid=invalid, solver=s, started=time.time(),
+        executor=X.kind(), pid=os.getpid(), studies={j["name"]: j["study"] for j in jobs}), default=float))
     local = []
     for j in jobs:
         if not inline and X.use_slurm(j["study"], s):
@@ -257,7 +260,12 @@ def _collect(folder: Path) -> dict:
         else:
             pending.append(name)
             progress[name] = _progress(folder / name, timeout_s(meta["studies"].get(name)))
-    res = {"request": str(folder), "translator": __version__, "solver": meta["solver"], "done": not pending,
+    # the version the studies ran with (their results', else request.json's), and translator_now when this server
+    # runs another (llmt-runtime's ran_with; before 2026.11.09.1 the installed version, whatever the run used)
+    from llmt_runtime import requests as R
+
+    from .runtime import RT
+    res = {"request": str(folder), **R.ran_with(RT, meta, out), "solver": meta["solver"], "done": not pending,
            "pending": pending, "elapsed_s": round(time.time() - meta.get("started", time.time()), 1), "studies": out}
     if pending:
         res["progress"] = progress
@@ -310,21 +318,24 @@ def run(studies: dict, solver: str | None = None, wait: float | None = None, req
     request_name ('run_<id>'): the request folder's name, so a caller that loses the answer (llm-translators' router:
     'submitted_unconfirmed') knows where to look; a repeated call with the same name returns that request's status
     and submits nothing again (ROUTER.md, "Requests named by the router"; as cfdt 2026.11.06.1)."""
-    if request_name is not None:
-        if not isinstance(request_name, str) or not REQUEST_NAME.match(request_name):
-            return {"error": "request_name: 'run_' followed by letters, digits, _ . - (up to 80)"}
-        folder = out_root() / request_name
-        if (folder / "request.json").is_file():
-            res = status(str(folder), 0.0 if wait is None else min(wait, 15.0))
-            return dict(res, note="this request_name was submitted before: its status, nothing submitted again")
-        if folder.exists():
-            return {"error": f"request_name {request_name!r}: the folder exists but holds no request yet (being "
-                             "submitted?): call study_status(request) in a minute", "request": str(folder)}
-    if wait is None:
-        folder = start(studies, solver, inline=True, request_name=request_name)
-        return status(str(folder), 0)
+    from llmt_runtime import requests as R
+
+    from .runtime import RT
+    kind_, found = R.check_request_name(RT, request_name)     # llmt-runtime: new | repeat (its status) | error
+    if kind_ == "error":
+        return found
+    if kind_ == "repeat":
+        res = status(str(found), 0.0 if wait is None else min(wait, 15.0))
+        return dict(res, note=R.REPEAT_NOTE)
     t0 = time.time()
-    folder = start(studies, solver, request_name=request_name)
+    try:
+        folder = start(studies, solver, inline=wait is None, request_name=request_name)
+    except FileExistsError:                                   # another call took the name between the look and now
+        return {"error": f"request_name {request_name!r}: the folder exists but holds no request (still being "
+                         "submitted by an earlier call? call again in a few seconds)",
+                "request": str(out_root() / request_name)}
+    if wait is None:
+        return status(str(folder), 0)
     return status(str(folder), max(0.0, wait - (time.time() - t0)))     # submitting counts against the wait
 
 
@@ -471,7 +482,8 @@ def bench_status(bench_folder: str, wait_s: float = 0) -> dict:
         if n in res:
             res[n]["checks_run"] = {k: v.get("ok") for k, v in (r.get("checks") or {}).items()}
     sk = meta.get("skipped", {})
-    out = {"bench": str(folder), "solver": st["solver"], "translator": __version__, "done": st["done"],
+    ver = {k: st[k] for k in ("translator", "translator_now", "translator_note") if k in st}   # what the cases ran with
+    out = {"bench": str(folder), "solver": st["solver"], **(ver or {"translator": __version__}), "done": st["done"],
            "passed": [n for n, v in res.items() if v.get("passed")],
            "failed": [n for n, v in res.items() if not v.get("passed")], "pending": st.get("pending", []),
            "skipped": sk if isinstance(sk, dict) else {n: "unknown" for n in sk}, "cases": res}
