@@ -1,5 +1,5 @@
 """api.py — what the CLI and the MCP server call. JSON in, JSON out.
-Version: 2026.11.09.2
+Version: 2026.11.09.3
 
     tool_status()                  versions; omc, MSL, the C compiler, the build cache; the executor and its caps
     study_format()                 the study format, with status
@@ -22,6 +22,8 @@ SLURM jobs (OMCT_EXECUTOR=slurm, executor.py: one job per study). Every state is
 the same results; a local study still running in a process that ended is reported failed. From 2026.11.09.2 the
 SLURM states and the queue's CPUs behind jobs() are llmt-runtime's (through executor.slurm_states and
 executor.queue_summary), and cancel()'s flags and scancel are its cancel_request; the answers keep omct's shapes.
+From 2026.11.09.3 status() ends within an MCP call's deadline (3 s kept for the answer) and _close_pool is
+llmt-runtime's stop_pool.
 """
 from __future__ import annotations
 
@@ -130,9 +132,13 @@ _POOL = _Pool()
 
 
 def _close_pool():
-    if _POOL.pool is not None:
-        _POOL.pool.terminate()           # workers are daemons; quiet at exit (no Pool.__del__ noise)
-        _POOL.pool = None
+    """Stops the study pool (at exit, on a signal, on the stale-server exit). From 2026.11.09.3 with llmt-runtime's
+    stop_pool: SIGTERM to each worker (its handler ends its omc build or simulation), SIGKILL after 3 s to one inside a
+    long native call, then the pool; Pool.terminate() alone could wait on such a worker."""
+    pool, _POOL.pool = _POOL.pool, None
+    if pool is not None:
+        from llmt_runtime.workers import stop_pool
+        stop_pool(pool)                  # workers are daemons; quiet at exit (no Pool.__del__ noise)
 
 
 atexit.register(_close_pool)
@@ -310,6 +316,12 @@ def status(request: str, wait: float = 0.0) -> dict:
         return {"error": f"no request {folder}"}
     t0 = time.time()
     t_end = t0 + max(0.0, float(wait))
+    # in an MCP call, within its deadline (llmt-runtime's server: 48 s; from 2026.11.09.3), 3 s kept for the answer:
+    # the SLURM commands of a later look would get no time (as feat's _until)
+    from llmt_runtime.slurm import remaining
+    left = remaining()
+    if left is not None:
+        t_end = min(t_end, t0 + left - 3.0)
     while True:
         tc = time.time()
         res = _collect(folder)

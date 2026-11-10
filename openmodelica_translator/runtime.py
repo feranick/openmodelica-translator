@@ -1,5 +1,5 @@
 """runtime.py — omct's llmt-runtime: the executor code the translators share, with omct's settings and hooks.
-Version: 2026.11.09.2
+Version: 2026.11.09.3
 
     RT                 llmt_runtime.Runtime for omct (OMCT_ settings, the `omct` CLI, threads: sweep points at once)
     RUNTIME_VERSION    llmt-runtime's version (tool_status().executor.runtime)
@@ -12,8 +12,9 @@ cache miss, capped at the node's CPUs), the memory (executor.mem_auto: 1 GB + 25
 (executor.sweep_rounds: a sweep's rounds of points, so its time limit covers them all), job.sh's PYTHONPATH line
 (executor.script_lines), job.json's estimate_min and time_min (executor.job_extra), the progress of running jobs
 (api.job_progress), the out-of-memory advice and the timeout hint. The time limit itself and the #SBATCH resource lines
-are the runtime's defaults (ceil(runs x timeout / 60) + 10 minutes; --ntasks=1 --cpus-per-task=N). The MCP server's
-stale handling and log stay in mcp_server.py until phase 3.
+are the runtime's defaults (ceil(runs x timeout / 60) + 10 minutes; --ntasks=1 --cpus-per-task=N). Phase 3
+(2026.11.09.3): the MCP server's stale checks (every OMCT_STALE_CHECK_S, RT.stale_period: 10 s), the tool wrapper with
+its 48 s deadline, the log and the signal handlers are llmt-runtime's Server (mcp_server.GUARD, built on RT).
 
 The hooks are small wrappers that import executor and api when called: executor imports RT from here.
 """

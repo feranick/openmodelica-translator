@@ -1,6 +1,6 @@
 """test_api.py — the API (worker pool, request folders, status from files, cancel, jobs, benchmarks, pictures)
 and the MCP server's tool list. Runs with the reference solver: no OpenModelica needed.
-Version: 2026.11.07.1
+Version: 2026.11.09.3
 """
 import asyncio
 import json
@@ -121,9 +121,13 @@ def test_tools_run_off_the_event_loop_and_are_logged(tmp_path, monkeypatch):
     assert inspect.iscoroutinefunction(S.run_studies) and inspect.iscoroutinefunction(S.jobs)
     assert list(inspect.signature(S.run_studies).parameters) == ["studies", "solver", "wait_s", "request_name"]
     monkeypatch.setenv("OMCT_OUT", str(tmp_path))
-    p = S._log_path()                                    # (not _start_log: no signal handlers in the test process)
-    with open(p, "a") as f:
-        monkeypatch.setitem(S._LOG, "file", f)
+    # the log is llmt-runtime's (S.GUARD, from 2026.11.09.3; omct's _log_path and _LOG are gone): a file of our own,
+    # not GUARD.start_log (no faulthandler or excepthook in the test process)
+    p = tmp_path / ".server" / "test.log"
+    p.parent.mkdir(parents=True)
+    with open(p, "a", buffering=1) as f:
+        monkeypatch.setattr(S.GUARD, "log_file", f)
+        monkeypatch.setattr(S.GUARD, "log_path", str(p))
         out = asyncio.run(S.jobs(limit=1))
     assert "requests" in out
     log = p.read_text()
@@ -163,8 +167,10 @@ def test_stale_server_refuses_when_idle_and_warns_when_not(tmp_path, monkeypatch
     from openmodelica_translator import mcp_server as S
     monkeypatch.setenv("OMCT_OUT", str(tmp_path))
     exits = []
-    monkeypatch.setattr(S, "_stale", lambda: S._STATE["why"])
-    monkeypatch.setattr(S, "_exit_soon", lambda why, delay: exits.append(why) or S._STATE.update(exiting=True))
+    # GUARD (llmt-runtime, 2026.11.09.3) calls its own stale() and exit_soon(), not S._stale / S._exit_soon: patched
+    # there; S._STATE is GUARD.state
+    monkeypatch.setattr(S.GUARD, "stale", lambda: S._STATE["why"])
+    monkeypatch.setattr(S.GUARD, "exit_soon", lambda why, delay: exits.append(why) or S._STATE.update(exiting=True))
     monkeypatch.setitem(S._STATE, "why", "release r2 is installed; this server runs r1 (1.0)")
     monkeypatch.setitem(S._STATE, "exiting", False)
     monkeypatch.setitem(S._STATE, "shared", False)
@@ -203,8 +209,8 @@ def test_stale_install_never_exits_outside_a_server(monkeypatch):
     never exit the process, however stale the install looks."""
     from openmodelica_translator import mcp_server as S
     exits = []
-    monkeypatch.setattr(S, "_stale", lambda: S._STATE["why"])
-    monkeypatch.setattr(S, "_exit_soon", lambda why, delay: exits.append(why))
+    monkeypatch.setattr(S.GUARD, "stale", lambda: S._STATE["why"])        # (GUARD's own methods: see above)
+    monkeypatch.setattr(S.GUARD, "exit_soon", lambda why, delay: exits.append(why))
     monkeypatch.setitem(S._STATE, "why", "release r2 is installed; this server runs r1 (1.0)")
     monkeypatch.setitem(S._STATE, "shared", True)
     monkeypatch.setitem(S._STATE, "serving", False)

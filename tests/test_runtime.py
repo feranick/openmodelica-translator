@@ -1,7 +1,10 @@
 """omct on llmt-runtime: the shared pieces are the runtime's, configured for omct (2026.11.09.1, phase 1: workers,
-final_state, versions; 2026.11.09.2, phase 2: the SLURM layer, with omct's sizing as hooks).
-Version: 2026.11.09.2
+final_state, versions; 2026.11.09.2, phase 2: the SLURM layer, with omct's sizing as hooks; 2026.11.09.3, phase 3: the
+MCP server's stale checks, tool wrapper, deadline and log).
+Version: 2026.11.09.3
 """
+import asyncio
+import inspect
 import json
 import math
 import os
@@ -259,3 +262,111 @@ def test_benchmarks_through_slurm_run_once(slurm, monkeypatch):
     assert not (Path(inline["bench"]) / "rc_step" / "job.json").exists()
     assert [f.name for f in (slurm / "jobs").glob("*.json")] == ["1001.json"]
     assert os.environ["OMCT_EXECUTOR"] == "slurm"
+
+
+# ---- 2026.11.09.3, phase 3: the MCP server's common code (stale checks, refusing and exiting, the tool wrapper with its
+# 48 s deadline, the log, the signal handlers) is llmt-runtime's Server: mcp_server.GUARD
+
+def _mcp():
+    pytest.importorskip("mcp")
+    from openmodelica_translator import mcp_server as M
+    return M
+
+
+def test_server_guard_configured_for_omct(monkeypatch):
+    M = _mcp()
+    from llmt_runtime import server as SV
+    g = M.GUARD
+    assert isinstance(g, SV.Server) and g.rt is RT
+    assert g.pkg_dir == Path(api.__file__).resolve().parent
+    assert g.busy is M._pool_busy and g.shutdown is api._close_pool
+    assert M._STATE is g.state and M._LOCK is g.lock and M.STALE_MARK == SV.STALE_MARK == "STALE_SERVER"
+    assert M.stale_reason is SV.stale_reason and RT.stale_period == 10.0
+    assert SV.BUDGET_S == 48.0 and not g.state["serving"]                  # only main() (GUARD.serve()) serves
+    monkeypatch.setenv("OMCT_STALE_CHECK_S", "0.5")                         # 20 s before 2026.11.09.3, now 10 s
+    assert SV.Server(RT, api.__file__).period == 0.5
+    monkeypatch.delenv("OMCT_STALE_CHECK_S")
+    assert SV.Server(RT, api.__file__).period == 10.0
+
+
+def test_server_tools_keep_their_signatures():
+    """The runtime's wrapper keeps each tool's name, parameters and docstring (functools.wraps): the MCP SDK builds the
+    tool's schema from them."""
+    M = _mcp()
+    sig = inspect.signature(M.run_studies)
+    assert list(sig.parameters) == ["studies", "solver", "wait_s", "request_name"]
+    assert sig.parameters["wait_s"].default == 45 and sig.parameters["request_name"].default is None
+    assert inspect.iscoroutinefunction(M.run_studies) and M.run_studies.__name__ == "run_studies"
+    assert M.run_studies.__doc__.startswith("Builds (or reuses) the Modelica model of each study")
+    assert list(inspect.signature(M.study_status).parameters) == ["request", "wait_s"]
+
+
+def test_server_tool_error_names_the_log_and_calls_have_a_deadline(tmp_path, monkeypatch):
+    """A crash comes back as a ToolError with its text and the log that holds the traceback; a call runs under the 48 s
+    deadline (omct had none: a SLURM command could keep a call past the router's limit)."""
+    M = _mcp()
+    p = tmp_path / ".server" / "omct.log"
+    p.parent.mkdir(parents=True)
+
+    def boom(*a, **kw):
+        raise KeyError("components")
+    with open(p, "a", buffering=1) as f:
+        monkeypatch.setattr(M.GUARD, "log_file", f)
+        monkeypatch.setattr(M.GUARD, "log_path", str(p))
+        monkeypatch.setattr(api, "jobs", boom)
+        with pytest.raises(M.ToolError) as e:
+            asyncio.run(M.jobs(limit=1))
+        monkeypatch.setattr(api, "jobs", lambda limit, active: {"left": S.remaining()})
+        left = asyncio.run(M.jobs(limit=1))["left"]
+        M.slog("from omct's slog")
+    assert str(e.value) == f"KeyError: 'components' (traceback: {p})"
+    assert 0 < left <= 48.0 and S.remaining() is None
+    log = p.read_text()
+    assert "call jobs limit=1" in log and "FAIL jobs" in log and "Traceback" in log and "done jobs" in log
+    assert "from omct's slog" in log and M.GUARD.state["inflight"] == 0
+
+
+def test_server_stale_checkout_note_then_refusal(tmp_path, monkeypatch):
+    """omct's folder on disk carries another version (a fake package folder here): answers carry server_stale (a
+    checkout's server does not exit by default); with OMCT_EXIT_WHEN_STALE=1 an idle server refuses with STALE_SERVER
+    and exits."""
+    M = _mcp()
+    g = M.GUARD
+    pkg = tmp_path / "checkout" / "openmodelica_translator"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text('__version__ = "2099.01.01.1"\n')
+    exits = []
+    monkeypatch.setattr(g, "pkg_dir", pkg)
+    monkeypatch.setattr(g, "busy", lambda: False)          # (studies other tests left in the pool are not this test's)
+    monkeypatch.setattr(g, "exit_soon", lambda why, delay: exits.append((why, delay)) or g.state.update(exiting=True))
+    for k, v in (("checked", 0.0), ("why", None), ("shared", False), ("serving", True), ("exiting", False)):
+        monkeypatch.setitem(g.state, k, v)
+    monkeypatch.delenv("OMCT_EXIT_WHEN_STALE", raising=False)
+    monkeypatch.setattr(api, "jobs", lambda limit, active: {"requests": []})
+    why = f"version 2099.01.01.1 is installed; this server runs {__version__}"
+    out = asyncio.run(M.jobs(limit=1))
+    assert out == {"requests": [], "server_stale": f"{why}: this answer comes from the old code; restart the MCP server"}
+    assert not exits
+    monkeypatch.setenv("OMCT_EXIT_WHEN_STALE", "1")
+    with pytest.raises(M.ToolError) as e:
+        asyncio.run(M.jobs(limit=1))
+    assert str(e.value) == (f"STALE_SERVER: {why}. This server is exiting so that the next one runs the installed "
+                            "version: call again.")
+    assert exits == [(why, 1.0)] and g.state["inflight"] == 0
+
+
+def test_status_ends_within_the_calls_deadline(tmp_path, monkeypatch):
+    """study_status may wait 50 s, but a call has 48 (llmt-runtime's deadline): api.status ends 3 s before the
+    deadline, so its last SLURM look still has time. Without a deadline (the CLI) it waits as asked."""
+    monkeypatch.setenv("OMCT_OUT", str(tmp_path))
+    monkeypatch.setenv("OMCT_EXECUTOR", "local")
+    req = tmp_path / "run_deadline"
+    req.mkdir()
+    (req / "request.json").write_text(json.dumps({"names": ["s"], "solver": "ref", "started": time.time(),
+                                                  "pid": os.getpid(), "studies": {"s": study(RC)}}))
+    t0 = time.time()
+    with S.deadline(4.5):
+        r = api.status(str(req), 50)
+    assert r["pending"] == ["s"] and time.time() - t0 < 3.5
+    t0 = time.time()
+    assert api.status(str(req), 1.0)["pending"] == ["s"] and 0.4 < time.time() - t0 < 3.0

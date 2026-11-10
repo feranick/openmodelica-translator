@@ -1,6 +1,6 @@
 """mcp_server.py — MCP server: lets LLM-based tools simulate systems (circuits, drives, heat paths, controllers)
 with OpenModelica and the Modelica Standard Library.
-Version: 2026.11.07.1
+Version: 2026.11.09.3
 
 Tools (all JSON):
   study_format      the study format: component kinds, ports, parameters, analyses, conventions. Read it first.
@@ -16,12 +16,17 @@ Tools (all JSON):
   render_images     more pictures of a finished study, without running again
   get_file          a written file as base64 (for callers on another machine)
 
-Log:  $OMCT_OUT/.server/<time>_<host>_<pid>.log: every tool call (start, end, duration, failure with traceback), signals,
-      fatal errors (faulthandler), exit; the last 20 servers' logs are kept.
+From 2026.11.09.3 (phase 3 of llmt-runtime) the common server code is llmt-runtime's (llmt_runtime.server.Server: GUARD
+below): the stale check, refusing and exiting, the tool wrapper, the log and the signal handlers.
+Log:  $OMCT_OUT/.server/<time>_<host>_<pid>.log: every tool call (call, done with its duration, FAIL with the
+      traceback), refusals, signals, fatal errors (faulthandler), exit; the newest 20 servers' logs are kept.
+Time: every tool runs in a worker thread under a deadline of 48 s (llmt_runtime.server.BUDGET_S): SLURM commands and
+      study_status keep to it, so each tool answers within its wait_s (at most 50 s; waits end 3 s before the deadline).
 Stale: a server keeps the code it started with. When a newer release is installed (shared install: <prefix>/current
-      points elsewhere; checkout: __init__.py has another version), a call that finds the server idle is refused
-      with STALE_SERVER (the router repeats it on a new server) and the server exits; an idle server exits within
-      20 s by itself. Busy servers answer (old code, with a server_stale warning) and exit once idle.
+      points elsewhere; checkout: omct's or llmt-runtime's __init__.py has another version), a call that finds the
+      server idle is refused with STALE_SERVER (the router repeats it on a new server) and the server exits; an idle
+      server exits within about two periods by itself (OMCT_STALE_CHECK_S, 10 s). Busy servers answer (old code, with
+      a server_stale warning) and exit once idle; the exit stops the pool for at most 10 s, then exits anyway.
       OMCT_EXIT_WHEN_STALE=1 always, 0 never; default: shared installs only.
 Run:  omct-mcp                       (stdio)
       omct-mcp --http 8770 [--host 0.0.0.0]
@@ -29,22 +34,12 @@ Run:  omct-mcp                       (stdio)
 from __future__ import annotations
 
 import argparse
-import atexit
-import faulthandler
-import functools
-import os
-import resource
-import re
-import signal
-import sys
-import threading
-import time
-import traceback
-from pathlib import Path
 
-import anyio.to_thread
+from llmt_runtime.server import STALE_MARK, Server  # noqa: F401 (STALE_MARK: omct's name, tests use it)
+from llmt_runtime.server import stale_reason  # noqa: F401 (omct's name: (why, shared) for a package folder)
 
 from . import api
+from .runtime import RT
 
 try:  # MCP Python SDK 2.x
     from mcp.server.mcpserver import Image
@@ -91,211 +86,68 @@ sweep.table.<i>.{params, values, reliable}."""
 server = _Server("openmodelica-translator", instructions=INSTRUCTIONS)
 
 
-# ---- the server's own log: what it did before a disconnect (behind the router its stderr is not kept) --------
-def _log_path():
-    import socket
-    d = api.out_root() / ".server"
-    d.mkdir(parents=True, exist_ok=True)
-    logs = sorted(d.glob("*.log"), key=lambda p: p.stat().st_mtime)
-    for old in logs[:-20]:                               # keep the last 20 servers' logs
-        old.unlink(missing_ok=True)
-    return d / f"{time.strftime('%Y%m%d_%H%M%S')}_{socket.gethostname().split('.')[0]}_{os.getpid()}.log"
-
-
-_LOG = {"file": None}
-
-
-def slog(msg: str) -> None:
-    f = _LOG["file"]
-    if f is None:
-        return
-    try:
-        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} pid {os.getpid()} maxrss {rss} {msg}\n")
-        f.flush()
-    except Exception:  # noqa: BLE001 - logging never breaks a call
-        pass
-
-
-def _summary(kwargs: dict) -> str:
-    out = []
-    for k, v in kwargs.items():
-        if isinstance(v, dict):
-            names = list(v)[:6]
-            flags = sorted({f for st in v.values() if isinstance(st, dict) for f in ("sweep", "converge", "modelica", "run")
-                            if st.get(f)})
-            out.append(f"{k}={names}{' ' + ','.join(flags) if flags else ''}")
-        else:
-            out.append(f"{k}={str(v)[:80]}")
-    return " ".join(out)
-
-
 # ---- a stale server: a newer version installed since this process started ----------------------------------
 # A server keeps the code it started with. The router keeps its servers for hours, so after a deploy requests
 # still ran the old release (carbonio, 2026-10-23: 2026.10.23.2 installed, 2026.10.22.1 running). Now a stale
 # server that has nothing running exits: a call that finds it stale gets STALE_MARK (the router then opens a new
 # server, which runs the installed release, and repeats the call there), and a watcher exits it when idle.
-STALE_MARK = "STALE_SERVER"
-VERSION_RE = re.compile(r'^__version__\s*=\s*"([^"]+)"', re.M)
-_STATE = {"inflight": 0, "exiting": False, "checked": 0.0, "why": None, "shared": False, "serving": False}
-_LOCK = threading.Lock()
-
-
-def stale_reason(pkg_dir: Path, running: str) -> tuple[str | None, bool]:
-    """(why this process runs old code or None, shared install?). Shared install (a release under
-    <prefix>/releases with RELEASE.json): <prefix>/current now points to another release. Otherwise: the
-    package's __init__.py on disk carries another version (a checkout or editable install updated in place)."""
-    rel = pkg_dir.parent.parent
-    if (rel / "RELEASE.json").is_file() and rel.parent.name == "releases":
-        cur = rel.parent.parent / "current"
-        try:
-            if cur.exists() and cur.resolve() != rel.resolve():
-                return f"release {cur.resolve().name} is installed; this server runs {rel.name} ({running})", True
-        except OSError:
-            pass
-        return None, True
-    try:
-        m = VERSION_RE.search((pkg_dir / "__init__.py").read_text())
-    except OSError:
-        return None, False
-    if m and m.group(1) != running:
-        return f"version {m.group(1)} is installed; this server runs {running}", False
-    return None, False
-
-
-def _stale() -> str | None:
-    """stale_reason for this process, checked at most every 2 s."""
-    now = time.time()
-    if now - _STATE["checked"] > 2.0:
-        _STATE["why"], _STATE["shared"] = stale_reason(Path(api.__file__).resolve().parent, api.__version__)
-        _STATE["checked"] = now
-    return _STATE["why"]
-
-
-def _may_exit() -> bool:
-    """Only a server started by main() (never the tools called in-process: tests, scripts). Then
-    OMCT_EXIT_WHEN_STALE: 1 always, 0 never; default: in a shared install (its servers are the router's).
-    (2026.10.23.3 had no 'serving': llmt deploy --test runs the new release's tests before switching current to it,
-    so the tests saw a 'stale' install, were refused and os._exit(0) ended pytest with exit code 0.)"""
-    if not _STATE["serving"]:
-        return False
-    v = os.environ.get("OMCT_EXIT_WHEN_STALE", "").strip()
-    return v == "1" or (v != "0" and _STATE["shared"])
-
+# Only a server started by main() (GUARD.serve()) refuses or exits: 2026.10.23.3 had no such rule, and llmt deploy
+# --test, which runs the new release's tests before switching current to it, saw a 'stale' install, was refused and
+# os._exit(0) ended pytest with exit code 0.
 
 def _pool_busy() -> bool:
     """Studies still running in this process's worker pool (they would die with it)."""
     return any(not r.ready() for jobs in api._POOL.jobs.values() for r in jobs.values())
 
 
-def _exit_soon(why: str, delay: float) -> None:
-    """Exits in `delay` s (an answer in flight reaches the caller first). Caller holds _LOCK."""
-    if _STATE["exiting"]:
-        return
-    _STATE["exiting"] = True
-    slog(f"exit: {why}")
-    sys.stderr.write(f"omct: {STALE_MARK}: exiting to pick up the new code: {why}\n")
-    sys.stderr.flush()
+# The server's common state (llmt-runtime): stale checks every OMCT_STALE_CHECK_S (10 s), calls in flight, the exit
+# (api._close_pool, bounded by llmt_runtime.server.SHUTDOWN_S), the log, the tool wrapper with its 48 s deadline.
+GUARD = Server(RT, api.__file__, busy=_pool_busy, shutdown=api._close_pool)
 
-    def go():
-        time.sleep(delay)
-        api._close_pool()
-        os._exit(0)
-    threading.Thread(target=go, daemon=True, name="omct-exit").start()
+# omct's names before 2026.11.09.3, kept as thin wrappers over GUARD. GUARD calls its own methods, not these: a test
+# that changes what GUARD does patches GUARD (monkeypatch.setattr(S.GUARD, "stale", ...)), not these names.
+_STATE = GUARD.state           # the same dict: inflight, background, exiting, checked, why, shared, serving
+_LOCK = GUARD.lock
+
+
+def slog(msg: str) -> None:
+    """A line in the server's log (GUARD.log; nothing before main() opened it)."""
+    GUARD.log(msg)
+
+
+def _stale() -> str | None:
+    """stale_reason for this process, checked at most every 2 s (GUARD.stale)."""
+    return GUARD.stale()
+
+
+def _may_exit() -> bool:
+    """Only a server started by main(); then OMCT_EXIT_WHEN_STALE: 1 always, 0 never; default: a shared install."""
+    return GUARD.may_exit()
+
+
+def _exit_soon(why: str, delay: float) -> None:
+    """Exits in `delay` s after stopping the pool (GUARD.exit_soon). Caller holds _LOCK."""
+    GUARD.exit_soon(why, delay)
 
 
 def _enter_call() -> str | None:
-    """Counts a call in. Returns a STALE_MARK message (the call is refused) when this server is stale, may exit
-    and has nothing else running; otherwise None."""
-    with _LOCK:
-        why = _stale()
-        if why and _may_exit() and (_STATE["exiting"] or (not _STATE["inflight"] and not _pool_busy())):
-            _exit_soon(why, 1.0)
-            return (f"{STALE_MARK}: {why}. This server is exiting so that the next one runs the installed version: "
-                    f"call again.")
-        _STATE["inflight"] += 1
-        return None
+    """Counts a call in; a STALE_MARK message when the call is refused (GUARD.enter_call)."""
+    return GUARD.enter_call()
 
 
 def _leave_call() -> None:
-    with _LOCK:
-        _STATE["inflight"] -= 1
+    GUARD.leave_call()
 
 
-def _watch_install(period: float = 20.0) -> None:
-    """Exits this server when it is stale, may exit and is idle (no calls, no pool studies)."""
-    def loop():
-        while True:
-            time.sleep(period)
-            with _LOCK:
-                if _stale() and _may_exit() and not _STATE["inflight"] and not _pool_busy():
-                    _exit_soon(_STATE["why"], 0.0)
-    threading.Thread(target=loop, daemon=True, name="omct-watch-install").start()
-
-
-def _logged(fn):
-    """Logs the call, and runs the (blocking) tool in a worker thread: run_studies and study_status wait up to 50 s,
-    and on an event loop they would block every other request and ping of the connection meanwhile (MCP SDK
-    versions differ in whether they do this themselves)."""
-    @functools.wraps(fn)
-    async def wrap(*args, **kwargs):
-        t0 = time.time()
-        slog(f"call {fn.__name__} {_summary(kwargs)}")
-        refused = _enter_call()
-        if refused:
-            slog(f"refused {fn.__name__}: {refused}")
-            raise ToolError(refused)
-        try:
-            r = await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
-        except Exception as exc:                         # noqa: BLE001 - logged, then raised as a ToolError
-            slog(f"FAIL {fn.__name__} after {time.time() - t0:.1f} s: {type(exc).__name__}: {exc}\n"
-                 + traceback.format_exc())
-            if isinstance(exc, ToolError):
-                raise
-            # as a ToolError the message reaches the caller (SDK 2.x hides the text of any other exception)
-            where = f" (traceback: {_LOG['path']})" if _LOG.get("path") else ""
-            raise ToolError(f"{type(exc).__name__}: {exc}{where}") from exc
-        except BaseException as exc:                     # noqa: BLE001 - cancellation, exit: logged, re-raised
-            slog(f"FAIL {fn.__name__} after {time.time() - t0:.1f} s: {type(exc).__name__}")
-            raise
-        finally:
-            _leave_call()
-        slog(f"done {fn.__name__} {time.time() - t0:.1f} s")
-        if _STATE["why"] and isinstance(r, dict):
-            r = {**r, "server_stale": f"{_STATE['why']}: this answer comes from the old code"
-                                      + ("; the server restarts when idle" if _may_exit() else
-                                         "; restart the MCP server")}
-        return r
-    return wrap
-
-
-def _start_log() -> None:
-    try:
-        p = _log_path()
-        _LOG["file"] = open(p, "a", buffering=1)
-        _LOG["path"] = str(p)
-    except OSError:
-        return
-    faulthandler.enable(file=_LOG["file"])              # a fatal signal (segfault, abort) dumps every thread here
-    slog(f"start omct {api.__version__} argv {sys.argv[1:]} python {sys.version.split()[0]}")
-    atexit.register(lambda: slog("exit"))
-    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
-        def handler(signum, frame, prev=signal.getsignal(sig)):
-            slog(f"signal {signal.Signals(signum).name} received")
-            api._close_pool()            # re-raising skips atexit: stop the workers first (llmt servers --stop)
-            signal.signal(signum, prev if callable(prev) or prev in (signal.SIG_DFL, signal.SIG_IGN) else signal.SIG_DFL)
-            os.kill(os.getpid(), signum)
-        signal.signal(sig, handler)
-    old_hook = sys.excepthook
-
-    def hook(t, v, tb):
-        slog("uncaught " + "".join(traceback.format_exception(t, v, tb)))
-        old_hook(t, v, tb)
-    sys.excepthook = hook
+def _watch_install(period: float | None = None) -> None:
+    """Exits this server when it is stale, may exit and is idle (GUARD.watch; period: GUARD.period, 10 s)."""
+    if period is not None:
+        GUARD.period = float(period)
+    GUARD.watch()
 
 
 @server.tool()
-@_logged
+@GUARD.tool(ToolError)
 def study_format() -> dict:
     """The study format: component kinds by domain (ports, parameters with SI units and defaults, variables,
     initial values), analyses, derived quantities, conventions, an example; and whether omc and MSL are found."""
@@ -303,7 +155,7 @@ def study_format() -> dict:
 
 
 @server.tool()
-@_logged
+@GUARD.tool(ToolError)
 def validate_studies(studies: dict) -> dict:
     """Static checks of studies given as {name: study}. Returns per study ok, errors (each says the fix), warnings,
     and for a valid study estimate {minutes (upper bound), procs, mem_mb}: what its run would ask for."""
@@ -311,7 +163,7 @@ def validate_studies(studies: dict) -> dict:
 
 
 @server.tool()
-@_logged
+@GUARD.tool(ToolError)
 def run_studies(studies: dict, solver: str = "auto", wait_s: float = 45, request_name: str | None = None) -> dict:
     """Builds (or reuses) the Modelica model of each study, runs it with OpenModelica and checks it. Per study:
     outputs, derived quantities, steady values or the linearisation, checks (balance, initialisation, solver,
@@ -323,7 +175,7 @@ def run_studies(studies: dict, solver: str = "auto", wait_s: float = 45, request
 
 
 @server.tool()
-@_logged
+@GUARD.tool(ToolError)
 def study_status(request: str, wait_s: float = 45) -> dict:
     """The studies of a run_studies request (its 'request' path): finished ones with their results, the others in
     'pending' with their stage. Waits up to wait_s seconds (at most 50)."""
@@ -331,7 +183,7 @@ def study_status(request: str, wait_s: float = 45) -> dict:
 
 
 @server.tool()
-@_logged
+@GUARD.tool(ToolError)
 def get_model(study: dict, name: str = "study") -> dict:
     """The generated Modelica model (model.mo), the omc build script (build.mos) and the values applied at run
     time (params.txt) of one study, and which initial values are fixed; nothing runs."""
@@ -339,7 +191,7 @@ def get_model(study: dict, name: str = "study") -> dict:
 
 
 @server.tool()
-@_logged
+@GUARD.tool(ToolError)
 def run_benchmarks(names: list[str] | None = None, solver: str = "auto", wait_s: float = 30) -> dict:
     """Runs the benchmark studies with closed-form answers (RC, RLC step and poles, mass-spring-damper, inertia,
     DC motor, thermal RC and steady state, two-mass drive, PI loop, a sweep) and reports pass or fail per check;
@@ -349,7 +201,7 @@ def run_benchmarks(names: list[str] | None = None, solver: str = "auto", wait_s:
 
 
 @server.tool()
-@_logged
+@GUARD.tool(ToolError)
 def bench_status(bench: str, wait_s: float = 45) -> dict:
     """Pass/fail of benchmarks started by run_benchmarks (its 'bench' folder): finished cases with their checks,
     the others pending."""
@@ -357,7 +209,7 @@ def bench_status(bench: str, wait_s: float = 45) -> dict:
 
 
 @server.tool()
-@_logged
+@GUARD.tool(ToolError)
 def jobs(limit: int = 20, active: bool = False) -> dict:
     """Recent requests on this machine (from any conversation) with each study's state; active=True: only
     requests with studies still running."""
@@ -365,14 +217,14 @@ def jobs(limit: int = 20, active: bool = False) -> dict:
 
 
 @server.tool()
-@_logged
+@GUARD.tool(ToolError)
 def cancel(request: str, names: list[str] | None = None) -> dict:
     """Stops a request's studies (or the named ones) with a cancel flag; returns their states."""
     return api.cancel(request, names)
 
 
 @server.tool()
-@_logged
+@GUARD.tool(ToolError)
 def get_image(path: str) -> Image:
     """A PNG written by run_studies (results' images.<name>.path) or render_images: time plots of the outputs (one
     panel per unit) or Bode plots. You see it, but the user usually does not (tool results are hidden or collapsed
@@ -381,7 +233,7 @@ def get_image(path: str) -> Image:
 
 
 @server.tool()
-@_logged
+@GUARD.tool(ToolError)
 def render_images(study_folder: str, images: list | bool = True) -> dict:
     """New pictures of a finished study without running again: study_folder is <request>/<study name> (the folder
     holding <name>.json). images: true (the defaults) or [{name, outputs: [...], window: [t0, t1]} | {name,
@@ -390,7 +242,7 @@ def render_images(study_folder: str, images: list | bool = True) -> dict:
 
 
 @server.tool()
-@_logged
+@GUARD.tool(ToolError)
 def get_file(path: str, max_mb: float = 20) -> dict:
     """A file written by run_studies (a path from its result: model.mo, result.mat, sim.log, ...) as base64."""
     return api.read_file(path, max_mb)
@@ -401,9 +253,9 @@ def main() -> None:
     ap.add_argument("--http", type=int, help="serve MCP over streamable HTTP on this port (default: stdio)")
     ap.add_argument("--host", default="127.0.0.1")
     a = ap.parse_args()
-    _start_log()
-    _STATE["serving"] = True
-    _watch_install()
+    # llmt-runtime: may now refuse stale calls and exit; the log ($OMCT_OUT/.server); SIGTERM/SIGHUP/SIGINT stop the
+    # pool first (re-raising skips atexit: llmt servers --stop); the install watch
+    GUARD.serve()
     if a.http is None:
         server.run()
     elif _V2:
