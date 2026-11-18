@@ -1,5 +1,5 @@
 """api.py — what the CLI and the MCP server call. JSON in, JSON out.
-Version: 2026.11.09.3
+Version: 2026.11.18.1
 
     tool_status()                  versions; omc, MSL, the C compiler, the build cache; the executor and its caps
     study_format()                 the study format, with status
@@ -87,10 +87,29 @@ def study_format() -> dict:
     return {**_format(), "translator": __version__, "status": tool_status()}
 
 
+def _after_problems(request, name: str, study: dict, studies: dict) -> list[str]:
+    """run.after / run.after_mode (llmt-runtime's after_problems): the runs waited for exist on this machine, no
+    cycle, not itself. Only for a study that has them (as cfdt's)."""
+    r = study.get("run") if isinstance(study, dict) else None
+    if not isinstance(r, dict) or not {"after", "after_mode"} & set(r):
+        return []
+    from .runtime import RT
+    return RT.jobs.after_problems(request, name, study, studies)
+
+
 def validate(studies: dict) -> dict:
     """Static checks; each valid study also gets "estimate": {minutes, procs, mem_mb} (the router's placement)."""
     from .executor import estimate
     out = _validate(studies)
+    for n, st in (studies.items() if isinstance(studies, dict) else []):
+        rec = out.get("studies", {}).get(n)
+        if rec is None or not rec.get("ok"):
+            continue
+        ap = _after_problems(None, n, st, studies)
+        if ap:
+            rec["ok"] = False
+            rec["errors"] = ap + rec.get("errors", [])
+            out["ok"] = False
     try:
         solver = _solver(None)
     except ValueError:
@@ -167,6 +186,9 @@ def start(studies: dict, solver: str | None = None, prefix: str = "run", inline:
     invalid, jobs = {}, []
     for n, st in studies.items():
         v = validate_study(st)
+        ap = _after_problems(folder, n, st, studies) if v["ok"] else []
+        if ap:                                     # run.after: checked with the request folder, before any submission
+            v = {"ok": False, "errors": ap, "warnings": v["warnings"]}
         if not v["ok"]:
             invalid[n] = {"ok": False, "why": "invalid study", "errors": v["errors"], "warnings": v["warnings"],
                           "reliable": False, "unreliable_because": ["invalid study"]}
@@ -398,16 +420,17 @@ def jobs(limit: int = 20, active: bool = False) -> dict:
     return {"translator": __version__, "executor": executor_status(), **X.queue_summary(), "requests": out}
 
 
-def cancel(request: str, names: list[str] | None = None) -> dict:
+def cancel(request: str, names: list[str] | None = None, at: str | None = None) -> dict:
     """Stops the request's studies (or the named ones): a cancel flag in each unfinished study's folder (the runner
     checks it in whatever process runs the study) and scancel for SLURM jobs, queued or running: llmt-runtime's
-    cancel_request (2026.11.09.2); 'error' when scancel failed. Then their states."""
+    cancel_request (2026.11.09.2); 'error' when scancel failed. Then their states. at: 'now' (default) or 'job_end'
+    (the current jobs finish, nothing after them starts: llmt-runtime 2026.11.18.1)."""
     from .runtime import RT
     folder = Path(request).expanduser()
     if not (folder / "request.json").is_file():
         return {"error": f"no request {folder}"}
     meta = json.loads((folder / "request.json").read_text())
-    c = RT.jobs.cancel_request(folder, meta, names)
+    c = RT.jobs.cancel_request(folder, meta, names, at=at)
     if "want" not in c:                      # unknown names
         return c
     names, todo, ids = c["want"], c["todo"], c["cancelled_jobs"]

@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study (kind: threads).
-Version: 2026.11.09.2
+Version: 2026.11.18.1
 
 From 2026.11.09.2 the SLURM layer is llmt-runtime's (llmt_runtime.slurm and llmt_runtime.jobs, configured by
 runtime.RT): the settings, the machine (the cluster's nodes from `scontrol -o show node`, this node, pinning with
@@ -531,12 +531,17 @@ def slurm_states(request: Path, names: list[str], studies: dict | None = None, w
         if state == "unknown":
             out[n] = {"state": "unknown", **base, "why": s.get("why")}
             continue
-        if state == "queued":
-            st = {"state": "queued", **base, "reason": s.get("reason"), "ahead": s.get("ahead"),
+        if state in ("queued", "waiting"):        # waiting: run.after (llmt-runtime 2026.11.18.1), still in the queue
+            st = {"state": state, **base, "reason": s.get("reason"), "ahead": s.get("ahead"),
                   "eta_min_max": round(float(j.get("time_min") or 0), 1)}
             if s.get("expected_start"):
                 st["expected_start"] = s["expected_start"]
-            out[n] = st
+            out[n] = {k: v for k, v in st.items() if v is not None or k in ("reason",)}
+            continue
+        if state is not None and state not in FINAL:
+            # a state of the runtime this mapping does not know (a newer runtime): report it, never as a failure
+            # (2026-11-18: 'waiting' fell through here and was written as the study's failed result)
+            out[n] = {**{k: v for k, v in s.items() if k != "name"}, **base, "state": state}
             continue
         if state == "running":
             prog = _progress(request / n, float(j.get("timeout_s") or timeout_s((studies or {}).get(n))))

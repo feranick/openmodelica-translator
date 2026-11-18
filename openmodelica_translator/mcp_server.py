@@ -1,6 +1,6 @@
 """mcp_server.py — MCP server: lets LLM-based tools simulate systems (circuits, drives, heat paths, controllers)
 with OpenModelica and the Modelica Standard Library.
-Version: 2026.11.09.3
+Version: 2026.11.18.1
 
 Tools (all JSON):
   study_format      the study format: component kinds, ports, parameters, analyses, conventions. Read it first.
@@ -218,9 +218,10 @@ def jobs(limit: int = 20, active: bool = False) -> dict:
 
 @server.tool()
 @GUARD.tool(ToolError)
-def cancel(request: str, names: list[str] | None = None) -> dict:
-    """Stops a request's studies (or the named ones) with a cancel flag; returns their states."""
-    return api.cancel(request, names)
+def cancel(request: str, names: list[str] | None = None, at: str | None = None) -> dict:
+    """Stops a request's studies (or the named ones) with a cancel flag; returns their states. at: 'now' (default)
+    or 'job_end' (running jobs finish; nothing queued after them starts)."""
+    return api.cancel(request, names, at)
 
 
 @server.tool()

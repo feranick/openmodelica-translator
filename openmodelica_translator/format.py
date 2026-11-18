@@ -1,5 +1,5 @@
 """format.py — the study format (study_format) and the static checks (validate, validate_study).
-Version: 2026.11.09.2
+Version: 2026.11.18.1
 
 validate_study(study) -> {ok, errors, warnings}: nothing runs (no omc). It resolves the network (network.build),
 checks outputs, analysis, derived quantities, sweep, expect, run (against the OMCT_MAX_* caps) and images, then
@@ -32,7 +32,8 @@ STUDY_KEYS = {
                 "of an output's range -> unreliable; abs_tol: judged by absolute change; outputs constant by design "
                 "(solver noise only) -> not_judged",
     "expect": "[{quantity: dotted result path, value, tol (relative, 0.02) | abs}]",
-    "run": "{timeout_s, mem, procs (parallel sweep points), queue}: within this machine's caps (status.executor.caps)",
+    "run": "{timeout_s, mem, procs (sweep points at once), queue, after: '<request>/<study>' | '<study>' | [...] "
+           "(wait for those runs to end), after_mode: any | ok}: within the caps",
     "images": "true: time plots of the outputs (+ Bode for linearize, a sweep plot); false: none",
     "modelica": "escape hatch {text: Modelica source, model: name, values: {path: number}}: outputs, values and "
                 "sweep params are Modelica paths (values applied at run time, no rebuild); no catalog checks; cross_solver, not the reference",
@@ -176,7 +177,7 @@ def study_format() -> dict:
 
 
 # ------------------------------------------------------------------------------------------- run caps
-RUN_KEYS = {"timeout_s", "mem", "procs", "queue"}
+RUN_KEYS = {"timeout_s", "mem", "procs", "queue", "after", "after_mode"}   # run.after: llmt-runtime's
 _MEM = re.compile(r"^(\d+(?:\.\d+)?)([KMGT]?)B?$", re.I)
 
 
@@ -214,11 +215,11 @@ def run_errors(st: dict) -> list[str]:
     if r is None:
         return []
     if not isinstance(r, dict):
-        return ["run: {timeout_s, mem, procs, queue}"]
+        return ["run: {timeout_s, mem, procs, queue, after, after_mode}"]
     errs = []
     bad = set(r) - RUN_KEYS
     if bad:
-        errs.append(f"run: unknown keys {sorted(bad)} (timeout_s, mem, procs, queue)")
+        errs.append(f"run: unknown keys {sorted(bad)} (timeout_s, mem, procs, queue, after, after_mode)")
     cap = caps()
     t = r.get("timeout_s")
     if t is not None:

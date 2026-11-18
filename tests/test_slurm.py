@@ -1,7 +1,7 @@
 """test_slurm.py — SLURM execution (llm-translators docs/EXECUTION.md) against llmt-runtime's fake SLURM
 (llmt_runtime.testing.fake_slurm; omct's own tests/fake_slurm.py until 2026.11.09.1), with the reference solver (no
 OpenModelica needed).
-Version: 2026.11.09.2
+Version: 2026.11.18.1
 """
 from __future__ import annotations
 
@@ -401,3 +401,55 @@ def test_caps_without_slurm_have_no_memory(monkeypatch):
     from openmodelica_translator import format as F
     monkeypatch.delenv("OMCT_EXECUTOR", raising=False)
     assert F.caps() == {}
+
+
+# ---- run.after (llmt-runtime 2026.11.18.1) -------------------------------------------------------------------
+def test_run_after_validation(slurm):
+    """validate accepts a same-request ref and after_mode 'ok'; refuses an unknown ref, a study waiting for itself
+    and a bad mode (llmt-runtime's after_problems); run_errors only checks the keys."""
+    ok = api.validate({"a": study(RC), "b": study(RC, run={"after": "a"}),
+                       "c": study(RC, run={"after": ["a", "b"], "after_mode": "ok"})})
+    assert ok["ok"] and all(ok["studies"][n]["ok"] for n in "abc"), ok
+    for st, msg in ((study(RC, run={"after": "nope"}), "no study 'nope'"),
+                    (study(RC, run={"after": "b"}), "cannot wait for itself"),
+                    (study(RC, run={"after": "a", "after_mode": "x"}), "after_mode"),
+                    (study(RC, run={"after_mode": "ok"}), "needs run.after")):
+        r = api.validate({"a": study(RC), "b": st})
+        assert not r["ok"] and any(msg in e for e in r["studies"]["b"]["errors"]), (st["run"], r["studies"]["b"])
+    r = api.validate({"a": study(RC, run={"wait": 1})})
+    assert any("after, after_mode" in e for e in r["studies"]["a"]["errors"])
+
+
+def test_run_after_dependency_and_waiting(slurm, monkeypatch):
+    """b after a: b's job.json has run_after, its sbatch carries --dependency=afterany:<a's job>; with the fake's
+    real dependencies (a held pending) jobs() and study_status show b waiting."""
+    monkeypatch.setenv("FAKE_DEPENDENCIES", "1")
+    monkeypatch.setenv("FAKE_PENDING", "1")
+    r = api.run({"a": study(RC, run={"queue": True}), "b": study(RC, run={"queue": True, "after": "a"})}, "ref", wait=0)
+    req = Path(r["request"])
+    ja, jb = (json.loads((req / n / "job.json").read_text()) for n in "ab")
+    assert jb["run_after"] and f"--dependency=afterany:{ja['job_id']}" in " ".join(map(str, jb["command"])), jb
+    st = api.status(str(req), 0)
+    assert st["progress"]["b"]["state"] == "waiting", st["progress"]["b"]
+    rows = [x for x in api.jobs(5)["requests"] if x["request"] == str(req)]
+    assert rows and rows[0]["studies"]["b"]["state"] == "waiting", rows
+
+
+def test_run_after_refused_at_start_for_another_requests_missing_run(slurm):
+    r = api.run({"b": study(RC, run={"queue": True, "after": "run_nosuch/a"})}, "ref", wait=0)
+    s = r["studies"]["b"]
+    assert s["ok"] is False and s["why"] == "invalid study" and any("run.after" in e for e in s["errors"]), s
+    assert not (Path(r["request"]) / "b" / "job.json").exists()
+
+
+@pytest.mark.xfail(strict=True, reason="llmt-runtime's use_slurm ignores run.after: a study estimated under "
+                   "OMCT_SLURM_MIN_MINUTES goes to the local pool and starts at once (fix in llmt-runtime: use_slurm "
+                   "True with run.after; after_problems refuses run.after without SLURM)")
+def test_run_after_short_study_without_queue(slurm, monkeypatch):
+    """A study with run.after but no run.queue, estimated under OMCT_SLURM_MIN_MINUTES (most omct studies): it must
+    not start at once in the local pool."""
+    monkeypatch.setenv("FAKE_DEPENDENCIES", "1")
+    monkeypatch.setenv("FAKE_PENDING", "1")
+    r = api.run({"a": study(RC, run={"queue": True}), "b": study(RC, run={"after": "a"})}, "ref", wait=0)
+    req = Path(r["request"])
+    assert (req / "b" / "job.json").is_file(), "b ran in the local pool instead of waiting for a"
