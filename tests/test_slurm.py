@@ -1,7 +1,7 @@
 """test_slurm.py — SLURM execution (llm-translators docs/EXECUTION.md) against llmt-runtime's fake SLURM
 (llmt_runtime.testing.fake_slurm; omct's own tests/fake_slurm.py until 2026.11.09.1), with the reference solver (no
 OpenModelica needed).
-Version: 2026.11.18.1
+Version: 2026.11.18.2
 """
 from __future__ import annotations
 
@@ -420,6 +420,17 @@ def test_run_after_validation(slurm):
     assert any("after, after_mode" in e for e in r["studies"]["a"]["errors"])
 
 
+def test_run_after_needs_slurm(slurm, monkeypatch):
+    """run.after is refused where it cannot wait: a local executor, or queue: false (the local pool starts at once)."""
+    r = api.validate({"a": study(RC), "b": study(RC, run={"after": "a", "queue": False})})
+    assert not r["ok"] and any("queue: false" in e for e in r["studies"]["b"]["errors"]), r["studies"]["b"]
+    monkeypatch.setenv("OMCT_EXECUTOR", "local")
+    r = api.validate({"a": study(RC), "b": study(RC, run={"after": "a"})})
+    assert not r["ok"] and any("needs SLURM" in e for e in r["studies"]["b"]["errors"]), r["studies"]["b"]
+    s = api.run({"a": study(RC), "b": study(RC, run={"after": "a"})}, "ref", wait=0)["studies"]["b"]
+    assert s["ok"] is False and s["why"] == "invalid study"
+
+
 def test_run_after_dependency_and_waiting(slurm, monkeypatch):
     """b after a: b's job.json has run_after, its sbatch carries --dependency=afterany:<a's job>; with the fake's
     real dependencies (a held pending) jobs() and study_status show b waiting."""
@@ -442,12 +453,9 @@ def test_run_after_refused_at_start_for_another_requests_missing_run(slurm):
     assert not (Path(r["request"]) / "b" / "job.json").exists()
 
 
-@pytest.mark.xfail(strict=True, reason="llmt-runtime's use_slurm ignores run.after: a study estimated under "
-                   "OMCT_SLURM_MIN_MINUTES goes to the local pool and starts at once (fix in llmt-runtime: use_slurm "
-                   "True with run.after; after_problems refuses run.after without SLURM)")
 def test_run_after_short_study_without_queue(slurm, monkeypatch):
-    """A study with run.after but no run.queue, estimated under OMCT_SLURM_MIN_MINUTES (most omct studies): it must
-    not start at once in the local pool."""
+    """A study with run.after but no run.queue, estimated under OMCT_SLURM_MIN_MINUTES (most omct studies): a SLURM
+    job that waits, never the local pool (llmt-runtime 2026.11.18.2's use_slurm)."""
     monkeypatch.setenv("FAKE_DEPENDENCIES", "1")
     monkeypatch.setenv("FAKE_PENDING", "1")
     r = api.run({"a": study(RC, run={"queue": True}), "b": study(RC, run={"after": "a"})}, "ref", wait=0)
