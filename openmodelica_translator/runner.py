@@ -1,5 +1,5 @@
 """runner.py — one study end to end: validate, translate, build (or reuse), run, read, check, write the result.
-Version: 2026.11.19.2
+Version: 2026.11.19.6
 
 run_study(name, study, folder, solver, timeout, cancel) -> the result dict, also written atomically to
 <folder>/<name>.json. solver: "omc" (OpenModelica) or "ref" (the reference implementation only: linear
@@ -82,7 +82,7 @@ def _retry_tighter(name, study, folder, solver, timeout, cancel, res) -> dict:
     closes, it was integration error: the tighter run is the result (with a warning). If it does not, the model
     and the reference differ: the first result stays unreliable, with the retry's numbers."""
     key = _only_independent_failed(res)
-    if key is None or cancel.exists():
+    if key is None or cancel.exists() or study.get("fit"):     # a fit's final run has had its own retry
         return res
     an = study.get("analysis") or {}
     tol = _times(an)[3]
@@ -327,6 +327,11 @@ def _run(name, study, folder, solver, timeout, cancel) -> dict:
             from .post import check_expect
             res["expect"] = check_expect(res, study["expect"])
             res["passed"] = all(e["passed"] for e in res["expect"])
+        return res
+    if study.get("fit"):
+        from .fit import run_fit
+        res = run_fit(name, study, folder, solver, timeout, cancel, run_study)
+        res["warnings"] = list(dict.fromkeys(warnings + res.get("warnings", [])))
         return res
     an = study["analysis"]
     seconds = {}

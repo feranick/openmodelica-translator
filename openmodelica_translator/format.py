@@ -1,5 +1,5 @@
 """format.py — the study format (study_format) and the static checks (validate, validate_study).
-Version: 2026.11.19.2
+Version: 2026.11.19.6
 
 validate_study(study) -> {ok, errors, warnings}: nothing runs (no omc). It resolves the network (network.build),
 checks outputs, analysis, derived quantities, sweep, expect, run (against the OMCT_MAX_* caps) and images, then
@@ -26,14 +26,17 @@ STUDY_KEYS = {
     "sweep": "{params: {'comp.param' or 'comp.v0': [values]}, mode: grid | zip (grid), report: [result paths] "
              "(default: outputs.*.final and derived.*)}: one build, one run per point (run.procs at a time) -> "
              "sweep.table[i].{params, params_si, values, ok, reliable}",
+    "fit": "{params: {'comp.param' | 'comp.v0': {initial, min, max, scale: lin | log}}, data: {output: {t, y, unit, "
+           "t_unit, sigma, weight} | {csv, t, y (columns), ...}}, steady: [{set: {path: value}, values: {output: "
+           "value}, sigma}], starts (1), max_evaluations (400)}: parameter estimation -> fit.params.<p>.{value, stderr, "
+           "ci95}, correlation, identifiable, quality; outputs from a run at the best values",
     "cross_check": "modelica only (true): rerun with the other integrator -> checks.cross_solver; false skips",
     "invariants": "[{signal, kind: zero (abs) | constant (abs | rel), name?}] -> checks.invariants",
     "converge": "true | {abs_tol: {output: value}}: rerun at tolerance/10; a change over max(1e-4, 100 x tolerance) "
-                "of an output's range -> unreliable; abs_tol: judged by absolute change; outputs constant by design "
-                "(solver noise only) -> not_judged",
+                "of an output's range -> unreliable; abs_tol: judged by absolute change; constant outputs -> not_judged",
     "expect": "[{quantity: dotted result path, value, tol (relative, 0.02) | abs}]",
     "run": "{timeout_s, mem, procs (sweep points at once), queue, after: '<request>/<study>' | '<study>' | [...] "
-           "(wait for those runs to end), after_mode: any | ok}: within the caps",
+           "(waits for them), after_mode: any | ok}: within the caps",
     "images": "true: time plots of the outputs (+ Bode for linearize, a sweep plot); false: none",
     "modelica": "escape hatch {text: Modelica source, model: name, values: {path: number}}: outputs, values and "
                 "sweep params are Modelica paths (values applied at run time, no rebuild); no catalog checks; cross_solver, not the reference",
@@ -65,7 +68,7 @@ CONVENTIONS = [
     "Hz and rad/s are never converted into each other.",
     "Sign conventions (MSL): flow into a component's port is positive; a current source drives i from p through "
     "the source to n; force/torque sources push their flange in the positive direction.",
-    "Initial values (v0, i0, s0, v0, phi0, w0, T0) default to 0 (T0 to 293.15 K) and are fixed only where they are "
+    "Initial values (v0, i0, s0, phi0, w0, T0) default to 0 (T0 to 293.15 K) and are fixed only where they are "
     "free: a capacitor across a source, or a second inertia rigidly joined to the first, follows the others; giving "
     "such a value is an error. Positions default to 0 and springs' rest lengths to 0, so springs start relaxed. "
     "Blocks start from their y_start (states 0).",
@@ -76,8 +79,7 @@ CONVENTIONS = [
     "cv, lambda, nu}) and a pressure reference (pressure_reference in a closed loop, ambients at open ends). Pumps: "
     "volume_flow, pressure_increase (or their signal_ forms), ideal_pump (driven by its flange). Pipes: give "
     "V_flowNominal and dpNominal (the operating point), m (kg of medium inside) for temperature dynamics, and "
-    "connect heatPort to a thermal network for heat exchange (at the outlet temperature T; connecting it switches "
-    "it on). T of a component is its outlet temperature; at junctions streams mix.",
+    "connect heatPort to a thermal network for heat exchange (connecting it switches it on). T of a component is its outlet temperature; at junctions streams mix.",
     "Three-phase: a plug (plug_p, plug_n, ...) is three pins; plugs connect to plugs phase by phase. Sources are "
     "symmetric (ac_voltage: V_rms per phase, f); star joins the phases (its pin_n to a ground, or left open: a "
     "floating star point), delta connects them in a ring; plug_to_pin takes one phase. Per-phase variables are "
@@ -86,8 +88,8 @@ CONVENTIONS = [
     "Y or D), flange = shaft, starpoint (Y: open, or to a ground, which pmsm_current_drive needs). Supplies: "
     "three_phase_grid (V_rms per phase, f), vf_inverter (input f [Hz]), pmsm_current_drive (inputs id, iq [A RMS]; "
     "its flange on the motor shaft). Stator and rotor currents start at 0, the rotor at w0, phi0.",
-    "Quasi-static (phasor) machines: qs_induction_machine, qs_pmsm, qs_pmsm_damper (MSL QuasiStatic "
-    "FundamentalWave: no electrical transients, much faster) on qs_grid (V_rms, f), qs_vf_inverter (input f [Hz]) or "
+    "Quasi-static (phasor) machines: qs_induction_machine, qs_pmsm, qs_pmsm_damper (no electrical "
+    "transients, much faster) on qs_grid (V_rms, f), qs_vf_inverter (input f [Hz]) or "
     "qs_pmsm_current_drive (inputs id, iq [A RMS]; flange on the motor shaft). Their ports are qs_plug: they connect "
     "only to quasi-static parts (qs_current_rms, qs_voltage_rms, qs_power, qs_star, qs_ground, qs_ac_voltage); each "
     "quasi-static circuit has one source and a qs_ground. Outputs: wMechanical, tauElectrical, abs_is[k], abs_vs[k] "
@@ -95,12 +97,11 @@ CONVENTIONS = [
     "Heat ports: resistors, ideal diodes, dampers, dc_motor (heatPort = both losses) and dc_machine (heatPort = all "
     "six) put their losses into a thermal network when their heatPort is connected (a resistor's R then follows the "
     "port's temperature with alpha); unconnected, the losses leave the model.",
-    "Results: outputs.<name>: unit, initial, final, min, max, t_min, t_max, series {t, y} (<= 400 points); "
-    "derived.<name>.*; steady.<name>.*; linearization.*; sweep.table; checks (balance, initialization, solver, "
-    "overrides read back, events, finite, energy, reference); reliable / unreliable_because: if reliable is false, "
-    "do not report the numbers as results.",
-    "Values are applied to one compiled model with OpenModelica's override file (no recompiling): sweeps cost one "
-    "build. Structural values (marked *) change the model and rebuild it.",
+    "Results: outputs.<name>: unit, initial, final, min, max, t_min, t_max, series {t, y} (<= 400 points); checks "
+    "(balance, initialization, solver, overrides read back, events, finite, energy, reference); reliable / "
+    "unreliable_because (false: do not report the numbers as results).",
+    "Values change at run time (override file, no recompiling): a sweep or a fit costs one build; structural "
+    "values (*) rebuild the model.",
 ]
 EXAMPLE = {"rlc_step": {
     "components": {"V": {"kind": "step_voltage", "V": 12, "startTime": 0.001}, "R": {"kind": "resistor", "R": 10},
@@ -172,7 +173,7 @@ def study_format() -> dict:
             "kinds_legend": "ports (in/out = signals) | parameters [SI unit]=default (no default: required; "
                             "name* structural; [*] a signal value: any unit, converted to SI) | vars (outputs: comp.var; ports: comp.port.v/i, .s/.f, .phi/.tau, "
                             ".T/.Q_flow, .p/.m_flow/.h/.H_flow) | init (initial values) | equation",
-            "media": {n: {"rho": v[1], "cp": v[2], "cv": v[3], "lambda": v[4], "nu": v[5]} for n, v in C.MEDIA.items()},
+            "media": {"columns": "rho, cp, cv, lambda, nu (SI)", **{n: list(v[1:6]) for n, v in C.MEDIA.items()}},
             "example": EXAMPLE}
 
 
@@ -493,6 +494,9 @@ def validate_study(st: dict) -> dict:
     _analysis_errors(st.get("analysis"), errs, warns)
     _derived_errors(st, outs, units, errs)
     _sweep_errors(st, net, errs)
+    if "fit" in st:
+        from .fit import fit_errors
+        errs += fit_errors(st, units)
     _expect_errors(st, errs)
     errs += run_errors(st)
     _images_errors(st, errs)
@@ -654,6 +658,9 @@ def _validate_escape(st, errs, warns):
     _expect_errors(st, errs)
     _converge_errors(st, {o: "1" for o in outs} if isinstance(outs, dict) else {}, errs)   # SI numbers
     _invariant_errors(st, {o: "1" for o in outs} if isinstance(outs, dict) else {}, errs)
+    if "fit" in st:
+        from .fit import fit_errors
+        errs += fit_errors(st, {o: "1" for o in outs} if isinstance(outs, dict) else {})
     if "cross_check" in st and not isinstance(st["cross_check"], bool):
         errs.append("cross_check: true or false")
     if not errs:
