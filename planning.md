@@ -87,8 +87,6 @@ lumped parameters.
     (job 711: "left the queue without starting (no job.log)"). Removed on both (2026-11-19); OMCT_SLURM_NODE=local now
     pins spark1 to spark-5da5 and spark2 to spark-0808. The router's start estimate on spark1 ("95 min" while idle)
     became "starts now" with it. The other translators' `--nodelist` on the sparks name each machine's own node.
-- **A21 on 1.27.2:** whether the compiled model still cannot read an empty `-overrideFile` (omct omits the flag
-  anyway; harmless).
 - **`extend` for omct:** read `take_extension(folder)` in the simulation's wait loop (proc.run), add
   `hooks.solver_left_s` and an `extend` tool, as feat (llmt-runtime PLANNING.md, section 2).
 - **From feat:** static stiffness k = applied force / displacement (feat reports `applied_force` N and
@@ -212,7 +210,7 @@ Read from `github.com/OpenModelica/OpenModelica` tag `v1.27.1` and `github.com/m
 | A18 | MSL sign conventions (flow into the port positive; LossPower ≥ 0) | **M ✓** the energy balance closes on every benchmark (all domains) | benchmarks + energy balance |
 | A19 | dassl at tolerance 1e-6 reproduces closed forms to ~1e-4 relative on the output grid | **M ✓ with a limit**: the benchmarks agree to 1e-4 ... 1e-16; on 6-hour motor-heating runs DASSL's global error reached ~1e-4 of an output's range (8.5e-5 at 1e-6, 4.5e-6 at 1e-8; 2026-10-26): hence the reference retry at tolerance/100 | benchmarks; heating sweeps |
 | A20 | `loadModel(Modelica, {"4.0.0"}, requireExactVersion=true)` loads 4.0.0(+maint.om) even when newer MSL versions are installed; without it omc takes the newest compatible one | **carbonio ✓** (plain: 4.1.0; exact: 4.0.0) | tools probe 2026-10-22 |
-| A21 | The compiled model reads an empty `-overrideFile` | **✗** on 1.27.1 (user report, 2026-10-23: "could not read overrideFile ...: Success"); omct omits the flag when there are no values; not re-probed on 1.27.2 | escape-hatch runs |
+| A21 | The compiled model reads an empty `-overrideFile` | **✗** on 1.27.1 (user report, 2026-10-23) and on 1.27.2 (spark1, 2026-11-19: `LOG_ASSERT | debug | simulation_input_xml.c: could not read overrideFile empty.txt: Success`, "Execution failed!", exit 1); omct omits the flag when there are no values | escape-hatch runs; probe on spark1 |
 | A22 | OpenModelica 1.27.2 behaves as 1.27.1 for everything omct uses | **M ✓** all 37 benchmarks pass on carbonio with the same numbers (bench_20261031_144830_0febf2); custom models with IDA and invariants run on all four machines | benchmarks, 2026-10-31 |
 
 Other facts from the probe (2026-10-21): mochi kernel 7.0.0, Ubuntu "resolute", gcc 15.2.0; apt source `deb [arch=amd64 signed-by=/usr/share/keyrings/openmodelica-keyring.gpg] https://build.openmodelica.org/apt resolute stable` (for BACKENDS.md). One build of the probe RLC: about 1 s inside a 6-build omc script (6.25 s wall, 27 s CPU). A run of the RLC (2000 intervals): 0.08 s wall. A build folder keeps ~60 files, 476 kB; the cache keeps 6.
