@@ -79,6 +79,8 @@ lumped parameters.
     spark1 (job 724) got time_min 250 (was 1210), each point timeout_s 120 (`time_from: sweep points (measured)`),
     ran_on spark-5da5; while running it showed its stage and eta_min_max (0.3 min) instead of "at most ? min"; jobs()
     through list_jobs listed local-pool requests (job_id null), SLURM ones and a bench_* request (kind, collect).
+  - The router's start estimate on spark2 (too high: "95 min", "183 min") is right after llm-translators' fixes:
+    "4 CPUs free on node spark-0808 in 50 min, when its running jobs end" (2026-11-19 10:15).
   - Left: mochi (rc_step as a SLURM job, when its queue has room).
   - Fixed on the way: both sparks had `OMCT_SLURM_ARGS="--mem=16G --nodelist=spark-5da5"` in /etc/llm-translators/env
     (a stopgap from before OMCT_SLURM_NODE), so spark2's jobs ran on spark1, where spark2's run folder does not exist
@@ -87,9 +89,6 @@ lumped parameters.
     became "starts now" with it. The other translators' `--nodelist` on the sparks name each machine's own node.
 - **A21 on 1.27.2:** whether the compiled model still cannot read an empty `-overrideFile` (omct omits the flag
   anyway; harmless).
-- **The router's start estimate on spark2** ("95 min" for a 1-CPU job with 2 CPUs free; job 715 started at once):
-  with the llm-translators chat (2026-11-19). The estimate is SLURM's own `sbatch --test-only` answer; likely
-  cause: a pending job (cfdt's 705) planned first on spark-0808. Not omct's to fix.
 - **`extend` for omct:** read `take_extension(folder)` in the simulation's wait loop (proc.run), add
   `hooks.solver_left_s` and an `extend` tool, as feat (llmt-runtime PLANNING.md, section 2).
 - **From feat:** static stiffness k = applied force / displacement (feat reports `applied_force` N and
