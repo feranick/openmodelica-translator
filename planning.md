@@ -81,6 +81,12 @@ lumped parameters.
     (job 711: "left the queue without starting (no job.log)"). Removed on both (2026-11-19); OMCT_SLURM_NODE=local now
     pins spark1 to spark-5da5 and spark2 to spark-0808. The router's start estimate on spark1 ("95 min" while idle)
     became "starts now" with it. The other translators' `--nodelist` on the sparks name each machine's own node.
+- **The `converge` limit:** physical outputs that changed by 3.5e-5 of their range between tolerances 1e-7 and 1e-8
+  are over max(1e-6, 100 tol) = 1e-5 (2026.10.23.4); the reference check allows max(1e-4, 100 tol). Loosen
+  `converge` to match, if a real study trips on it.
+- **A21 on 1.27.2:** whether the compiled model still cannot read an empty `-overrideFile` (omct omits the flag
+  anyway; harmless).
+- **`jobs()` lists `run_*` requests only,** not `bench_*` ones.
 - **The router's start estimate on spark2** said "95 min" for a 1-CPU job with 2 CPUs free on spark-0808, and the job
   (715) started at once. Report to the llm-translators chat if it persists.
 - **The lost-node diagnosis did not fire** for spark2's job 711 (it says "cancelled while queued"): the job ran and
