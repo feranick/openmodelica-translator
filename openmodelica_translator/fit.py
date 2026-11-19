@@ -1,5 +1,5 @@
 """fit.py — parameter estimation (V4): adjust a study's run-time values to measured data.
-Version: 2026.11.19.6
+Version: 2026.11.19.7
 
 A study's `fit` key (study_format): params {path: {initial, min, max, scale}}, data {output: {t, y, sigma, unit,
 t_unit, weight} | {csv, t, y, ...}}, steady [{set, values, sigma}], starts, max_evaluations. The model is evaluated
@@ -11,13 +11,21 @@ errors, intervals, correlations, identifiability, the fit's quality and every st
     load(st, units)            the fit in SI: Param list, Series list, SteadyPoint list (raises FitError)
     run_fit(...)               runner._run calls it for a study with `fit`
 
-Evaluators: the reference solver (solver 'ref': catalog studies, in the sandbox too); OpenModelica (F2: one build,
-fast runs, the Jacobian's runs in parallel).
+Evaluators (the model at a parameter vector, outputs at the data's times and each steady point's settled value):
+    RefEvaluator   solver 'ref': the reference solver (catalog studies; also in the sandbox); steady points exact
+    OmcEvaluator   OpenModelica (2026.11.19.7): one build (refused when a fitted value is compiled in), each run by
+                   override file at the study's tolerance / 10 recording only the outputs, no checks, its folder
+                   removed after reading; per-run timeout as a sweep point's (20 x the first run, >= 120 s); the
+                   runs up to the last data time on the data's own grid when uniform; steady points to the end of
+                   the analysis, settled over the last fifth (1e-5 of the range) or the evaluation fails
+optimize: the Jacobian by forward differences, its runs run.procs at a time (threads: the runs are processes);
+progress in <folder>/fit_progress.json.
 """
 from __future__ import annotations
 
 import copy
 import csv
+import json
 import math
 import time
 from dataclasses import dataclass, field
@@ -395,14 +403,163 @@ class RefEvaluator:
         tt = np.linspace(self.t0, self.t1, 501)
         v = r.simulate(tt, t0=self.t0)
         self.runs += 1
+        return {o: settled_end(tt, np.asarray(sum(c * v[p] for c, p in terms), float), o)
+                for o, (terms, _) in tr.outputs.items()}
+
+
+SETTLED = 1e-5          # a steady point's run has settled when its last fifth changes by less than this x its range
+
+
+def settled_end(t: np.ndarray, y: np.ndarray, output: str) -> float:
+    """The run's last value once it has settled; otherwise FitError (the analysis is too short for a steady point)."""
+    tail = y[t >= t[0] + 0.8 * (t[-1] - t[0])]
+    rng = float(np.ptp(y))
+    if rng > 0 and float(np.ptp(tail)) > SETTLED * rng:
+        raise FitError(f"steady point: {output} still changes over the last fifth of the run "
+                       f"({float(np.ptp(tail)) / rng:.2g} of its range): lengthen stop_time / max_time")
+    return float(y[-1])
+
+
+def _dedupe(t: np.ndarray, *ys):
+    """Strictly increasing times (an event's repeated time keeps its later value) for interpolation."""
+    tr = t[::-1]
+    _, idx = np.unique(tr, return_index=True)
+    keep = (len(t) - 1 - idx)
+    keep.sort()
+    return (t[keep],) + tuple(y[keep] for y in ys)
+
+
+def series_grid(t0: float, times: np.ndarray, intervals: int, cap: int = 200000):
+    """(stop, intervals) of the runs for time-series data: up to the last data time; when the data lie on a uniform
+    grid from t0, that grid (the outputs then come at the data's times), else max(intervals, 2000) intervals and
+    linear interpolation."""
+    stop = float(times[-1])
+    if stop <= t0:
+        return t0 + 1e-6, 1
+    d = np.diff(np.unique(np.concatenate([[t0], times])))
+    h = float(np.min(d)) if d.size else stop - t0
+    k = (times - t0) / h
+    n = int(round((stop - t0) / h))
+    if h > 0 and n <= cap and np.all(np.abs(k - np.round(k)) < 1e-6):
+        if n < intervals:                      # finer output than the data, by an integer factor
+            n *= int(math.ceil(intervals / n))
+        return stop, n
+    return stop, max(intervals, 2000)
+
+
+class OmcEvaluator:
+    """The model through OpenModelica: one build (the cache's; a variant when values compiled in differ), then one
+    run per evaluation with the values by override file, at the study's tolerance / 10, recording only the outputs,
+    without checks (the final run has them). Thread-safe: the Jacobian's runs go in parallel."""
+
+    def __init__(self, study: dict, params: list, series: list[Series], steady: list[SteadyPoint], folder: Path,
+                 timeout: float, cancel: Path | None):
+        import threading
+
+        from . import omc
+        from .runner import _times
+        self.study, self.series, self.steady = study, series, steady
+        self.cancel, self.timeout = cancel, timeout
+        self.root = Path(folder) / "evaluations"
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.lock = threading.Lock()
+        self.runs, self.first_s = 0, None
+        self.t0, self.t1, self.n, tol, self.method = _times(study["analysis"])
+        self.tol = max(tol / 10, 1e-12)
+        tr = self._translate(with_values(study, {p.key: p.initial for p in params}))
+        self.structure = tr.structure
+        b = omc.build(tr, timeout=timeout, cancel=cancel)
+        if not b.get("ok"):
+            raise FitError("the model did not build: " + "; ".join(b.get("errors") or [])[:800])
+        ch = b.get("changeable") or {}
+        self.fixed = {k for k in tr.overrides if ch.get(k) is False}
+        # which run-time values each fitted parameter moves: compiled-in ones cannot be fitted
+        moved = self._moved(params, tr)
+        for key, paths in moved.items():
+            bad = sorted(paths & self.fixed)
+            if bad:
+                raise FitError(f"fit.params['{key}']: OpenModelica compiled {', '.join(bad)} into the model (it cannot "
+                               "change at run time): it cannot be fitted")
+            if not paths and "modelica" not in study:
+                raise FitError(f"fit.params['{key}']: changing it changes no run-time value of the model")
+        comp = b.get("compiled_values") or {}
+        if self.fixed and any(comp.get(k) != tr.overrides[k] for k in self.fixed):
+            b = omc.build(tr, timeout=timeout, cancel=cancel, variant={k: tr.overrides[k] for k in self.fixed})
+            if not b.get("ok"):
+                raise FitError("the model did not build: " + "; ".join(b.get("errors") or [])[:800])
+        self.dir = b["dir"]
+        self.model_info = {"hash": b.get("hash"), "cache_hit": b.get("cache_hit"), "build_s": b.get("seconds")}
+        import re
+        self.filter = "|".join(sorted({re.escape(p) for terms, _ in tr.outputs.values() for _, p in terms}))
+        if series:
+            self.times = np.unique(np.concatenate([s.t for s in series]))
+            self.stop, self.intervals = series_grid(self.t0, self.times, self.n)
+
+    def _translate(self, st):
+        from . import modelica as M
+        return M.escape_translation(st) if "modelica" in st else M.translate(st)
+
+    def _moved(self, params, tr) -> dict:
         out = {}
-        for o, (terms, _) in tr.outputs.items():
-            y = np.asarray(sum(c * v[p] for c, p in terms), float)
-            tail = y[400:]
-            if float(np.ptp(tail)) > 1e-6 * max(float(np.ptp(y)), 1e-300) and float(np.ptp(y)) > 0:
-                raise FitError(f"steady point: {o} still changes at the end of the run: lengthen the analysis")
-            out[o] = float(y[-1])
+        for p in params:
+            v = p.initial
+            other = p.lo + 0.37 * (p.hi - p.lo) if p.lo + 0.37 * (p.hi - p.lo) != v else p.lo + 0.61 * (p.hi - p.lo)
+            tr2 = self._translate(with_values(self.study, {**{q.key: q.initial for q in params}, p.key: other}))
+            out[p.key] = {k for k in set(tr.overrides) | set(tr2.overrides)
+                          if tr.overrides.get(k) != tr2.overrides.get(k)}
         return out
+
+    def _run_timeout(self) -> float:
+        from .executor import SWEEP_POINT_FACTOR, SWEEP_POINT_MIN_S, _float
+        if self.first_s is None:
+            return self.timeout
+        fac = _float("OMCT_SWEEP_POINT_FACTOR", str(SWEEP_POINT_FACTOR))
+        lo = _float("OMCT_SWEEP_POINT_MIN_S", str(SWEEP_POINT_MIN_S))
+        return float(min(self.timeout, max(lo, fac * self.first_s)))
+
+    def _run(self, st: dict, stop: float, intervals: int) -> tuple:
+        import shutil
+
+        from . import simrun
+        from .matfile import Result
+        from .post import combine
+        tr = self._translate(st)
+        if tr.structure != self.structure:
+            raise FitError("these values change the model's structure (a rebuild): they cannot be fitted")
+        ov = {k: v for k, v in tr.overrides.items() if k not in self.fixed}
+        with self.lock:
+            self.runs += 1
+            d = self.root / f"e{self.runs:05d}"
+        try:
+            sim = simrun.simulate(self.dir, d, ov, start=self.t0, stop=stop, intervals=intervals, tolerance=self.tol,
+                                  method=self.method, variable_filter=self.filter, timeout=self._run_timeout(),
+                                  cancel=self.cancel)
+            if not sim["ok"] or "result" not in sim:
+                if (d / "sim.log").is_file():
+                    shutil.copy(d / "sim.log", self.root / "last_failed.log")
+                raise FitError("the run failed: " + "; ".join(sim.get("errors") or ["no result file"])[:400])
+            r = Result(sim["result"])
+            t = np.asarray(r.time, float)
+            ys = {o: np.asarray(combine(r, terms), float) for o, (terms, _) in tr.outputs.items()}
+            with self.lock:
+                if self.first_s is None:
+                    self.first_s = float(sim["seconds"])
+            return t, ys
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def __call__(self, values: dict):
+        series = {}
+        if self.series:
+            t, ys = self._run(with_values(self.study, values), self.stop, self.intervals)
+            for s in self.series:
+                tt, yy = _dedupe(t, ys[s.output])
+                series[s.output] = np.interp(s.t, tt, yy)
+        steady = []
+        for p in self.steady:
+            t, ys = self._run(with_values(self.study, {**values, **p.set}), self.t1, self.n)
+            steady.append({o: settled_end(*_dedupe(t, ys[o]), o) for o in p.values})
+        return series, steady
 
 
 # ---- residuals, optimizer, uncertainty -----------------------------------------------------------------------------
@@ -466,37 +623,98 @@ def uncertainty(params: list[Param], x: np.ndarray, jac: np.ndarray, r: np.ndarr
 
 
 def optimize(params, series, steady, evaluate, starts: int, max_evaluations: int, diff_step: float,
-             cancel: Path | None = None):
-    """Bounded least squares from each start; the best by cost. evaluate(values) -> (series, steady) or raises."""
+             cancel: Path | None = None, workers: int = 1, progress: Path | None = None):
+    """Bounded least squares from each start; the best by cost. evaluate(values) -> (series, steady) or raises.
+    The Jacobian by forward differences (backward at an upper bound; the other side when a run fails), its runs
+    `workers` at a time (OpenModelica runs are processes: threads suffice)."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
     from scipy.optimize import least_squares
     lo = np.array([p.to_x(p.lo) for p in params])
     hi = np.array([p.to_x(p.hi) for p in params])
     m = sum(len(s.t) for s in series) + sum(len(p.values) for p in steady)
-    state = {"evaluations": 0, "failed": 0, "last_error": None}
+    state = {"evaluations": 0, "failed": 0, "last_error": None, "best_cost": None, "start": 0}
+    lock = threading.Lock()
+    last = {}
 
-    def fun(x):
+    def raw(x):
+        """(residuals, ok)."""
         if cancel is not None and Path(cancel).exists():
             raise KeyboardInterrupt("cancelled")
-        state["evaluations"] += 1
+        with lock:
+            state["evaluations"] += 1
         vals = {p.key: p.from_x(float(xi)) for p, xi in zip(params, x)}
         try:
             r = residuals(series, steady, evaluate(vals))
+            if not np.all(np.isfinite(r)):
+                raise FitError("the run gave values that are not finite")
         except KeyboardInterrupt:
             raise
         except Exception as exc:  # noqa: BLE001 (a run that fails: a large residual, the optimizer steps back)
-            state["failed"] += 1
-            state["last_error"] = f"{type(exc).__name__}: {exc}"[:300]
-            return np.full(m, FAILED)
-        return r if np.all(np.isfinite(r)) else np.full(m, FAILED)
+            with lock:
+                state["failed"] += 1
+                state["last_error"] = f"{type(exc).__name__}: {exc}"[:300]
+            return np.full(m, FAILED), False
+        with lock:
+            c = 0.5 * float(r @ r)
+            if state["best_cost"] is None or c < state["best_cost"]:
+                state["best_cost"] = c
+        return r, True
+
+    def report():
+        if progress is not None:
+            try:
+                Path(progress).write_text(json.dumps({k: state[k] for k in
+                                                      ("evaluations", "failed", "best_cost", "start")} |
+                                                     {"starts": starts, "max_evaluations": max_evaluations}))
+            except OSError:
+                pass
+
+    def fun(x):
+        r, _ = raw(x)
+        last.clear()
+        last[x.tobytes()] = r
+        report()
+        return r
+
+    ex = ThreadPoolExecutor(max_workers=max(1, workers))
+
+    def jac(x):
+        f0 = last.get(x.tobytes())
+        if f0 is None:
+            f0 = fun(x)
+        h = diff_step * np.maximum(1.0, np.abs(x))
+
+        def column(i):
+            for sign in ((1, -1) if x[i] + h[i] <= hi[i] else (-1, 1)):
+                xi = x.copy()
+                xi[i] = x[i] + sign * h[i]
+                if not lo[i] <= xi[i] <= hi[i]:
+                    continue
+                r, ok = raw(xi)
+                if ok:
+                    return (r - f0) / (sign * h[i])
+            return np.zeros(m)
+
+        cols = list(ex.map(column, range(len(x))))
+        report()
+        return np.column_stack(cols)
 
     runs = []
     per = max(10, max_evaluations // max(starts, 1))
-    for i, x0 in enumerate(_starts(params, starts)):
-        x0 = np.clip(x0, lo, hi)
-        t = time.time()
-        res = least_squares(fun, x0, bounds=(lo, hi), method="trf", x_scale="jac", diff_step=diff_step,
-                            max_nfev=per, xtol=1e-10, ftol=1e-10, gtol=1e-10)
-        runs.append({"start": i, "x0": x0, "res": res, "seconds": time.time() - t})
+    try:
+        for i, x0 in enumerate(_starts(params, starts)):
+            state["start"] = i
+            x0 = np.clip(x0, lo, hi)
+            t = time.time()
+            n0 = state["evaluations"]
+            res = least_squares(fun, x0, jac=jac, bounds=(lo, hi), method="trf", x_scale="jac",
+                                max_nfev=per, xtol=1e-10, ftol=1e-10, gtol=1e-10)
+            runs.append({"start": i, "x0": x0, "res": res, "seconds": time.time() - t,
+                         "evaluations": state["evaluations"] - n0})
+    finally:
+        ex.shutdown(wait=True, cancel_futures=True)
     best = min(runs, key=lambda r: r["res"].cost)
     return best, runs, state
 
@@ -528,17 +746,26 @@ def run_fit(name, study, folder: Path, solver: str, timeout: float, cancel: Path
     t_start = time.time()
     tr_units = _units(study)
     params, series, steady = load(study, tr_units)
-    if solver != "ref":
-        return {"ok": False, "why": "fitting with OpenModelica comes with V4 milestone F2: use solver 'ref' (the "
-                                    "reference solver) for catalog studies until then",
-                "reliable": False, "unreliable_because": ["not yet"]}
-    evaluate = RefEvaluator(study, series, steady)
-    tol = 1e-10                                   # the reference's own (Radau rtol 1e-10)
-    diff_step = max(1e-7, math.sqrt(tol))
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
     f = study["fit"]
     try:
+        if solver == "ref":
+            if "modelica" in study:
+                raise FitError("custom models (modelica) have no reference solver: fit them with OpenModelica")
+            evaluate = RefEvaluator(study, series, steady)
+            tol, workers = 1e-10, 1                     # the reference's own (Radau rtol 1e-10); Python: one at a time
+        else:
+            evaluate = OmcEvaluator(study, params, series, steady, folder, timeout, cancel)
+            from .sweep import procs
+            tol, workers = evaluate.tol, max(1, min(procs(study), len(params)))
+    except FitError as exc:
+        return {"ok": False, "why": str(exc), "errors": [str(exc)], "reliable": False}
+    diff_step = max(1e-7, math.sqrt(tol))
+    try:
         best, runs, state = optimize(params, series, steady, evaluate, f.get("starts", 1),
-                                     f.get("max_evaluations", 400), diff_step, cancel)
+                                     f.get("max_evaluations", 400), diff_step, cancel, workers,
+                                     folder / "fit_progress.json")
     except KeyboardInterrupt:
         return {"ok": False, "state": "cancelled", "why": "cancelled", "reliable": False}
     res = best["res"]
@@ -546,7 +773,10 @@ def run_fit(name, study, folder: Path, solver: str, timeout: float, cancel: Path
     values = {p.key: p.from_x(float(xi)) for p, xi in zip(params, x)}
     unc = uncertainty(params, x, res.jac, res.fun, all(s.has_sigma for s in series) and
                       all(p.has_sigma for p in steady))
-    model = evaluate(values)
+    try:
+        model = evaluate(values)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "why": f"the run at the best values failed: {exc}", "reliable": False}
     for p in params:
         u = unc["params"][p.key]
         u.update({"initial": p.initial, "given": p.given, "min": p.lo, "max": p.hi,
@@ -554,16 +784,24 @@ def run_fit(name, study, folder: Path, solver: str, timeout: float, cancel: Path
                   "at_bound": bool(abs(p.to_x(u["value"]) - p.to_x(p.lo)) < 1e-6 * max(1, abs(p.to_x(p.lo))) or
                                    abs(p.to_x(u["value"]) - p.to_x(p.hi)) < 1e-6 * max(1, abs(p.to_x(p.hi))))})
     fit = {"status": _status(res), "message": res.message, "cost": float(res.cost), "evaluations": state["evaluations"],
-           "failed_evaluations": state["failed"], "solver": solver, **unc, "quality": quality(series, steady, model),
+           "failed_evaluations": state["failed"], "solver": solver, "workers": workers,
+           "tolerance": tol if solver != "ref" else None, "diff_step": diff_step, **unc, "quality": quality(series, steady, model),
            "residuals": {s.output: {"t": s.t.tolist(), "data": s.y.tolist(), "model": model[0][s.output].tolist()}
                          for s in series},
            "starts": [{"start": r["start"], "initial": {p.key: (p.initial if r["start"] == 0 else p.from_x(float(v)))
                                                         for p, v in zip(params, r["x0"])},
                        "end": {p.key: p.from_x(float(v)) for p, v in zip(params, r["res"].x)},
-                       "cost": float(r["res"].cost), "status": _status(r["res"])} for r in runs],
+                       "cost": float(r["res"].cost), "status": _status(r["res"]), "evaluations": r["evaluations"],
+                       "seconds": round(r["seconds"], 2)} for r in runs],
            "seconds": round(time.time() - t_start, 2)}
     if state["last_error"]:
         fit["last_failed_evaluation"] = state["last_error"]
+    if isinstance(evaluate, OmcEvaluator):
+        fit["runs"] = evaluate.runs
+        fit["model_info"] = evaluate.model_info
+        fit["run_grid"] = {"stop": evaluate.stop, "intervals": evaluate.intervals} if series else None
+        if (evaluate.root / "last_failed.log").is_file():
+            fit["last_failed_log"] = str(evaluate.root / "last_failed.log")
     # the best values, run with every check: the study's outputs and checks
     final = run_study(name, with_values(study, values), Path(folder) / "final", solver, timeout, cancel)
     final.pop("trace", None)

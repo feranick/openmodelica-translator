@@ -2,7 +2,7 @@
 
 Session context for Claude (the user documentation is README.md). Start a chat with: "Read planning.md and start."
 
-Version: 2026.11.19.6 (2026-11-19). Done: M0-M8 (v1), V2 (coolant, DC machine, heat ports, events), V3 (AC
+Version: 2026.11.19.7 (2026-11-19). Done: M0-M8 (v1), V2 (coolant, DC machine, heat ports, events), V3 (AC
 machines, transient and quasi-static, nonlinear reference), the fixes from use since (docs/history.md), and the
 move onto **llmt-runtime** (2026.11.09.1-.3: workers, SLURM layer and MCP server common code are the runtime's).
 
@@ -63,8 +63,8 @@ lumped parameters.
   `~/Software/llmt-runtime`; pinned 2026.11.19.2; omct declares the floor `llmt-runtime>=2026.11.19.2`). Read its
   `README.md` (API, hooks, settings) and `PLANNING.md` (open items) before touching SLURM, jobs, memory, workers,
   requests or the MCP server's common code.
-- **Code:** 28 modules (`runtime.py`, `workers.py` thin), about 12,300 lines (`ref.py` alone ~3,000); 448 tests pass
-  in the sandbox with the runtime (3 skipped). MCP tools: 13 (`extend` since 2026.11.19.5).
+- **Code:** 28 modules (`runtime.py`, `workers.py` thin), about 12,300 lines (`ref.py` alone ~3,000); 455 tests pass
+  in the sandbox with the runtime (6 skipped: the real-omc tests). MCP tools: 13 (`extend` since 2026.11.19.5).
 
 ## Open items
 
@@ -446,6 +446,9 @@ Details: docs/history.md (everything to 2026-10-31) and the README's version tab
 
 ## Recent changes
 
+**2026.11.19.7 (2026-11-19)**: V4 F2, fitting with OpenModelica. fit.OmcEvaluator: build once at the initial values; `_moved` translates each parameter at a second value and finds the override paths it moves (none, or one compiled in (changeable false): FitError up front); a variant build when other compiled-in values differ (as runner); each evaluation translates the point (1-2 ms), checks the structure is the build's, runs simrun.simulate with the outputs-only filter at tol/10 in evaluations/eNNNNN (removed after), combines the outputs; per-run timeout min(timeout, max(OMCT_SWEEP_POINT_MIN_S, FACTOR x first run)). series_grid: stop = last data time; the data's grid when uniform from t0 (x an integer up to the study's intervals), else max(intervals, 2000) and np.interp after _dedupe (events keep the later value). Steady points: settled_end (last fifth < 1e-5 of the range, else 'lengthen'; the ref fallback uses it too). optimize: own forward-difference Jacobian (steps diff_step x max(1, |x|), backward at the upper bound, the other side when a run fails, zero column when both fail) on a ThreadPoolExecutor of min(run.procs, n_params) (1 for ref); fit_progress.json (evaluations, failed, best_cost, start). run_fit: ref refuses custom models; FitError from the evaluator -> ok false with why. tests/fake_omc.py `_apply`: override values that differ from the study's are set back (comp.param, comp.<init var>). tests/test_fit.py: omc (fake): R recovered, one build = the final run's, run folders removed; R and v0 with 2 workers; steady points (divider R2 from two V); compiled-in R.R refused; Jacobian fallback; series_grid; settled_end/_dedupe; 3 real-omc tests (RC R, heating curve m/h/T0 through composite overrides with 3 workers, a custom model's k) skipped here: **run them on carbonio** and record the outcome.
+**Next: F3** (images: data vs model and residuals; benchmarks fit_*; SLURM sizing and an estimate (today a fit job gets one study's limit: a long fit can hit it); api progress from fit_progress.json; README section).
+
 **2026.11.19.6 (2026-11-19)**: V4 F1, parameter estimation on the reference solver. New `fit.py`: `load` (params by the sweep's rules with SI bounds, a parameter's own range kept (gt strict); data inline or CSV with unit/t_unit/sigma/weight; steady points), `fit_errors` (format.validate_study and the escape hatch call it; refused with sweep, converge, linearize), `RefEvaluator` (translate + Ref.simulate at the data times; steady points by Ref.steady, exact, else a settled run's end), `optimize` (least_squares trf, x in log for log params, diff_step 1e-5, a failed evaluation = residuals 1e3; Sobol starts after the initial guess), `uncertainty` (s^2 pinv(J^T J), delta method, ci95, correlation, identifiable: no pair over 0.98 and cond < 1e12), `run_fit` (the final checked run in `<folder>/final`; warnings for not separable, at a bound, max_evaluations). runner._run dispatches a study with `fit`; _retry_tighter skips it (the final run had its own). solver omc: 'comes with F2'. study_format: STUDY_KEYS fit; media as rows and some conventions shortened (31,933 chars, the limit is 32,000: F2/F3 docs need room). tests/test_fit.py (28): R recovered; R and C not separable (R x C right); noise with sigma in mV and v0 (within 3 stderr); h from two steady points; m, h, T0 from a heating curve in degC and minutes; CSV + 3 starts; unit conversion; 16 validation errors; omc refused; cancel.
 **Next: F2** (the OpenModelica evaluator: one build, runs by override without checks, the Jacobian's runs in parallel on the sweep pool, the run tolerance /10), then F3 (images, benchmarks fit_*, SLURM sizing and progress, README section).
 
@@ -535,7 +538,7 @@ setuptools 59 too old); pip installs a current setuptools into the isolated buil
 
 **2026.10.25.3 (2026-10-25)**: llm-translators' checklist for translators (six items). Already done: (3) stale servers (2026.10.23.3 + the serving guard of 2026.10.25.1; run-study and tests never refuse or exit), (4) estimates in validation (2026.10.22.1; procs after the caps, mem as --mem). Done in 2026.10.25.2, completed now: (1) node pinning: the node list and CPUs now from `scontrol -o show node` (the checklist's source; was sinfo), and a job's CPUs capped at this node's (with any: the largest node's), so the estimate the router tests with sbatch --test-only matches the job; (5) failed scontrol not remembered (and msl_status: an lru_cache kept a failed first MSL load for the server's lifetime: now only success is kept, and its omc call is bounded at 40 s since study_format runs it). New: (2) OMCT_SLURM_ARGS with several options: shlex everywhere already; mem_mb_for_job now reads "--mem 8G" (two words) and --mem-per-cpu (x CPUs), test with "--mem=8G --nodelist=spark-5da5"; (6) wait bounds: sbatch timeout 60 -> 15 s and, after a timeout, the request's other studies fail at once for 30 s (a dead controller made run_studies wait 60 s per study); _run (squeue/sacct/scontrol) 20 -> 10 s; status() starts no collect it cannot finish by the deadline (measured from the last one); run() counts the submit time against wait. Compiling and simulating were already in the pool or SLURM jobs; get_model and validate_studies only translate. Tests: fake two-node scontrol (sizes 20 and 12 CPUs), args with two options, hanging sbatch, slow collect.
 
-## V4: parameter estimation (design, 2026-11-19; F1 built 2026.11.19.6)
+## V4: parameter estimation (design, 2026-11-19; F1 2026.11.19.6, F2 2026.11.19.7)
 
 Nicola's choices (2026-11-19): data inline and from a CSV file on the machine; a local bounded least-squares fit with
 optional multistart; transient time series, steady values and initial values; standard errors and correlations from
@@ -610,9 +613,7 @@ path (one build, fast runs, parallel Jacobian), final checked run, uncertainty, 
 values, multistart, images, benchmarks, SLURM sizing and estimates, docs; F4 on the machines (benchmarks, a real
 data set if Nicola has one).
 
-**Status (2026.11.19.6):** F1 done, and on the reference path also what F2/F3 list for the result: the final
-checked run, uncertainty, steady points (exact via Ref.steady), initial values, multistart. Left: the OpenModelica
-evaluator (F2), images, benchmarks, SLURM sizing and progress, README section (F3), machines (F4).
+**Status (2026.11.19.7):** F1 and F2 done (both solvers; on the way also the final checked run, uncertainty, steady points, initial values, multistart). Left: images, benchmarks, SLURM sizing and progress, README section (F3), machines (F4). F2's real-omc tests (tests/test_fit.py, `test_real_*`) wait for a machine.
 
 **Open questions** (decide while building, or ask): whether the fast path may skip reading the full MAT file (a
 variable filter on the outputs only); the CSV's location for router placement (a path under the machine's home: the

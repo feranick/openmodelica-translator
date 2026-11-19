@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """fake_omc.py — a stand-in for omc and the executables it builds, for tests without OpenModelica.
-Version: 2026.10.21.4
+Version: 2026.11.19.7
 
     fake_omc.py --version            prints like omc 1.27.1
     fake_omc.py [-n=N] script.mos    the msl status script, or a build (modelica.build_mos): prints the 11 values
@@ -9,7 +9,8 @@ Version: 2026.10.21.4
     fake_omc.py --sim <flags>        the executable: simulates the study (OMCT_FAKE_STUDY) with the reference implementation,
                                      writes a MAT file in OpenModelica's layout and the log of a mochi run
 Environment: OMCT_FAKE_STUDY (study JSON), OMCT_FAKE_BUILD_FAIL=1, OMCT_FAKE_REFUSE=<name>, OMCT_FAKE_UNBALANCED=1,
-OMCT_FAKE_SHIFT=<name> (the run records a different value for it).
+OMCT_FAKE_SHIFT=<name> (the run records a different value for it). Override values that differ from the study's
+are applied where the path is comp.param or comp.<initial value's variable> (_apply).
 """
 import json
 import os
@@ -56,6 +57,30 @@ def build(mos: Path):
     return 0
 
 
+def _apply(study, ov):
+    """The override values that differ from the study's own, set back into the study where a value's Modelica path
+    is comp.param (a catalog parameter) or comp.var (an initial value's variable): enough for fits and sweeps of
+    simple kinds (R.R, C.C, C.v0); values of composite kinds (blk.C = m cp) stay the study's."""
+    from openmodelica_translator import catalog as C
+    from openmodelica_translator.modelica import translate
+    own = translate(study).overrides
+    comps = study.get("components") or {}
+    for key, v in ov.items():
+        if v is None or own.get(key) == v or key.count(".") != 1:
+            continue
+        comp, _, x = key.partition(".")
+        k = C.KINDS.get((comps.get(comp) or {}).get("kind"))
+        if k is None:
+            continue
+        if x in k["params"]:
+            comps[comp][x] = v
+        else:
+            init = next((i for i, d in k["inits"].items() if d["var"] == x), None)
+            if init:
+                comps[comp][init] = v
+    return study
+
+
 def sim(args):
     import numpy as np
 
@@ -75,6 +100,7 @@ def sim(args):
     t0, t1 = float(flags["startTime"]), float(flags["stopTime"])
     n = max(1, round((t1 - t0) / float(flags["stepSize"])))
     t = np.linspace(t0, t1, n + 1)
+    study = _apply(study, ov)
     r = Ref(net_build(study))
     r.init_selection()
     vals = r.simulate(t)

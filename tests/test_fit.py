@@ -1,14 +1,16 @@
-"""test_fit.py — parameter estimation (V4 F1) on the reference solver: synthetic data from the reference itself.
-Version: 2026.11.19.6
+"""test_fit.py — parameter estimation (V4): on the reference solver, and through OpenModelica with the fake omc
+(tests/fake_omc.py runs the reference with the override values); synthetic data from the reference itself.
+Version: 2026.11.19.7
 """
 import copy
 
 import numpy as np
 import pytest
 from studies import RC, THERMAL
+from test_backend import _with_study, fake  # noqa: F401 (the fake omc fixture)
 
 from openmodelica_translator import modelica
-from openmodelica_translator.fit import FitError, load
+from openmodelica_translator.fit import FitError, _dedupe, load, optimize, series_grid, settled_end
 from openmodelica_translator.format import study_format, validate_study
 from openmodelica_translator.runner import run_study
 
@@ -168,11 +170,6 @@ def test_structural_and_combinations_refused():
     assert "t and y" in errors(st)
 
 
-def test_omc_path_comes_with_F2(tmp_path):
-    r = run_study("rc", rc_fit(), tmp_path, "omc", 600)
-    assert not r["ok"] and "F2" in r["why"] and r["reliable"] is False
-
-
 def test_cancel(tmp_path):
     (tmp_path / "cancel").write_text("")
     r = run_study("rc", rc_fit(), tmp_path, "ref", 600)
@@ -188,3 +185,160 @@ def test_parameter_value_errors_raise():
     st["fit"]["params"]["R.R"]["min"] = "3 kg"
     with pytest.raises(FitError):
         load(st, {"v": "V"})
+
+
+# ---- OpenModelica (the fake omc) ------------------------------------------------------------------------------------
+def test_omc_recovers_R(fake, monkeypatch):
+    st = rc_fit()
+    _with_study(monkeypatch, fake, {k: v for k, v in st.items() if k != "fit"})
+    r = run_study("rc", st, fake / "req" / "rc", "omc", 60)
+    assert r["ok"] and r["reliable"], (r.get("why"), r.get("errors"), r.get("unreliable_because"))
+    f = r["fit"]
+    assert f["params"]["R.R"]["value"] == pytest.approx(1000, rel=1e-5)
+    assert f["status"] == "converged" and f["runs"] == f["evaluations"] + 1 and f["failed_evaluations"] == 0
+    assert f["tolerance"] == pytest.approx(1e-7) and f["run_grid"] == {"stop": 0.005, "intervals": 500}
+    assert f["model_info"]["hash"] == r["model_info"]["hash"]                    # one build, the final run's
+    assert not list((fake / "req" / "rc" / "evaluations").glob("e*"))             # each run's folder removed
+    assert r["checks"]["overrides"]["ok"]                                         # the final run read them back
+    assert (fake / "req" / "rc" / "fit_progress.json").is_file()
+
+
+def test_omc_two_params_in_parallel(fake, monkeypatch):
+    st = rc_fit(max_evaluations=60)
+    y = 0.3 + 0.7 * (1 - np.exp(-T / 1e-3))
+    st["components"]["C"]["v0"] = 0
+    st["fit"]["params"]["C.v0"] = {"initial": 0, "min": -1, "max": 1}
+    st["fit"]["data"]["v"]["y"] = y.tolist()
+    st["run"] = {"procs": 2}
+    _with_study(monkeypatch, fake, {k: v for k, v in st.items() if k != "fit"})
+    r = run_study("rc2", st, fake / "req" / "rc2", "omc", 60)
+    f = r["fit"]
+    assert f["workers"] == 2
+    assert f["params"]["R.R"]["value"] == pytest.approx(1000, rel=1e-4)
+    assert f["params"]["C.v0"]["value"] == pytest.approx(0.3, abs=1e-5)
+
+
+def test_omc_steady_points(fake, monkeypatch):
+    # V - R1 - (C || R2): v_ss = V R2 / (R1 + R2); R1 = R2 = 1 kOhm, tau = 0.5 ms, the run 40 tau
+    st = {"components": {"V": {"kind": "step_voltage", "V": 1}, "R1": {"kind": "resistor", "R": 1000},
+                         "R2": {"kind": "resistor", "R": 300}, "C": {"kind": "capacitor", "C": "1 uF"},
+                         "g": {"kind": "ground"}},
+          "connect": [["V.p", "R1.p"], ["R1.n", "C.p"], ["R2.p", "C.p"], ["R2.n", "g"], ["C.n", "g"], ["V.n", "g"]],
+          "outputs": {"v": "C.v"}, "analysis": {"kind": "transient", "stop_time": 0.02, "intervals": 200}}
+    _with_study(monkeypatch, fake, copy.deepcopy(st))
+    st["fit"] = {"params": {"R2.R": {"initial": 300, "min": 10, "max": 1e5}},
+                 "steady": [{"set": {"V.V": 2}, "values": {"v": 1.0}}, {"set": {"V.V": 4}, "values": {"v": 2.0}}]}
+    r = run_study("div", st, fake / "req" / "div", "omc", 60)
+    f = r["fit"]
+    assert f["params"]["R2.R"]["value"] == pytest.approx(1000, rel=1e-4), f.get("last_failed_evaluation")
+    assert f["quality"]["steady"][1]["values"]["v"]["model"] == pytest.approx(2.0, rel=1e-5)
+
+
+def test_omc_compiled_in_value_is_refused(fake, monkeypatch):
+    st = rc_fit()
+    _with_study(monkeypatch, fake, {k: v for k, v in st.items() if k != "fit"})
+    monkeypatch.setenv("OMCT_FAKE_REFUSE", "R.R")
+    r = run_study("rc", st, fake / "req" / "rc", "omc", 60)
+    assert not r["ok"] and "compiled R.R into the model" in r["why"]
+
+
+def test_ref_refuses_custom_models(tmp_path):
+    st = {"modelica": {"text": "model M Real x(start=1); parameter Real k=1; equation der(x) = -k*x; end M;",
+                       "model": "M"}, "outputs": {"x": "x"}, "analysis": {"kind": "transient", "stop_time": 1},
+          "fit": {"params": {"k": {"initial": 2, "min": 0.1, "max": 10}}, "data": {"x": {"t": [0, 1], "y": [1, 0.37]}}}}
+    r = run_study("m", st, tmp_path, "ref", 60)
+    assert not r["ok"] and "no reference solver" in r["why"]
+
+
+# ---- pieces --------------------------------------------------------------------------------------------------------
+def test_jacobian_takes_the_other_side_when_a_run_fails():
+    from openmodelica_translator.fit import Param, Series
+    t = np.linspace(0, 1, 11)
+    s = [Series("y", t, 2.0 * t, 1.0)]
+    p = [Param("a", 1.0, 0.0, 5.0, False)]
+    seen = []
+
+    def ev(vals):
+        a = vals["a"]
+        seen.append(a)
+        if 1.0 < a < 1.0 + 1e-3:                       # the forward step from the start fails
+            raise RuntimeError("solver failed")
+        return {"y": a * t}, []
+
+    best, runs, state = optimize(p, s, [], ev, 1, 50, 1e-5, workers=2)
+    assert best["res"].x[0] == pytest.approx(2.0, rel=1e-8)
+    assert state["failed"] >= 1 and "solver failed" in state["last_error"]
+
+
+def test_series_grid():
+    assert series_grid(0.0, np.linspace(0, 0.005, 26), 500) == (0.005, 500)       # 25 data intervals x 20
+    assert series_grid(0.0, np.linspace(0, 2, 2001), 500) == (2.0, 2000)
+    assert series_grid(0.0, np.array([0.1, 0.25, 0.7071]), 500) == (0.7071, 2000)  # not a grid: interpolated
+    assert series_grid(1.0, np.array([1.5, 2.0]), 10) == (2.0, 10)                 # from t0 = 1
+
+
+def test_settled_end_and_dedupe():
+    t = np.linspace(0, 10, 101)
+    assert settled_end(t, 1 - np.exp(-t / 0.5), "v") == pytest.approx(1.0, abs=1e-8)
+    with pytest.raises(FitError, match="lengthen"):
+        settled_end(t, 1 - np.exp(-t / 3), "v")
+    tt, yy = _dedupe(np.array([0, 1, 1, 2.0]), np.array([0, 1, 5, 6.0]))
+    assert tt.tolist() == [0, 1, 2] and yy.tolist() == [0, 5, 6]
+
+
+# ---- the real OpenModelica (skipped where omc is not installed: run on the machines) -------------------------------
+from test_backend import _real_omc  # noqa: E402
+
+from openmodelica_translator import omc  # noqa: E402
+
+REAL = pytest.mark.skipif(_real_omc() is None, reason="OpenModelica (omc) is not installed here")
+
+
+@REAL
+def test_real_rc_R(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMCT_OUT", str(tmp_path))
+    omc.find_omc.cache_clear()
+    st = rc_fit()
+    st["analysis"]["intervals"] = 500
+    r = run_study("rc", st, tmp_path / "rc", "omc", 300)
+    assert r["ok"] and r["reliable"], (r.get("why"), r.get("errors"), r.get("unreliable_because"))
+    f = r["fit"]
+    assert f["params"]["R.R"]["value"] == pytest.approx(1000, rel=1e-4) and f["identifiable"]
+    assert r["checks"]["overrides"]["ok"] and r["checks"]["reference"]["ok"]
+
+
+@REAL
+def test_real_heating_curve(tmp_path, monkeypatch):
+    # composite kinds: blk.m and conv.h reach the model as blk.C = m cp and conv__Gc.k = h A
+    monkeypatch.setenv("OMCT_OUT", str(tmp_path))
+    omc.find_omc.cache_clear()
+    base = thermal()
+    base.pop("fit")
+    tr = modelica.translate(base)
+    tt = np.linspace(0, 20000, 41)
+    v = tr.ref.simulate(tt, t0=0)
+    y = sum(c * v[p] for c, p in tr.outputs["T"][0])
+    st = thermal(params={"blk.m": {"initial": 5, "min": 0.1, "max": 50}, "conv.h": {"initial": 30, "min": 1, "max": 200},
+                         "blk.T0": {"initial": 300, "min": 273.15, "max": 340}},
+                 data={"T": {"t": tt.tolist(), "y": y.tolist()}}, max_evaluations=200)
+    st["run"] = {"procs": 3}
+    r = run_study("th", st, tmp_path / "th", "omc", 300)
+    assert r["ok"] and r["reliable"], (r.get("why"), r.get("errors"), r.get("unreliable_because"))
+    p = r["fit"]["params"]
+    assert p["blk.m"]["value"] == pytest.approx(2, rel=1e-3) and p["conv.h"]["value"] == pytest.approx(10, rel=1e-3)
+    assert p["blk.T0"]["value"] == pytest.approx(293.15, abs=0.01)
+
+
+@REAL
+def test_real_custom_model(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMCT_OUT", str(tmp_path))
+    omc.find_omc.cache_clear()
+    t = np.linspace(0, 2, 41)
+    st = {"modelica": {"text": "model M Real x(start=1, fixed=true); parameter Real k=1; equation der(x) = -k*x; end M;",
+                       "model": "M", "values": {"k": 1.0}},
+          "outputs": {"x": "x"}, "analysis": {"kind": "transient", "stop_time": 2, "intervals": 400},
+          "fit": {"params": {"k": {"initial": 1, "min": 0.1, "max": 10}},
+                  "data": {"x": {"t": t.tolist(), "y": np.exp(-2.5 * t).tolist()}}}}
+    r = run_study("m", st, tmp_path / "m", "omc", 300)
+    assert r["ok"], (r.get("why"), r.get("errors"))
+    assert r["fit"]["params"]["k"]["value"] == pytest.approx(2.5, rel=1e-4)
