@@ -1,5 +1,5 @@
 """api.py — what the CLI and the MCP server call. JSON in, JSON out.
-Version: 2026.11.18.1
+Version: 2026.11.18.3
 
     tool_status()                  versions; omc, MSL, the C compiler, the build cache; the executor and its caps
     study_format()                 the study format, with status
@@ -136,13 +136,20 @@ class _Pool:
         self.pool = None
         self.jobs: dict[str, dict] = {}
 
-    def submit(self, folder: Path, jobs: list[dict]) -> None:
+    def ensure(self) -> None:
+        """The pool, created once. llmt-runtime's make_pool raises WorkersNotPermitted where the MCP client's sandbox
+        refuses worker processes (Gemini's Local MCP: SemLock EPERM); it reaches the caller as the tool's error."""
         if self.pool is None:
+            from llmt_runtime.workers import make_pool
+
             from .workers import watch_parent
             # each worker ends when this server is gone (crash, kill -9): llm-translators "Worker pools never
             # outlive the server"
-            self.pool = mp.get_context("spawn").Pool(int(os.environ.get("OMCT_WORKERS", "2")), maxtasksperchild=20,
-                                                     initializer=watch_parent, initargs=(os.getpid(),))
+            self.pool = make_pool(int(os.environ.get("OMCT_WORKERS", "2")), maxtasksperchild=20,
+                                  initializer=watch_parent, initargs=(os.getpid(),))
+
+    def submit(self, folder: Path, jobs: list[dict]) -> None:
+        self.ensure()
         self.jobs.setdefault(str(folder), {}).update(
             {j["name"]: self.pool.apply_async(_run_one, (j,)) for j in jobs})
 
@@ -198,16 +205,23 @@ def start(studies: dict, solver: str | None = None, prefix: str = "run", inline:
 
     from . import executor as X
     from .runtime import RT
+    queued = [not inline and X.use_slurm(j["study"], s) for j in jobs]
+    local = [j for j, q in zip(jobs, queued) if not q]
+    if local and not inline:
+        # the pool before anything is recorded or submitted: where workers are not permitted, the call fails with
+        # that error and leaves no request that would look pending for ever
+        try:
+            _POOL.ensure()
+        except Exception:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise
     # with the versions it is submitted with ("translator", llmt-runtime's "runtime"): status says what it ran with
     (folder / "request.json").write_text(json.dumps(R.request_meta(
         RT, names=[j["name"] for j in jobs], invalid=invalid, solver=s, started=time.time(),
         executor=X.kind(), pid=os.getpid(), studies={j["name"]: j["study"] for j in jobs}), default=float))
-    local = []
-    for j in jobs:
-        if not inline and X.use_slurm(j["study"], s):
+    for j, q in zip(jobs, queued):
+        if q:
             X.submit(folder, j["name"], j["study"], s)
-        else:
-            local.append(j)
     if inline:
         for j in local:
             _run_one(j)

@@ -2,7 +2,7 @@
 
 Session context for Claude (the user documentation is README.md). Start a chat with: "Read planning.md and start."
 
-Version: 2026.11.18.2 (2026-11-18). Done: M0-M8 (v1), V2 (coolant, DC machine, heat ports, events), V3 (AC
+Version: 2026.11.18.3 (2026-11-18). Done: M0-M8 (v1), V2 (coolant, DC machine, heat ports, events), V3 (AC
 machines, transient and quasi-static, nonlinear reference), the fixes from use since (docs/history.md), and the
 move onto **llmt-runtime** (2026.11.09.1-.3: workers, SLURM layer and MCP server common code are the runtime's).
 
@@ -59,7 +59,7 @@ lumped parameters.
 - **Checked:** 37 benchmarks with closed forms pass with OpenModelica 1.27.2 (carbonio, 2026-10-31; the same with
   1.27.1 on mochi before); 381 tests pass without OpenModelica (3 skipped).
 - **Runtime:** omct runs on llmt-runtime (`llmt_runtime`, a submodule of llm-translators at
-  `~/Software/llmt-runtime`; pinned 2026.11.18.2; omct declares the floor `llmt-runtime>=2026.11.18.2`). Read its
+  `~/Software/llmt-runtime`; pinned 2026.11.18.2; omct declares the floor `llmt-runtime>=2026.11.18.5`). Read its
   `README.md` (API, hooks, settings) and `PLANNING.md` (open items) before touching SLURM, jobs, memory, workers,
   requests or the MCP server's common code.
 - **Code:** 27 modules (`runtime.py`, `workers.py` thin), about 11,000 lines (`ref.py` alone ~3,000); 405 tests pass
@@ -445,6 +445,14 @@ load, and the quasi-static versions of the machine cases. Chains by name: `chain
 Details: docs/history.md (everything to 2026-10-31) and the README's version table.
 
 ## Recent changes
+
+**2026.11.18.3 (2026-11-18)**: llm-translators' prompt "Worker pools through llmt-runtime's workers.make_pool":
+the run pool (`api._Pool.ensure`, `make_pool`) and the sweep's `make_executor`; floor `llmt-runtime>=2026.11.18.5`.
+`WorkersNotPermitted` is not caught: the tool wrapper turns it into a ToolError with the runtime's text. omct's own
+change: `start()` creates the pool before writing request.json or submitting anything (and removes the folder if
+refused), since a request whose local studies never reached a pool showed them pending for ever. Tests: a refused
+pool through the MCP tool (message, no request left, jobs() and validate_studies answer after), a refused sweep
+executor (the study's why).
 
 **2026.11.18.2 (2026-11-18)**: llmt-runtime 2026.11.18.2 (as tagged) makes every study with `run.after` a SLURM job
 and refuses `run.after` with a local executor or `queue: false`: floor raised to it; the strict xfail is a plain

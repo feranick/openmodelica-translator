@@ -1,6 +1,6 @@
 """test_workers.py — pool workers and the programs they run end when the process that started them dies (llm-translators
 "Worker pools never outlive the server": leftover spawn workers held old releases 'in use').
-Version: 2026.11.07.1
+Version: 2026.11.18.3
 """
 import os
 import subprocess
@@ -61,5 +61,46 @@ def test_pools_are_started_with_the_parent_watch(monkeypatch):
     """The server's study pool and a sweep's process pool both use watch_parent (the backstop for kill -9)."""
     import inspect
     from openmodelica_translator import api, sweep
-    assert "initializer=watch_parent" in inspect.getsource(api._Pool.submit)
+    assert "initializer=watch_parent" in inspect.getsource(api._Pool.ensure)
     assert "initializer=watch_parent" in inspect.getsource(sweep.run_sweep)
+
+
+def test_workers_not_permitted_reaches_the_caller_and_the_server_stays_up(tmp_path, monkeypatch):
+    """A sandbox that refuses worker processes (Gemini's Local MCP: SemLock EPERM): run_studies fails with the
+    runtime's text, leaves no request behind that would look pending, and the server answers the next call."""
+    import asyncio
+
+    import pytest
+    from llmt_runtime import workers as W
+    from studies import RC, study
+
+    from openmodelica_translator import api
+    from openmodelica_translator import mcp_server as S
+
+    def refuse(*a, **k):
+        raise W.WorkersNotPermitted(PermissionError(1, "Operation not permitted"))
+    monkeypatch.setenv("OMCT_OUT", str(tmp_path))
+    monkeypatch.setenv("OMCT_EXECUTOR", "local")
+    monkeypatch.setattr(W, "make_pool", refuse)
+    monkeypatch.setattr(api._POOL, "pool", None)
+    monkeypatch.setattr(S.GUARD, "stale", lambda *a, **k: None, raising=False)
+    with pytest.raises(Exception, match="worker processes are not permitted here"):
+        asyncio.run(S.run_studies({"rc": study(RC)}, solver="ref", wait_s=1))
+    assert not any(p.name.startswith("run_") for p in tmp_path.iterdir())
+    assert "requests" in asyncio.run(S.jobs(limit=1))
+    assert "error" not in asyncio.run(S.validate_studies({"rc": study(RC)}))
+
+
+def test_sweep_executor_not_permitted_is_the_studys_error(tmp_path, monkeypatch):
+    """Inside a worker (or the CLI) a sweep's process pool refused: the study fails with the runtime's text."""
+    from llmt_runtime import workers as W
+    from studies import RC, study
+
+    from openmodelica_translator import runner
+
+    def refuse(*a, **k):
+        raise W.WorkersNotPermitted(PermissionError(1, "Operation not permitted"))
+    monkeypatch.setattr(W, "make_executor", refuse)
+    st = study(RC, sweep={"params": {"R.R": [500.0, 1000.0, 2000.0]}}, run={"procs": 2})
+    r = runner.run_study("sw", st, tmp_path / "sw", "ref", 60)
+    assert not r["ok"] and "worker processes are not permitted here" in r["why"]

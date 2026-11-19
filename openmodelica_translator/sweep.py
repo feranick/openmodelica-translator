@@ -1,5 +1,5 @@
 """sweep.py — one study, many value sets: one build, one run per point, a table.
-Version: 2026.11.07.1
+Version: 2026.11.18.3
 
 run_sweep(name, study, folder, solver, timeout, cancel, run_point) -> the study's result with
     sweep: {points, ok_points, reliable_points, params, columns, table: [{point, params, values, ok, reliable,
@@ -126,13 +126,13 @@ def run_sweep(name, study, folder: Path, solver, timeout, cancel, run_point) -> 
         if workers > 1 and not mp.current_process().daemon:
             # processes: each point's checks (reading, the reference implementation) are Python and would
             # serialise on the GIL in threads (measured on mochi: 120 points on 30 threads took 200 s)
-            from concurrent.futures import ProcessPoolExecutor
+            from llmt_runtime.workers import make_executor
             kind = "processes"
             jobs = [(f"p{i:04d}", point_study(study, pts[i]), str(folder / "points" / f"p{i:04d}"), solver, timeout,
                      str(cancel)) for i in range(1, len(pts))]
             from .workers import watch_parent
-            with ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("spawn"),
-                                     initializer=watch_parent, initargs=(os.getpid(),)) as ex:
+            # WorkersNotPermitted (a sandbox without worker processes) becomes the study's error with its text
+            with make_executor(workers, initializer=watch_parent, initargs=(os.getpid(),)) as ex:
                 for i, r in zip(range(1, len(pts)), ex.map(_point_job, jobs)):
                     results[i] = r
         else:
