@@ -1,5 +1,5 @@
 """format.py — the study format (study_format) and the static checks (validate, validate_study).
-Version: 2026.11.19.10
+Version: 2026.11.19.11
 
 validate_study(study) -> {ok, errors, warnings}: nothing runs (no omc). It resolves the network (network.build),
 checks outputs, analysis, derived quantities, sweep, expect, run (against the OMCT_MAX_* caps) and images, then
@@ -30,7 +30,7 @@ STUDY_KEYS = {
            "t_unit, sigma, weight} | {csv, t, y (columns), ...}}, steady: [{set: {path: value}, values: {output: "
            "value}, sigma}], starts (1), max_evaluations (400)}: parameter estimation -> fit.params.<p>.{value, stderr, "
            "ci95}, correlation, identifiable, quality; run.timeout_s: the whole fit",
-    "cross_check": "modelica only (true): rerun with the other integrator -> checks.cross_solver; false skips",
+    "cross_check": "modelica, fl_* (true): rerun with the other integrator -> checks.cross_solver; false skips",
     "invariants": "[{signal, kind: zero (abs) | constant (abs | rel), name?}] -> checks.invariants",
     "converge": "true | {abs_tol: {output: value}}: rerun at tolerance/10; a change over max(1e-4, 100 x tolerance) "
                 "of an output's range -> unreliable; abs_tol: judged by absolute change; constant outputs -> not_judged",
@@ -179,6 +179,19 @@ FLUID_TOPIC = {
         "Checks: the reference does not cover Modelica.Fluid yet (cross-solver and balances: coming).",
     ],
 }
+
+
+def has_fluid(st) -> bool:
+    """A catalog study with Modelica.Fluid parts (not in the reference: the cross-solver run checks it instead)."""
+    comps = st.get("components") if isinstance(st, dict) else None
+    return isinstance(comps, dict) and any(isinstance(c, dict) and C.KINDS.get(c.get("kind"), {}).get("domain") == "mfluid"
+                                           for c in comps.values())
+
+
+def cross_checked(st) -> bool:
+    """Whether a study gets the cross-solver run (the other integrator): custom models and Modelica.Fluid studies,
+    unless cross_check is false."""
+    return ("modelica" in st or has_fluid(st)) and st.get("cross_check", True) is not False
 
 
 def fluid_kinds() -> list[str]:
@@ -544,8 +557,11 @@ def validate_study(st: dict) -> dict:
     _images_errors(st, errs)
     _converge_errors(st, units, errs)
     _invariant_errors(st, units, errs)
-    if "cross_check" in st:
-        errs.append("cross_check: only for custom models (modelica); catalog studies have the reference check")
+    if "cross_check" in st and not has_fluid(st):
+        errs.append("cross_check: only for custom models (modelica) and Modelica.Fluid studies; other catalog studies "
+                    "have the reference check")
+    elif "cross_check" in st and not isinstance(st["cross_check"], bool):
+        errs.append("cross_check: true or false")
     if not errs:
         errs += _reference_errors(st, net, warns)
     return {"ok": not errs, "errors": errs, "warnings": warns}

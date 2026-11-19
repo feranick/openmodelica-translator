@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study (kind: threads).
-Version: 2026.11.19.8
+Version: 2026.11.19.11
 
 From 2026.11.09.2 the SLURM layer is llmt-runtime's (llmt_runtime.slurm and llmt_runtime.jobs, configured by
 runtime.RT): the settings, the machine (the cluster's nodes from `scontrol -o show node`, this node, pinning with
@@ -232,7 +232,7 @@ def estimate_minutes(study: dict, solver: str = "omc") -> float:
     hit = bool(d and (d / "meta.json").is_file())
     rec = _runs(d) if d else {}
     per = max(float(rec["s_per_interval"]) * 3, 1e-7) if "s_per_interval" in rec else S_PER_INTERVAL
-    runs = _points(study) * (1 + bool(study.get("converge")) + ("modelica" in study and study.get("cross_check", True)))
+    runs = _points(study) * (1 + bool(study.get("converge")) + cross_checked(study))
     if "study_s" in rec:                                 # measured: a whole study on this build, with its checks
         one = 1.5 * float(rec["study_s"]) * (_intervals(study) / max(int(rec.get("intervals") or 1), 1)) ** 0.5
     else:
@@ -270,6 +270,11 @@ def mem_auto(study: dict, cpus: int | None = None) -> str:
     return f"{1024 + 256 * int(cpus if cpus is not None else job_cpus(study))}M"
 
 
+def cross_checked(study: dict) -> bool:
+    from .format import cross_checked as cc
+    return cc(study)
+
+
 def _float(env: str, default: str) -> float:
     try:
         return float(os.environ.get(env, default) or default)
@@ -294,7 +299,7 @@ def point_timeout_s(study: dict) -> float | None:
     if "study_s" not in rec:
         return None
     one = 1.5 * float(rec["study_s"]) * (_intervals(study) / max(int(rec.get("intervals") or 1), 1)) ** 0.5
-    one *= 1 + bool(study.get("converge")) + ("modelica" in study and study.get("cross_check", True))
+    one *= 1 + bool(study.get("converge")) + cross_checked(study)
     fac = _float("OMCT_SWEEP_POINT_FACTOR", str(SWEEP_POINT_FACTOR))
     lo = _float("OMCT_SWEEP_POINT_MIN_S", str(SWEEP_POINT_MIN_S))
     return float(min(timeout_s(study), max(lo, fac * one)))

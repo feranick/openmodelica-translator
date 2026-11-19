@@ -1,5 +1,5 @@
 """runner.py — one study end to end: validate, translate, build (or reuse), run, read, check, write the result.
-Version: 2026.11.19.10
+Version: 2026.11.19.11
 
 run_study(name, study, folder, solver, timeout, cancel) -> the result dict, also written atomically to
 <folder>/<name>.json. solver: "omc" (OpenModelica) or "ref" (the reference implementation only: linear
@@ -363,7 +363,10 @@ def _run(name, study, folder, solver, timeout, cancel) -> dict:
     seconds["build"] = b.get("seconds")
     out["model_info"] = {"hash": b.get("hash"), "cache_hit": b.get("cache_hit"), "omc": b.get("omc"),
                          "msl": b.get("msl"), **(b.get("check") or {})}
-    warnings += b.get("warnings", [])
+    notes = [w for w in b.get("warnings", []) if any(x in w for x in OM_NOTES)]
+    warnings += [w for w in b.get("warnings", []) if w not in notes]
+    if notes:                  # OpenModelica's notes about MSL's own code, not about the study (FL3, 2026-11-19)
+        out["model_info"]["notes"] = notes
     if not b.get("ok"):
         out.update({"ok": False, "why": "the model did not build", "errors": b.get("errors", [])})
         out["files"].update(b.get("files", {}))
@@ -403,7 +406,7 @@ def _run(name, study, folder, solver, timeout, cancel) -> dict:
     t0, t1, n, tol, method = _times(an)
     lin = an["kind"] == "linearize"
     pl = E.plan(tr.net)
-    filt = None if lin else M.variable_filter(tr, extra=(pl or {}).get("paths", ()))
+    filt = None if lin else M.variable_filter(tr, extra=tuple((pl or {}).get("paths", ())) + tuple(fluid_mass_paths(tr)))
     sim = simrun.simulate(b["dir"], folder, run_overrides, start=t0, stop=t1 if not lin else max(t1, t0),
                           intervals=n, tolerance=tol, method=method, variable_filter=filt,
                           timeout=timeout, linearize_at=t1 if lin else None, cancel=cancel)
@@ -443,10 +446,13 @@ def _run(name, study, folder, solver, timeout, cancel) -> dict:
                 return out
             if not out["ok"]:
                 return out
+            from .format import cross_checked, has_fluid
             if "modelica" not in study:
                 _reference(out, study, tr, r.time, vals, tol)
-            elif study.get("cross_check", True):
+            if cross_checked(study):        # custom models and Modelica.Fluid (not in the reference)
                 _cross_solver(out, b, folder, run_overrides, tr, r, vals, t0, t1, n, tol, method, filt, timeout, cancel)
+            if has_fluid(study):
+                _fluid_mass(out, tr, r, tol)
             if study.get("invariants"):
                 _invariants(out, study, r.time, vals, units)
             if study.get("converge"):
@@ -459,6 +465,84 @@ def _run(name, study, folder, solver, timeout, cancel) -> dict:
         if "modelica" not in study:
             _ref_eigen(out, tr)
     return _verdict(out, study)
+
+
+# OpenModelica's notes on MSL's own code (every Modelica.Fluid pump, alias sets, tearing hints): model_info.notes
+OM_NOTES = ("delta_head_init", "V_flow_single_init * 1.1", "alias variables with redundant start",
+            "__OpenModelica_tearingSelect", "attribute stateSelect=StateSelect.prefer")
+FL_STORAGE = {"fl_tank": "m", "fl_volume": "m"}
+
+
+def fluid_mass_paths(tr) -> list:
+    t = fluid_mass_terms(tr)
+    return [] if t is None else [p for _, p in t[0]] + t[1]
+
+
+def fluid_mass_terms(tr):
+    from . import catalog as C
+    net = tr.net
+    if net is None:
+        return None
+    flows, store = [], []
+    for e, d in sorted(net.elems.items()):
+        k = d["kind"]
+        if C.KINDS[k].get("domain") != "mfluid":
+            continue
+        if k in ("fl_boundary", "fl_mass_flow"):
+            for j in range(1, d.get("multi_n", {}).get("port", 0) + 1):
+                flows.append((-1.0, f"{e}.ports[{j}].m_flow"))       # into the network
+        elif k in FL_STORAGE:
+            store.append(f"{e}.{FL_STORAGE[k]}")
+        elif k == "fl_dynamic_pipe":
+            store += [f"{e}.ms[{i}]" for i in range(1, int(d["params"]["nNodes"]) + 1)]
+        elif k in ("fl_pump", "fl_pump_shaft") and float(d["params"].get("V") or 0) > 0:
+            return None
+    return (flows, store) if flows or store else None
+
+
+MASS_FLOOR = 1e-6
+
+
+def _trapezoid_richardson(t, y):
+    """(trapezoid integral of y over t, its error estimate |I_h - I_2h| / 3 from every other point; the coarse grid
+    keeps the last point)."""
+    t, y = np.asarray(t, float), np.asarray(y, float)
+    if t.size < 2:
+        return 0.0, 0.0
+    full = float(np.sum(0.5 * (y[1:] + y[:-1]) * np.diff(t)))
+    idx = list(range(0, t.size, 2))
+    if idx[-1] != t.size - 1:
+        idx.append(t.size - 1)
+    tc, yc = t[idx], y[idx]
+    coarse = float(np.sum(0.5 * (yc[1:] + yc[:-1]) * np.diff(tc)))
+    return full, abs(full - coarse) / 3.0
+
+
+def _fluid_mass(out, tr, r, tol=1e-6):
+    """Modelica.Fluid mass balance: what the boundaries put in (trapezoid) = the change of the stored mass (tanks,
+    volumes, dynamic pipes), relative to the throughput; allowed: 10 x the trapezoid's own error (Richardson), at
+    least 10 x the solver tolerance (FL3, 2026-11-19)."""
+    t = fluid_mass_terms(tr)
+    if t is None:
+        out["checks"]["mass"] = {"ok": True, "covered": False, "why": "a storage omct does not count (a pump's volume)"}
+        return
+    flows, store = t
+    try:
+        tt = np.asarray(r.time, float)
+        q = sum(c * np.asarray(r.series(p), float) for c, p in flows) if flows else np.zeros_like(tt)
+        m = sum(np.asarray(r.series(p), float) for p in store) if store else np.zeros_like(tt)
+    except KeyError as exc:
+        out["checks"]["mass"] = {"ok": True, "covered": False, "why": f"{exc} not recorded"}
+        return
+    inflow, est = _trapezoid_richardson(tt, q)
+    flows_abs = sum(np.abs(np.asarray(r.series(p), float)) for _, p in flows) if flows else np.zeros_like(tt)
+    through = _trapezoid_richardson(tt, flows_abs)[0]
+    dm = float(m[-1] - m[0])
+    scale = max(through, abs(dm), float(np.max(np.abs(m))) * 1e-9, 1e-300)
+    err = abs(dm - inflow) / scale
+    lim = max(MASS_FLOOR, 10 * tol, 10 * est / scale)
+    out["checks"]["mass"] = {"ok": err <= lim, "covered": True, "error_rel": err, "tol": lim, "stored_change_kg": dm,
+                             "inflow_kg": inflow, "throughput_kg": through}
 
 
 def _cross_solver(out, b, folder, overrides, tr, r, vals, t0, t1, n, tol, method, filt, timeout, cancel):

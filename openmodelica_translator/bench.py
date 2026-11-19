@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with closed-form answers: is the toolchain right?
-Version: 2026.11.19.9
+Version: 2026.11.19.11
 
 Each case is a study plus checks [(result path, expected, tolerance, why)]; tolerances are relative unless
 written {"abs": x}. Chains (chain_feat_modal, chain_b3dt_mass, chain_b3dt_inertia) run the other translator first and only when named; they are skipped
@@ -693,10 +693,112 @@ def _fit_msd():
                 ("fit.params.d.d.value", d, 1e-3, "zeta = d / (2 sqrt(c m))")]
 
 
+# ---- Modelica.Fluid (V5 FL3): closed forms; OpenModelica only (not in the reference yet) ---------------------------
+LIQ = {"rho": 1000.0, "cp": 4000.0, "eta": 1e-3}       # a custom constant-property liquid: round numbers
+G = 9.80665
+
+
+def _fl_drain():
+    """Torricelli through an orifice: A dh/dt = -A_o sqrt(2 g h / zeta) -> sqrt(h) = sqrt(h0) - A_o/(2A) sqrt(2g/zeta) t."""
+    A, d, zeta, h0, T = 0.5, 0.03, 1.0, 2.0, 200.0
+    Ao = math.pi * d * d / 4
+    st = {"components": {"tank": {"kind": "fl_tank", "height": 3, "crossArea": A, "level_start": h0, "medium": LIQ},
+                         "o": {"kind": "fl_orifice", "diameter": d, "zeta": zeta}, "out": {"kind": "fl_boundary"}},
+          "connect": [["tank.port", "o.port_a"], ["o.port_b", "out.port"]],
+          "outputs": {"level": "tank.level", "m": "o.m_flow"},
+          "analysis": {"kind": "transient", "stop_time": T, "intervals": 200, "tolerance": 1e-8}}
+    h = (math.sqrt(h0) - Ao / (2 * A) * math.sqrt(2 * G / zeta) * T) ** 2
+    return st, [("outputs.level.final", h, 1e-4, "Torricelli: sqrt(h) falls linearly"),
+                ("outputs.m.initial", LIQ["rho"] * Ao * math.sqrt(2 * G * h0 / zeta), 1e-4, "m = rho A_o sqrt(2 g h0 / zeta)"),
+                ("checks.mass.error_rel", 0.0, {"abs": 1e-5}, "mass balance: the tank loses what flows out")]
+
+
+def _fl_laminar():
+    """Hagen-Poiseuille: m = rho pi d^4 dp / (128 mu L) (Re ~ 31: laminar)."""
+    d, L, dp = 0.01, 10.0, 10.0
+    st = {"components": {"a": {"kind": "fl_boundary", "p": 101325.0 + dp, "medium": LIQ},
+                         "pipe": {"kind": "fl_pipe", "length": L, "diameter": d, "roughness": 0.0},
+                         "b": {"kind": "fl_boundary", "p": 101325.0}},
+          "connect": [["a.port", "pipe.port_a"], ["pipe.port_b", "b.port"]],
+          "outputs": {"m": "pipe.m_flow"}, "analysis": {"kind": "transient", "stop_time": 1, "intervals": 10}}
+    return st, [("outputs.m.final", LIQ["rho"] * math.pi * d ** 4 * dp / (128 * LIQ["eta"] * L), 1e-4,
+                 "Hagen-Poiseuille (MSL's detailed friction is laminar below Re ~ 745)")]
+
+
+def _fl_pump_system():
+    """A pump's quadratic curve H = 20 - 2e5 V^2 on a resistance dp = a V^2: rho g H(V) = a V^2."""
+    a = 1e9
+    rg = LIQ["rho"] * G
+    V = math.sqrt(20 * rg / (a + 2e5 * rg))
+    st = {"components": {"src": {"kind": "fl_boundary", "medium": LIQ},
+                         "pump": {"kind": "fl_pump", "curve": [[0, 20], [0.005, 15], [0.01, 0]], "N_nominal": "1500 rpm"},
+                         "r": {"kind": "fl_resistance", "a": a, "b": 0.0}, "out": {"kind": "fl_boundary"}},
+          "connect": [["src.port", "pump.port_a"], ["pump.port_b", "r.port_a"], ["r.port_b", "out.port"]],
+          "outputs": {"V": "pump.V_flow", "head": "pump.head"},
+          "analysis": {"kind": "transient", "stop_time": 1, "intervals": 10}}
+    return st, [("outputs.V.final", V, 1e-4, "the curve meets the system: rho g (20 - 2e5 V^2) = a V^2"),
+                ("outputs.head.final", a * V * V / rg, 1e-4, "head = a V^2 / (rho g)")]
+
+
+def _fl_valve():
+    """ValveIncompressible sized by Kv, fully open: m = 27.7e-6 Kv sqrt(rho dp) (MSL: Av = Kv 27.7e-6)."""
+    Kv, dp = 10.0, 1e5
+    st = {"components": {"a": {"kind": "fl_boundary", "p": 101325.0 + dp, "medium": LIQ},
+                         "v": {"kind": "fl_valve", "Kv": Kv, "dp_nominal": dp, "m_flow_nominal": 3.0, "opening": 1.0},
+                         "b": {"kind": "fl_boundary", "p": 101325.0}},
+          "connect": [["a.port", "v.port_a"], ["v.port_b", "b.port"]],
+          "outputs": {"m": "v.m_flow"}, "analysis": {"kind": "transient", "stop_time": 1, "intervals": 10}}
+    return st, [("outputs.m.final", 27.7e-6 * Kv * math.sqrt(LIQ["rho"] * dp), 1e-6, "the Kv mapping (Av = 27.7e-6 Kv)")]
+
+
+def _fl_heated_pipe():
+    """A dynamic pipe of n mixed volumes at a wall of Tw, heat alpha (Tw - T_k) on A/n each, upwind: at steady
+    state T_k = (m cp T_(k-1) + alpha A_k Tw) / (m cp + alpha A_k)."""
+    m, Tin, Tw, d, L, n, alpha = 0.2, 300.0, 350.0, 0.05, 10.0, 5, 500.0
+    Ak = math.pi * d * L / n
+    T = Tin
+    for _ in range(n):
+        T = (m * LIQ["cp"] * T + alpha * Ak * Tw) / (m * LIQ["cp"] + alpha * Ak)
+    st = {"components": {"src": {"kind": "fl_mass_flow", "m_flow": m, "T": Tin, "medium": LIQ},
+                         "pipe": {"kind": "fl_dynamic_pipe", "length": L, "diameter": d, "nNodes": n,
+                                  "heat_transfer": "constant", "alpha": alpha},
+                         "wall": {"kind": "fixed_temperature", "T": Tw},
+                         "Ts": {"kind": "fl_temperature"}, "out": {"kind": "fl_boundary", "T": Tin}},
+          "connect": [["src.port", "pipe.port_a"], ["pipe.port_b", "Ts.port_a"], ["Ts.port_b", "out.port"],
+                      ["pipe.heat", "wall.port"]],
+          "outputs": {"T": "Ts.T", "Q": "pipe.heat.Q_flow"},
+          "analysis": {"kind": "transient", "stop_time": 1200, "intervals": 120}}
+    return st, [("outputs.T.final", T, {"abs": 2e-3}, f"{n} mixed volumes in series, constant alpha"),
+                ("outputs.Q.final", m * LIQ["cp"] * (T - Tin), 1e-3, "the wall's heat = m cp (T_out - T_in)"),
+                ("checks.mass.ok", 1, {"abs": 0.5}, "mass balance")]
+
+
+def _fl_air_fill():
+    """An adiabatic volume filled with air at its own temperature: m cv T = m0 cv T0 + mdot cp Tin t, so
+    T = T0 (m0 + gamma mdot t) / (m0 + mdot t) (gamma of DryAirNasa near 300-360 K: 1.400, within 0.1 %)."""
+    V, p0, T0, mdot, t1 = 0.1, 1e5, 300.0, 0.01, 10.0
+    R, gamma = 287.0512, 1.3998
+    m0 = p0 * V / (R * T0)
+    T = T0 * (m0 + gamma * mdot * t1) / (m0 + mdot * t1)
+    st = {"components": {"src": {"kind": "fl_mass_flow", "m_flow": mdot, "T": T0, "medium": "air"},
+                         "vol": {"kind": "fl_volume", "V": V, "p_start": p0, "T_start": T0}},
+          "connect": [["src.port", "vol.port"]],
+          "outputs": {"T": "vol.T", "p": "vol.p", "m": "vol.m"},
+          "analysis": {"kind": "transient", "stop_time": t1, "intervals": 100}}
+    return st, [("outputs.T.final", T, {"abs": 0.3}, "adiabatic filling (cp, cv of DryAirNasa vary 0.1 % here)"),
+                ("outputs.m.final", m0 + mdot * t1, 1e-5, "m = m0 + mdot t (carbonio: 7e-7)"),
+                ("checks.mass.error_rel", 0.0, {"abs": 1e-5}, "mass balance")]
+
+
+FLUID_CASES = {"fl_drain_torricelli": _fl_drain, "fl_pipe_laminar": _fl_laminar, "fl_pump_system_curve": _fl_pump_system,
+               "fl_valve_kv": _fl_valve, "fl_heated_pipe": _fl_heated_pipe, "fl_air_fill": _fl_air_fill}
+
+
 def omc_only() -> set:
-    """Cases the reference does not cover: the nonlinear ones when OMCT_REF_NONLINEAR=0 switches it off."""
+    """Cases the reference does not cover: Modelica.Fluid (FL4 brings liquids), and the nonlinear ones when
+    OMCT_REF_NONLINEAR=0 switches it off."""
     from .ref import nonlinear_on
-    return set() if nonlinear_on() else set(NONLINEAR_CASES)
+    return set(FLUID_CASES) | (set() if nonlinear_on() else set(NONLINEAR_CASES))
 
 
 def cases() -> dict:
@@ -721,6 +823,9 @@ def cases() -> dict:
                      ("fit_rc_tau", lambda: _fit_rc("tau")), ("fit_rc_unidentifiable", lambda: _fit_rc("both")),
                      ("fit_thermal_steady", lambda: _fit_thermal("steady")),
                      ("fit_thermal_curve", lambda: _fit_thermal("curve")), ("fit_msd", _fit_msd)):
+        st, checks = fn()
+        out[name] = {"study": st, "checks": checks}
+    for name, fn in FLUID_CASES.items():
         st, checks = fn()
         out[name] = {"study": st, "checks": checks}
     return out

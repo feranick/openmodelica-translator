@@ -1,5 +1,5 @@
 """test_mfluid.py — Modelica.Fluid kinds (V5 FL2): validation, the closed-loop rule, the generated Modelica.
-Version: 2026.11.19.10
+Version: 2026.11.19.11
 
 Runs of the generated models are checked on the machines (planning.md V5); here: what omct writes and refuses.
 """
@@ -160,3 +160,44 @@ def test_fluid_topic_lists_the_kinds():
     f = study_format("fluid")
     assert {"fl_pipe", "fl_pump", "fl_tank", "fl_valve", "fl_boundary"} <= set(f["kinds"])
     assert "fl_pipe" not in str(study_format()["kinds"])
+
+
+# ---- FL3: the checks Modelica.Fluid studies get ---------------------------------------------------------------------
+def test_cross_solver_and_mass_balance_for_fluid_studies():
+    import numpy as np
+
+    from openmodelica_translator.format import cross_checked, has_fluid
+    from openmodelica_translator.runner import _fluid_mass, fluid_mass_terms
+    assert has_fluid(LOOP) and cross_checked(LOOP)
+    assert not cross_checked({**LOOP, "cross_check": False})
+    assert validate_study({**LOOP, "cross_check": False})["ok"]
+    st = {"components": {"tank": {"kind": "fl_tank", "height": 3, "crossArea": 0.5, "level_start": 2},
+                         "o": {"kind": "fl_orifice", "diameter": 0.03, "zeta": 1.0}, "out": {"kind": "fl_boundary"}},
+          "connect": [["tank.port", "o.port_a"], ["o.port_b", "out.port"]], "outputs": {"l": "tank.level"},
+          "analysis": {"kind": "transient", "stop_time": 200}}
+    tr = translate(st)
+    assert fluid_mass_terms(tr) == ([(-1.0, "out.ports[1].m_flow")], ["tank.m"])
+    t = np.linspace(0, 200, 41)
+    k = np.pi * 0.03 ** 2 / 4 / (2 * 0.5) * np.sqrt(2 * 9.80665)
+    h = (np.sqrt(2) - k * t) ** 2
+    m, mf = 1000 * 0.5 * h, 1000 * np.pi * 0.03 ** 2 / 4 * np.sqrt(2 * 9.80665 * h)
+
+    class R:
+        time = t
+
+        def __init__(self, f=1.0):
+            self.f = f
+
+        def series(self, p):
+            return {"out.ports[1].m_flow": mf * self.f, "tank.m": m}[p]
+    out = {"checks": {}}
+    _fluid_mass(out, tr, R())
+    assert out["checks"]["mass"]["ok"] and out["checks"]["mass"]["error_rel"] < 1e-9
+    out = {"checks": {}}
+    _fluid_mass(out, tr, R(1.001))                       # 0.1 % of the flow missing
+    assert not out["checks"]["mass"]["ok"]
+
+
+def test_msl_notes_are_not_warnings():
+    from openmodelica_translator.runner import OM_NOTES
+    assert any("delta_head_init" in x for x in OM_NOTES)
