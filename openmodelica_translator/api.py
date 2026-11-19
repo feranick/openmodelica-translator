@@ -1,5 +1,5 @@
 """api.py — what the CLI and the MCP server call. JSON in, JSON out.
-Version: 2026.11.19.2
+Version: 2026.11.19.3
 
     tool_status()                  versions; omc, MSL, the C compiler, the build cache; the executor and its caps
     study_format()                 the study format, with status
@@ -350,14 +350,9 @@ def status(request: str, wait: float = 0.0) -> dict:
     folder = Path(request).expanduser()
     if not (folder / "request.json").is_file():
         return {"error": f"no request {folder}"}
+    from llmt_runtime.requests import until
     t0 = time.time()
-    t_end = t0 + max(0.0, float(wait))
-    # in an MCP call, within its deadline (llmt-runtime's server: 48 s; from 2026.11.09.3), 3 s kept for the answer:
-    # the SLURM commands of a later look would get no time (as feat's _until)
-    from llmt_runtime.slurm import remaining
-    left = remaining()
-    if left is not None:
-        t_end = min(t_end, t0 + left - 3.0)
+    t_end = until(wait)          # within an MCP call's deadline, 3 s kept for the answer (llmt-runtime's)
     while True:
         tc = time.time()
         res = _collect(folder)

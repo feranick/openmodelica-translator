@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study (kind: threads).
-Version: 2026.11.19.1
+Version: 2026.11.19.3
 
 From 2026.11.09.2 the SLURM layer is llmt-runtime's (llmt_runtime.slurm and llmt_runtime.jobs, configured by
 runtime.RT): the settings, the machine (the cluster's nodes from `scontrol -o show node`, this node, pinning with
@@ -285,18 +285,15 @@ def script_lines(request: Path, name: str, study: dict) -> list[str]:
 
 
 def job_extra(study: dict) -> dict:
-    """omct's keys in job.json (the runtime's hooks.job_extra): estimate_min (to 0.001 min) and time_min, the job's
-    limit in minutes as omct recorded it (the runtime's time_min is what the runs may take; with
-    OMCT_SLURM_TIME=estimate the limit is shorter, and a queued study's eta_min_max shows it)."""
+    """omct's keys in job.json (the runtime's hooks.job_extra): only a measured sweep's point timeout (timeout_s,
+    which run-study uses for every point). time_min (the job's limit) and estimate_min are the runtime's own since
+    2026.11.19.1; omct wrote them itself before."""
     est = _ctx("est")
     if est is None:
         est = estimate_minutes(study, _solver_now())
-    t, info = S.job_time(RT, study, est)
-    out = {"estimate_min": round(float(est), 3), "time_min": int(t) if t.isdigit() else S.time_need_min(RT, study)}
+    _, info = S.job_time(RT, study, est)
     pt = point_timeout_s(study) if info.get("time_from") == "timeout" else None
-    if pt:                                    # each point's own timeout fits the limit (run-study reads it)
-        out.update(timeout_s=pt, time_from="sweep points (measured)")
-    return out
+    return {"timeout_s": pt, "time_from": "sweep points (measured)"} if pt else {}
 
 
 def mem_for_job(study: dict, cpus: int) -> str | None:
@@ -607,26 +604,9 @@ def slurm_states(request: Path, names: list[str], studies: dict | None = None, w
 
 # ---- jobs and cancel ---------------------------------------------------------------------------
 def queue_summary() -> dict:
-    """{queue: {running, queued, cpus_in_use}, machine: {cpus, cpus_allocated, cpus_idle}}: llmt-runtime's (the
-    machine's CPUs from `sinfo -N`, each node once), with 'queue' counting this user's omct jobs as omct did (ended jobs
-    squeue still lists are not in the queue)."""
-    base = J.queue_summary(RT)
-    user = os.environ.get("USER", "")
-    if user:
-        rc, out, _ = _run(["squeue", "-h", "-u", user, "-o", "%i|%j|%T|%C"])
-        if rc == 0:
-            q = {"running": 0, "queued": 0, "cpus_in_use": 0}
-            for line in out.splitlines():
-                f = (line.split("|") + [""] * 4)[:4]
-                if not f[1].startswith(f"{CLI}:"):
-                    continue
-                if f[2] in J.ACTIVE:
-                    q["running"] += 1
-                    q["cpus_in_use"] += int(f[3]) if f[3].isdigit() else 0
-                elif f[2] in J.QUEUED:
-                    q["queued"] += 1
-            base["queue"] = q
-    return base
+    """{queue: {running, queued, cpus_in_use}, machine: {cpus, cpus_allocated, cpus_idle}}: llmt-runtime's, counting
+    only this user's omct jobs (RT.queue_user_only, from runtime 2026.11.19.1; omct's own count before)."""
+    return J.queue_summary(RT)
 
 
 def cancel_slurm(request: Path, names: list[str]) -> list[str]:

@@ -1,5 +1,5 @@
 """runtime.py — omct's llmt-runtime: the executor code the translators share, with omct's settings and hooks.
-Version: 2026.11.19.1
+Version: 2026.11.19.3
 
     RT                 llmt_runtime.Runtime for omct (OMCT_ settings, the `omct` CLI, threads: sweep points at once)
     RUNTIME_VERSION    llmt-runtime's version (tool_status().executor.runtime)
@@ -66,6 +66,21 @@ def _time_need_min(study: dict) -> int:
     return time_need_min(study)
 
 
+def log_args(tool: str, kwargs: dict) -> str:
+    """A tool call's arguments for the server log (the runtime's hooks.log_args): a {name: study} argument as its
+    study names (at most 6) and the keys that change the cost (sweep, converge, modelica, run), the rest as name=value
+    (80 characters): what omct logged before the runtime's server (2026.11.09.3)."""
+    out = []
+    for k, v in kwargs.items():
+        if isinstance(v, dict):
+            flags = sorted({f for st in v.values() if isinstance(st, dict)
+                            for f in ("sweep", "converge", "modelica", "run") if st.get(f)})
+            out.append(f"{k}={list(v)[:6]}{' ' + ','.join(flags) if flags else ''}")
+        else:
+            out.append(f"{k}={str(v)[:80]}")
+    return " ".join(out)
+
+
 def _script_lines(request: Path, name: str, study: dict) -> list:
     from .executor import script_lines
     return script_lines(request, name, study)
@@ -82,9 +97,9 @@ def _running_progress(folder: Path, study: dict) -> dict:
 
 
 RT = Runtime(prefix="OMCT", cli="omct", package="openmodelica_translator", version=__version__, kind="threads",
-             out_default="~/omct_runs", min_minutes=1.0, timeout_default=600.0, slurm_time_default="timeout",
+             out_default="~/omct_runs", queue_user_only=True, min_minutes=1.0, timeout_default=600.0, slurm_time_default="timeout",
              hooks=Hooks(study_procs=_study_procs, procs=_procs, mem_auto=_mem_auto, solves=_solves,
-                         time_need_min=_time_need_min,
+                         time_need_min=_time_need_min, log_args=log_args,
                          script_lines=_script_lines, job_extra=_job_extra, oom_advice=oom_advice,
                          timeout_hint=("with OMCT_SLURM_TIME=estimate rerun with OMCT_SLURM_TIME=timeout; or shorten "
                                        "the stop time / the sweep"),

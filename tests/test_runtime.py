@@ -1,7 +1,7 @@
 """omct on llmt-runtime: the shared pieces are the runtime's, configured for omct (2026.11.09.1, phase 1: workers,
 final_state, versions; 2026.11.09.2, phase 2: the SLURM layer, with omct's sizing as hooks; 2026.11.09.3, phase 3: the
 MCP server's stale checks, tool wrapper, deadline and log).
-Version: 2026.11.19.1
+Version: 2026.11.19.3
 """
 import asyncio
 import inspect
@@ -124,7 +124,10 @@ def test_slurm_layer_is_the_runtimes_with_omcts_hooks(monkeypatch):
     assert h.solves(study(RC)) == 1 and h.solves(sw) == 4                    # 1, then 11 points on 4 CPUs: 3 rounds
     line = f"export PYTHONPATH={shlex.quote(X.PKG_ROOT)}${{PYTHONPATH:+:$PYTHONPATH}}"
     assert h.script_lines(Path("/r"), "s", sw) == [line]
-    assert h.job_extra(study(RC)) == {"estimate_min": 0.05, "time_min": 20}
+    assert h.job_extra(study(RC)) == {}          # time_min, estimate_min: the runtime's own (2026.11.19.1)
+    assert h.log_args("run_studies", {"studies": {"a": sw, "b": study(RC)}, "wait_s": 45}) == \
+        "studies=['a', 'b'] run,sweep wait_s=45"
+    assert RT.queue_user_only is True
     assert h.oom_advice is not None and "OMCT_SLURM_TIME" in h.timeout_hint
     assert X.FINAL == J.FINAL and X.write_atomic is J.write_atomic
     monkeypatch.setenv("OMCT_EXECUTOR", "local")

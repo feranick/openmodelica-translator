@@ -1,7 +1,7 @@
 """test_slurm.py — SLURM execution (llm-translators docs/EXECUTION.md) against llmt-runtime's fake SLURM
 (llmt_runtime.testing.fake_slurm; omct's own tests/fake_slurm.py until 2026.11.09.1), with the reference solver (no
 OpenModelica needed).
-Version: 2026.11.19.1
+Version: 2026.11.19.3
 """
 from __future__ import annotations
 
@@ -508,3 +508,17 @@ def test_running_sweep_has_its_stage_and_eta(slurm, monkeypatch):
     p = st["progress"]["rc"]
     assert p["state"] == "running" and "stage" in p and p.get("eta_min_max") is not None, p
     assert "at most ?" not in st["next"]
+
+
+def test_job_json_time_fields_are_the_runtimes(slurm):
+    """llmt-runtime 2026.11.19.1 writes time_min (the job's limit) and estimate_min itself; omct no longer passes
+    them, and a queued study's eta_min_max is still the limit."""
+    monkeypatch_env = os.environ.copy()
+    os.environ["FAKE_PENDING"] = "1"
+    try:
+        r = api.run({"rc": study(RC, run={"queue": True})}, "ref", wait=0)
+    finally:
+        os.environ.clear(); os.environ.update(monkeypatch_env)
+    j = json.loads((Path(r["request"]) / "rc" / "job.json").read_text())
+    assert j["time_min"] == 20 and "estimate_min" in j and "need_min" in j
+    assert r["progress"]["rc"]["eta_min_max"] == 20.0
