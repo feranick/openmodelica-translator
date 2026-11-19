@@ -449,7 +449,7 @@ Details: docs/history.md (everything to 2026-10-31) and the README's version tab
 **2026.11.19.9 (2026-11-19)**: F4 on carbonio (OpenModelica 1.27.2, 2026.11.19.8, bench_20261119_145315_56d73d): fit_rc_tau (R 1000.61, 1.9 se; stderr 0.31659 against 0.31666; chi2_reduced 0.77), fit_rc_unidentifiable (correlation -1.0), fit_thermal_curve (m 2.0000078, h 9.9999932, T0 303.15007), fit_msd (c 799.99998, d 4.0000196) pass, all reliable. **fit_thermal_steady failed and said reliable**: h 21.54 for 10, 'converged' by xtol, 28 of 78 runs failed 'steady point: T still changes' (the bench's 20000 s is 6.7 tau at h = 10; the reference path's exact steady state hid it). Fix: optimize keeps each failed run's x; a start whose end point has a failed run within 1 % of a parameter's (x-space) range and did not end by gtol has failed_at_end > 0 -> unreliable ('it stopped where the model's runs fail', with the last error). A counter of failures since the last Jacobian missed it: a tiny accepted step after the failures reset it. Bench fit_thermal_steady at 90000 s; settled_end's message gives the change and the limit. Test (fake omc): a divider whose steady runs settle only away from the optimum -> unreliable with that reason. **Rerun on carbonio with .9 (bench_20261119_153328_39e8e8): all five fit_* pass, reliable; fit_thermal_steady h 10.000000021.**
 
 **2026.11.19.8 (2026-11-19)**: V4 F3. fit.Budget (timeout from t_start, + extended_s of the study folder, - reserve min(0.25 timeout, max(20 s, 10 x first run)) set by the first evaluation); OmcEvaluator's run timeout also <= the budget left. optimize: Stop (BaseException) from raw() at the budget (time_limit: ends all starts) or at a start's share of max_evaluations (counted in model runs); the start's result = its last Jacobian's x, J, f (status -10 time_limit / 0 max_evaluations); nothing yet -> run_fit ok false 'ran out before its first step'. Not converged -> unreliable_because. Final run's timeout = what is left (>= min(timeout, 60 s)). runner: no record_study for a fit. executor: _parallel (fit: n params) in cpus_for_job and run_study_job; fit_time (expected: 15 iterations a start, upper: the share; run = s_per_interval x max(intervals, 2000) + 0.3 s); estimate_minutes for fits (min(upper, timeout) + final + build); _cache_dir builds a fit's key at the initial values. api.validate warning; api._progress fit stage (fit_progress.json: start, evaluations, failed, best_cost; 'final run' once final/ exists); job_progress passes evaluations. Images: fit.plot (the line from the final run's series); render() reads final/series.npz for a fit; render_images adds fit.plot. **Bug fixed**: with sigma, stderr was sqrt(n) too large (chi_factors undo the 1/sqrt(n) and weight; the earlier test only bounded it); chi2_reduced. Benchmarks fit_rc_tau (stderr against the analytic one: 5 %; chi2 ~1), fit_rc_unidentifiable, fit_thermal_steady, fit_thermal_curve, fit_msd (data from closed forms). MCP instructions: fit, rewrapped to 118 columns (test: <= 30 lines). study_format 31,963 chars. Tests: 470 pass (6 skipped).
-**Next: Modelica.Fluid** (F4 done in .9). The router's omct description (llm-translators) does not mention fit: for the llmt chat.
+**Next: Modelica.Fluid** (F4 done in .9): design and FL1 probe results in "V5: Modelica.Fluid" (2026-11-19); FL2 next (go-ahead pending). The router's omct description (llm-translators) does not mention fit: for the llmt chat.
 
 **2026.11.19.7 (2026-11-19)**: V4 F2, fitting with OpenModelica. fit.OmcEvaluator: build once at the initial values; `_moved` translates each parameter at a second value and finds the override paths it moves (none, or one compiled in (changeable false): FitError up front); a variant build when other compiled-in values differ (as runner); each evaluation translates the point (1-2 ms), checks the structure is the build's, runs simrun.simulate with the outputs-only filter at tol/10 in evaluations/eNNNNN (removed after), combines the outputs; per-run timeout min(timeout, max(OMCT_SWEEP_POINT_MIN_S, FACTOR x first run)). series_grid: stop = last data time; the data's grid when uniform from t0 (x an integer up to the study's intervals), else max(intervals, 2000) and np.interp after _dedupe (events keep the later value). Steady points: settled_end (last fifth < 1e-5 of the range, else 'lengthen'; the ref fallback uses it too). optimize: own forward-difference Jacobian (steps diff_step x max(1, |x|), backward at the upper bound, the other side when a run fails, zero column when both fail) on a ThreadPoolExecutor of min(run.procs, n_params) (1 for ref); fit_progress.json (evaluations, failed, best_cost, start). run_fit: ref refuses custom models; FitError from the evaluator -> ok false with why. tests/fake_omc.py `_apply`: override values that differ from the study's are set back (comp.param, comp.<init var>). tests/test_fit.py: omc (fake): R recovered, one build = the final run's, run folders removed; R and v0 with 2 workers; steady points (divider R2 from two V); compiled-in R.R refused; Jacobian fallback; series_grid; settled_end/_dedupe; 3 real-omc tests (RC R, heating curve m/h/T0 through composite overrides with 3 workers, a custom model's k) skip in the sandbox and where OpenModelica is only the llmt server's (the machines: pytest there has no omc on its PATH). **Checked on carbonio (2026-11-19, OpenModelica 1.27.2, through the omct server, request run_fit_f2_check)**: the same three as studies, all reliable: R 999.99920 (stderr 7e-5; 14 evaluations, 15 runs, 1.1 s); m 2.0000010, h 9.9999927, T0 293.14990 K (3 workers, 32 evaluations, 2.9 s); k 2.4999998 (14 evaluations, 2.6 s). Composite overrides (blk.C = m cp, conv__Gc.k = h A) and a custom model's parameter move at run time as assumed.
 **Next: F3** (images: data vs model and residuals; benchmarks fit_*; SLURM sizing and an estimate (today a fit job gets one study's limit: a long fit can hit it); api progress from fit_progress.json; README section).
@@ -625,6 +625,149 @@ data set if Nicola has one).
 **Open questions** (decide while building, or ask): whether the fast path may skip reading the full MAT file (a
 variable filter on the outputs only); the CSV's location for router placement (a path under the machine's home: the
 router cannot see it; the study gives `run.host`).
+
+## V5: Modelica.Fluid (design, 2026-11-19; FL1 probes done 2026-11-19, FL2 next)
+
+Nicola's choices (2026-11-19): media = liquids (constant properties, Incompressible tables) and ideal-gas air;
+components = pipes/fittings/valves, pumps, vessels and boundaries, and the cfdt chain (pump curves, fitting losses);
+checks = the Python reference for incompressible single-phase liquid networks, mass and energy balances plus the
+cross-solver run for everything else. FluidHeatFlow coolant loops (V2.2, port type `fluid`) stay as they are.
+
+**Port type `mfluid`** (Modelica.Fluid.Interfaces.FluidPort: potential p, flow m_flow, stream h_outflow; Xi/C empty
+for the chosen media). Components with `nPorts` arrays (boundaries, tanks, volumes) get one port per connection,
+numbered by the network in connection order (`ports[k]`), as plugs are split into pins today. More than two
+connections at one port are ideal mixing (stream connectors); validation warns to put a volume there when a loop
+needs one (OpenModelica's handling of such sets: probe P5).
+
+**Media** (structural: one package per connected set, checked like FluidHeatFlow's one medium per loop):
+`water` (Modelica.Media.Water.ConstantPropertyLiquidWater), `glycol47`, `essotherm650` (Media.Incompressible
+examples: density and cp follow T), `air` (Media.Air.DryAirNasa, ideal gas), `simple_air` (Media.Air.SimpleAir),
+and a custom liquid {rho, cp, eta, lambda} as a generated package extending ConstantPropertyLiquidWater with those
+constants (probe P3). The FluidHeatFlow media names (water_90degC, ...) are not reused: those are records, these are
+packages.
+
+**System:** one `inner Modelica.Fluid.System system` added whenever a study has mfluid parts; an optional
+`fluid_system` component sets p_ambient, T_ambient, g, allowFlowReversal, energy/mass dynamics (default
+FixedInitial for energy and mass: every storage starts at its own T_start / p_start / level_start, as v0 does today;
+momentum steady, MSL's default), m_flow_small, dp_small.
+
+**Kinds** (MSL class; parameters with units as usual; `*` structural):
+- Boundaries: `fl_boundary` (Sources.Boundary_pT: p, T, signal forms p_in/T_in*), `fl_mass_flow` (MassFlowSource_T:
+  m_flow or V_flow, T, signal form*), `fl_ambient` (FixedBoundary at the system's p and T).
+- Pipes and fittings: `fl_pipe` (Pipes.StaticPipe: length, diameter, roughness, height_ab, nParallel, flow model*
+  detailed | laminar | turbulent | nominal {dp_nominal, m_flow_nominal}), `fl_dynamic_pipe` (Pipes.DynamicPipe:
+  the same + nNodes*, heat transfer* ideal | constant {alpha} | local (Dittus-Boelter / laminar), one `heat` port
+  through a ThermalCollector), `fl_resistance` (Fittings.GenericResistances.VolumeFlowRate: a, b; or from cfdt),
+  `fl_orifice` (Fittings.SimpleGenericOrifice: diameter, zeta), `fl_bend` (Fittings.Bends.CurvedBend: R_0, d_hyd).
+- Valves: `fl_valve` (ValveIncompressible / ValveCompressible* by medium; Kv | Cv | Av | op point {dp_nominal,
+  m_flow_nominal}; characteristic* linear | quadratic | equal_percentage {rangeability}; `opening` signal input or
+  constant; filteredOpening, riseTime; checkValve*), `fl_valve_linear` (ValveLinear), `fl_check_valve` (a valve
+  with checkValve and opening 1).
+- Pumps: `fl_pump` (PrescribedPump: N_nominal, N (constant) or signal N_in*; head curve from points
+  [[V_flow, head], ...] (2 points linear, 3 quadratic, more polynomial*) or from cfdt results; efficiency constant or
+  points, or power points; nParallel, V, checkValve), `fl_pump_shaft` (Pump: the same curve, driven by a rotational
+  flange: a motor from the catalog), `fl_controlled_pump` (ControlledPump: m_flow or p_b set point, constant or
+  signal).
+- Vessels: `fl_tank` (Vessels.OpenTank: height, crossArea, level_start, port diameters/heights per connection,
+  heat port), `fl_volume` (Vessels.ClosedVolume: V, p_start, T_start, heat port).
+- Sensors: `fl_pressure`, `fl_temperature` (two-port), `fl_mass_flow_sensor`, `fl_volume_flow_sensor`,
+  `fl_relative_pressure`, `fl_relative_temperature` (signal outputs, usable in control loops and as outputs).
+- Variables for outputs without sensors: pipes m_flow, V_flow, dp; pumps head, dp, m_flow, V_flow, W_total, eta,
+  N; tanks level, T, m; volumes p, T, m; boundaries m_flow (positive into the network).
+
+**study_format size:** ~25 kinds do not fit under 32,000 characters (31,963 now). Proposal: study_format() lists
+the Fluid kinds by name with one line on the domain, and `study_format(topic="fluid")` returns their parameters,
+ports, media and conventions (as cfdt's guide('pumps')). The MCP tool gains an optional `topic`.
+
+**Checks:**
+- Reference (`fluidref.py`, the "covered" studies): incompressible, single phase, constant-property media
+  (water, custom liquids); boundaries, mass-flow sources, static pipes (MSL's WallFriction Detailed /
+  Laminar / QuadraticTurbulent / nominal, ported with their regularisation at small flows), generic resistances,
+  orifices, incompressible valves (all characteristics, every Cv form), pumps (the three characteristics and the
+  affinity laws), open tanks (level ODE, static head at the port heights), closed volumes (incompressible:
+  algebraic), static head height_ab; temperatures by upwind energy balances in tanks and volumes. Momentum is
+  steady (MSL's default), so the hydraulics are algebraic at each instant (Newton on the loop flows), the levels
+  and temperatures are the states. Sources from blocks (step, ramp, table) are covered; Fluid loops with feedback
+  controllers, dynamic pipes, gases and T-dependent media are not ("covered: false", the balances and the
+  cross-solver run instead).
+- Balances (every Fluid study): mass (sum of boundary flows against the stored mass's rate: tanks, volumes, dynamic
+  pipes) and energy (enthalpy flows, heat ports, pump shaft or electrical work, against the stored energy's rate),
+  as the existing energy check does, judged against the flows' scale.
+- cross_solver for Fluid studies the reference does not cover: the other integrator at tolerance/10 (today only
+  custom models get it).
+
+**cfdt chain** (chains.py, as b3dt's inertias): a pump's head curve `{"from": "cfdt", "results": [<cfdt study
+results at several flows>]}` takes pump.flow_m3h, pump.head_m and pump.efficiency from each (at least 2; rpm from
+the rotating zone; density for the conversion); a resistance `{"from": "cfdt", "results": [...]}` fits a, b of
+dp = a V^2 + b V to the cfdt pressure drops (total pressure) at their flow rates (one result: b = 0). The result's
+`inputs` lists every value taken, as now.
+
+**Probes (FL1; OpenModelica 1.27.2 on carbonio, through omct's escape hatch; nothing here is assumed):**
+- P1 MSL's Fluid examples build and run: Examples.PumpingSystem, Examples.Tanks.ThreeTanks,
+  Examples.HeatingSystem, Examples.ControlledTankSystem.ControlledTanks, Examples.AST_BatchPlant? (time each).
+- P2 Which parameters change at run time (modelica.values on each): pipe length, diameter, roughness, height_ab;
+  valve Kv, dp_nominal, m_flow_nominal; the pump curve's points (function modifiers), N_nominal, N; tank crossArea,
+  height, level_start; boundary p, T, m_flow; medium constants of a custom liquid. What is evaluated decides what
+  a sweep or a fit may change.
+- P3 A custom constant-property liquid as `package L = Modelica.Media.Water.ConstantPropertyLiquidWater(cp_const=..,
+  d_const=.., eta_const=..)` (or extending PartialSimpleMedium) compiles and runs.
+- P4 Initialisation of a pump - pipe - valve - open-tank loop with FixedInitial and with MSL's defaults.
+- P5 Three connections at one port (a tee without a volume): builds, initialises, mixes.
+- P6 DynamicPipe with nNodes 5, heat ports joined by a ThermalCollector to a prescribed temperature.
+- P7 Air (DryAirNasa): a mass-flow source filling a ClosedVolume through a pipe; run time.
+- P8 A pump on a rotational flange driven by a catalog dc_motor (the coupling omct will generate).
+
+**FL1 probe results (carbonio, OpenModelica 1.27.2, omct 2026.11.19.9 escape hatch, 2026-11-19; requests
+run_fl1_p1, p1b, p2, p9, p10, p11, p12):**
+- P1 MSL examples: Tanks.ThreeTanks ✓ (build 2.8 s, run 0.1 s, cross-solver 8e-6), ControlledTankSystem.ControlledTanks ✓
+  (0.02 s), IncompressibleFluidNetwork ✓ (0.36 s, 3 homotopy steps). PumpingSystem ran to the end ("simulation
+  finished successfully") but omct called it failed: OpenModelica reports min/max violations ("Variable violating
+  min/max constraint", here pipe m_flows during homotopy and the example's own opening 1+1e-6) as LOG_ASSERT
+  warning/info and goes on; simrun.parse_log counts every LOG_ASSERT with 'violated' as an assertion -> **omct fix
+  (FL2): min/max violations are warnings**. HeatingSystem (CompressibleLiquids.LinearWater_pT_Ambient) does not
+  initialise (NLS 'm_flow is inf or nan', with dassl and ida); with ConstantPropertyLiquidWater it does not build
+  (structurally singular, also with steady mass balances in pipes and pump).
+- P2 ✓ every value tried changes at run time and reads back (15): pipe length, diameter, roughness, height_ab;
+  valve Kv, dp_nominal, m_flow_nominal; tank crossArea, height, level_start; pump N_nominal, N_const; the pump
+  curve's points as top-level parameter arrays (Hc[2], Vc[2]) passed to the function modifier; opening.k. So
+  omct declares curve points as model parameters and sweeps/fits can change them.
+- P3 ✓ `package Liq = Modelica.Media.Water.ConstantPropertyLiquidWater(cp_const=3800, d_const=1050,
+  eta_const=0.004)` builds and runs (medium constants: structural).
+- P4 ✓ closed loop open tank -> PrescribedPump -> StaticPipe -> ValveIncompressible -> tank, FixedInitial energy
+  and mass: 3 homotopy steps, 4.779 kg/s, head 15.857 m, cross-solver 1e-6. MSL warns "Wrong pump curve" for a
+  curve flat at zero flow (its own check: slope <= -small everywhere) and a unit warning in PartialPump
+  (V_flow_single_init has unit m): MSL's, harmless; omct may filter the second.
+- P5 ✓ two MassFlowSource_T (1 kg/s at 300 and 350 K) on one pipe port: 325.000 K, 2 kg/s (ideal mixing works).
+- P6 ✓ DynamicPipe nNodes 5, ConstantFlowHeatTransfer, ThermalCollector(m=5) to a fixed 350 K, between two
+  Boundary_pT: outlet 321.163 K, Q = 22855 W = m cp dT (0.2581 x 4184 x 21.16): energy balance exact; build 5.2 s.
+- P7 ✓ DryAirNasa MassFlowSource_T 0.01 kg/s into a 0.1 m3 ClosedVolume: p 1e5 -> 2.205e5 Pa, T 300 -> 355.4 K in
+  10 s (adiabatic filling), cross-solver 3e-5.
+- P8 ✓ Machines.Pump driven through its shaft by Rotational.Sources.Speed (ramp to 157 rad/s): 8.14 kg/s, 4.21 N.m.
+- **Closed incompressible loops with volumes (P10-P12; tank -> pump -> X -> valve -> tank, constant density):**
+  DynamicPipe modelStructure av_b ✓ (also with the pump's balances steady, and two av_b pipes in series);
+  av_vb ✗, a_v_b ✗, a_vb ✗, av_vb with steady mass ✗ (all "structurally singular", Pantelides fails);
+  a ClosedVolume between pipe and valve ✗. In an open circuit (Boundary_pT at both ends) av_vb ✓. So with constant
+  density OpenModelica accepts a volume only where it adds no second pressure state to a loop that the tank
+  already fixes; the general rule is not established yet (FL2 decision below).
+- **omct issue found (any study):** runner.allowed() gives a huge tolerance (7.7e9) to an output that is
+  constant up to rounding (range 1e-15 of its size): 10 tol max|y| / range. compare() and allowed() should treat
+  a range below ~1e-9 of the size as constant (FL2 fix; it hides nothing in the probes, all within 1e-6).
+
+**Decision (Nicola, 2026-11-19): safe rule now, widen later.** In a closed loop of a constant-density medium
+(no Boundary in the connected set, an open tank as its pressure reference) omct gives each dynamic pipe
+modelStructure av_b (its volume at the inlet) and refuses closed volumes, with a validation error naming the fix
+(an open tank, or an open circuit with boundaries). FL2 starts with a probe matrix on carbonio (pipe positions next
+to pumps, valves, tanks and tees; several pumps; two tanks; pumps with V > 0) and widens the rule from what builds;
+each case is recorded here. Open circuits and gases are not restricted.
+
+**Milestones:** FL1 probes (above) and their record; FL2 catalog, network (mfluid, ports[k], media sets, system),
+modelica (redeclare Medium, system, ThermalCollector, the generated custom medium), validation, study_format
+topic, tests with the fake omc; FL3 balances, cross_solver for Fluid, benchmarks with closed forms on carbonio
+(laminar pipe Hagen-Poiseuille, turbulent pipe against the Colebrook friction factor (MSL's own approximation:
+tolerance from its stated error), Torricelli tank draining through an orifice, pump on a system curve (the two
+quadratics' crossing), valve Kv at its op point, two tanks equalising, a heated pipe's outlet T = T_in + Q/(m cp),
+air volume filling (ideal gas)); FL4 the reference for liquids; FL5 the cfdt chain; FL6 docs, fit and sweep over
+Fluid parameters (whatever P2 allows), machines.
 
 ## Version 2 (done 2026-10-21: all checked on mochi)
 
