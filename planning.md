@@ -2,7 +2,7 @@
 
 Session context for Claude (the user documentation is README.md). Start a chat with: "Read planning.md and start."
 
-Version: 2026.11.19.3 (2026-11-19). Done: M0-M8 (v1), V2 (coolant, DC machine, heat ports, events), V3 (AC
+Version: 2026.11.19.4 (2026-11-19). Done: M0-M8 (v1), V2 (coolant, DC machine, heat ports, events), V3 (AC
 machines, transient and quasi-static, nonlinear reference), the fixes from use since (docs/history.md), and the
 move onto **llmt-runtime** (2026.11.09.1-.3: workers, SLURM layer and MCP server common code are the runtime's).
 
@@ -59,7 +59,7 @@ lumped parameters.
 - **Checked:** 37 benchmarks with closed forms pass with OpenModelica 1.27.2 (carbonio, 2026-10-31; the same with
   1.27.1 on mochi before); 381 tests pass without OpenModelica (3 skipped).
 - **Runtime:** omct runs on llmt-runtime (`llmt_runtime`, a submodule of llm-translators at
-  `~/Software/llmt-runtime`; pinned 2026.11.18.2; omct declares the floor `llmt-runtime>=2026.11.19.1`). Read its
+  `~/Software/llmt-runtime`; pinned 2026.11.18.2; omct declares the floor `llmt-runtime>=2026.11.19.2`). Read its
   `README.md` (API, hooks, settings) and `PLANNING.md` (open items) before touching SLURM, jobs, memory, workers,
   requests or the MCP server's common code.
 - **Code:** 27 modules (`runtime.py`, `workers.py` thin), about 11,000 lines (`ref.py` alone ~3,000); 405 tests pass
@@ -86,10 +86,6 @@ lumped parameters.
 - **The router's start estimate on spark2** ("95 min" for a 1-CPU job with 2 CPUs free; job 715 started at once):
   with the llm-translators chat (2026-11-19). The estimate is SLURM's own `sbatch --test-only` answer; likely
   cause: a pending job (cfdt's 705) planned first on spark-0808. Not omct's to fix.
-- **`jobs()` on the runtime's `list_jobs`** (asked by llmt-runtime 2026.11.19.1): not done. `list_jobs` lists only
-  requests with SLURM jobs (studies with a job.json), and most omct studies run in the local pool, so jobs() would
-  lose them. Needs an option in the runtime to include requests without SLURM jobs (omct's `_collect` as
-  `jobs_states` for all of a request's names); then jobs_states, jobs_row and jobs_answer as the runtime's prompt says.
 - **`extend` for omct:** read `take_extension(folder)` in the simulation's wait loop (proc.run), add
   `hooks.solver_left_s` and an `extend` tool, as feat (llmt-runtime PLANNING.md, section 2).
 - **From feat:** static stiffness k = applied force / displacement (feat reports `applied_force` N and
@@ -448,10 +444,15 @@ Details: docs/history.md (everything to 2026-10-31) and the README's version tab
 
 ## Recent changes
 
+**2026.11.19.4 (2026-11-19)**: jobs() on llmt-runtime 2026.11.19.2's `list_jobs(all_requests=True)` (every request,
+all of meta's names): hooks `jobs_states` (api.jobs_states over `_collect`, invalid studies included), `jobs_row`
+(omct's row), `jobs_answer` (executor_status, bench rows' kind/collect, unreadable requests left out); `_requests`
+removed; floor >=2026.11.19.2. Test: a local-pool request (with an invalid study) shows; active=True leaves it out.
+
 **2026.11.19.3 (2026-11-19)**: llmt-runtime 2026.11.19.1's items for omct (floor raised). Done: `log_args` hook
 (runtime.log_args: study names and cost keys, as omct's old _summary); `queue_user_only=True`, omct's own squeue count
 dropped; job_extra no longer writes time_min/estimate_min (the runtime's: time_min is the limit now) and keeps only a
-measured sweep's timeout_s; status() uses `requests.until`. Not done: jobs() on `list_jobs` (above). The runtime also
+measured sweep's timeout_s; status() uses `requests.until`. Not done then: jobs() on `list_jobs` (done in 2026.11.19.4). The runtime also
 fixed the wrong-node diagnosis (ran_on; "failed: ran on node X"). Tests: hooks (log_args, queue_user_only, job_extra
 {}), job.json time fields and a queued study's eta (test_slurm).
 

@@ -1,5 +1,5 @@
 """api.py — what the CLI and the MCP server call. JSON in, JSON out.
-Version: 2026.11.19.3
+Version: 2026.11.19.4
 
     tool_status()                  versions; omc, MSL, the C compiler, the build cache; the executor and its caps
     study_format()                 the study format, with status
@@ -392,47 +392,57 @@ def run(studies: dict, solver: str | None = None, wait: float | None = None, req
     return status(str(folder), max(0.0, wait - (time.time() - t0)))     # submitting counts against the wait
 
 
-def _requests(limit: int, prefixes: tuple = ("run", "bench")):
-    """The newest request folders: run_* (run_studies) and bench_* (run_benchmarks; before 2026.11.19.2 jobs() left
-    them out, so a benchmark started in another conversation could not be found)."""
-    root = out_root()
-    if not root.is_dir():
-        return []
-    reqs = [p for p in root.iterdir() if p.is_dir() and p.name.startswith(tuple(f"{x}_" for x in prefixes))
-            and (p / "request.json").is_file()]
-    return sorted(reqs, key=lambda p: p.stat().st_mtime, reverse=True)[:limit]
-
-
 def jobs(limit: int = 20, active: bool = False) -> dict:
-    out = []
-    for req in _requests(max(limit * 3, limit)):
+    """The jobs() tool: llmt-runtime's list_jobs over every request (all_requests, from runtime 2026.11.19.2: local-pool
+    studies too, and run_benchmarks' bench_* requests), in omct's shape through the hooks below."""
+    from llmt_runtime import jobs as J
+
+    from .runtime import RT
+    return J.list_jobs(RT, limit, active, all_requests=True)
+
+
+_PROGRESS_KEYS = ("state", "stage", "job_id", "reason", "ahead", "expected_start", "eta_min_max", "job_elapsed_min",
+                  "points_done", "points")
+
+
+def jobs_states(folder: Path, names: list, meta: dict) -> dict:
+    """{study: state record} of one request for jobs() (the runtime's hooks.jobs_states): omct's _collect, which
+    knows local-pool studies, SLURM jobs and invalid studies alike. A request that cannot be read gives {}."""
+    try:
+        res = _collect(Path(folder))
+    except (OSError, json.JSONDecodeError, KeyError):
+        return {}
+    out = {n: {"state": "done" if s.get("ok") else s.get("state", "failed"), "ok": s.get("ok"),
+               "reliable": s.get("reliable")} for n, s in res["studies"].items()}
+    for n in res["pending"]:
+        out[n] = dict(res["progress"].get(n) or {"state": "running"})
+    return out
+
+
+def jobs_row(folder: Path, name: str, rec: dict, meta: dict) -> dict:
+    """One study's row in jobs() (the runtime's hooks.jobs_row): state, ok, reliable and job_id when it has ended;
+    state, stage, job_id and the progress keys while it is queued or running."""
+    if "ok" in rec:
+        jf = Path(folder) / name / "job.json"
         try:
-            res = _collect(req)
-        except (OSError, json.JSONDecodeError, KeyError):
+            jid = json.loads(jf.read_text()).get("job_id") if jf.is_file() else None
+        except (OSError, json.JSONDecodeError):
+            jid = None
+        return {"state": rec["state"], "ok": rec["ok"], "reliable": rec.get("reliable"), "job_id": jid}
+    return {k: rec[k] for k in _PROGRESS_KEYS if rec.get(k) is not None}
+
+
+def jobs_answer(ans: dict) -> dict:
+    """The whole jobs() answer (the runtime's hooks.jobs_answer): omct's executor status, benchmark requests marked
+    (kind, the bench_status call that collects them), requests that could not be read left out."""
+    rows = []
+    for row in ans.get("requests", []):
+        if not row.get("studies") and not row.get("note"):
             continue
-        studies = {}
-        for n, s in res["studies"].items():
-            jf = req / n / "job.json"
-            studies[n] = {"state": "done" if s.get("ok") else s.get("state", "failed"), "ok": s.get("ok"),
-                          "reliable": s.get("reliable"),
-                          "job_id": json.loads(jf.read_text()).get("job_id") if jf.is_file() else None}
-        for n in res["pending"]:
-            p = res["progress"][n]
-            studies[n] = {k: p.get(k) for k in ("state", "stage", "job_id", "reason", "ahead", "expected_start",
-                                                "eta_min_max", "job_elapsed_min", "points_done", "points")
-                          if p.get(k) is not None}
-        live = bool(res["pending"])
-        if active and not live:
-            continue
-        row = {"request": str(req), "started": json.loads((req / "request.json").read_text()).get("started"),
-               "active": live, "studies": studies}
-        if req.name.startswith("bench_"):
-            row.update(kind="benchmarks", collect=f"bench_status(bench='{req}')")
-        out.append(row)
-        if len(out) >= limit:
-            break
-    from . import executor as X
-    return {"translator": __version__, "executor": executor_status(), **X.queue_summary(), "requests": out}
+        if Path(row["request"]).name.startswith("bench_"):
+            row = dict(row, kind="benchmarks", collect=f"bench_status(bench='{row['request']}')")
+        rows.append(row)
+    return {**ans, "translator": __version__, "executor": executor_status(), "requests": rows}
 
 
 def cancel(request: str, names: list[str] | None = None, at: str | None = None) -> dict:

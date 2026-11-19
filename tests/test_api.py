@@ -1,6 +1,6 @@
 """test_api.py — the API (worker pool, request folders, status from files, cancel, jobs, benchmarks, pictures)
 and the MCP server's tool list. Runs with the reference solver: no OpenModelica needed.
-Version: 2026.11.19.2
+Version: 2026.11.19.4
 """
 import asyncio
 import json
@@ -312,3 +312,25 @@ def test_jobs_lists_benchmark_requests(tmp_path, monkeypatch):
     assert b["bench"] in rows and r["request"] in rows
     assert rows[b["bench"]]["kind"] == "benchmarks" and "bench_status" in rows[b["bench"]]["collect"]
     assert rows[b["bench"]]["studies"]["rc_step"]["ok"] and "kind" not in rows[r["request"]]
+
+
+def test_jobs_lists_local_pool_requests_through_the_runtime(tmp_path, monkeypatch):
+    """jobs() is llmt-runtime's list_jobs(all_requests=True) with omct's hooks (2026.11.19.4): a request that ran in
+    the local pool shows with its studies (an invalid one too), in omct's row shape; active=True leaves it out."""
+    from llmt_runtime import jobs as J
+
+    from openmodelica_translator.runtime import RT
+    monkeypatch.setenv("OMCT_OUT", str(tmp_path))
+    monkeypatch.setenv("OMCT_EXECUTOR", "local")
+    r = api.run({"rc": study(RC), "bad": {"components": {}}}, "ref", wait=None)
+    calls = []
+    real = J.list_jobs
+    monkeypatch.setattr(J, "list_jobs", lambda *a, **k: calls.append(k) or real(*a, **k))
+    out = api.jobs(5)
+    assert calls and calls[0].get("all_requests") is True
+    row = next(x for x in out["requests"] if x["request"] == r["request"])
+    assert row["active"] is False and "kind" not in row
+    assert row["studies"]["rc"] == {"state": "done", "ok": True, "reliable": True, "job_id": None}
+    assert row["studies"]["bad"]["ok"] is False
+    assert out["translator"] == api.__version__ and isinstance(out["executor"], dict) and "queue" in out
+    assert not any(x["request"] == r["request"] for x in api.jobs(5, active=True)["requests"])

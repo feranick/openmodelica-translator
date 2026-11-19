@@ -1,5 +1,5 @@
 """runtime.py — omct's llmt-runtime: the executor code the translators share, with omct's settings and hooks.
-Version: 2026.11.19.3
+Version: 2026.11.19.4
 
     RT                 llmt_runtime.Runtime for omct (OMCT_ settings, the `omct` CLI, threads: sweep points at once)
     RUNTIME_VERSION    llmt-runtime's version (tool_status().executor.runtime)
@@ -81,6 +81,21 @@ def log_args(tool: str, kwargs: dict) -> str:
     return " ".join(out)
 
 
+def _jobs_states(folder: Path, names: list, meta: dict) -> dict:
+    from .api import jobs_states
+    return jobs_states(folder, names, meta)
+
+
+def _jobs_row(folder: Path, name: str, rec: dict, meta: dict) -> dict:
+    from .api import jobs_row
+    return jobs_row(folder, name, rec, meta)
+
+
+def _jobs_answer(ans: dict) -> dict:
+    from .api import jobs_answer
+    return jobs_answer(ans)
+
+
 def _script_lines(request: Path, name: str, study: dict) -> list:
     from .executor import script_lines
     return script_lines(request, name, study)
@@ -99,7 +114,8 @@ def _running_progress(folder: Path, study: dict) -> dict:
 RT = Runtime(prefix="OMCT", cli="omct", package="openmodelica_translator", version=__version__, kind="threads",
              out_default="~/omct_runs", queue_user_only=True, min_minutes=1.0, timeout_default=600.0, slurm_time_default="timeout",
              hooks=Hooks(study_procs=_study_procs, procs=_procs, mem_auto=_mem_auto, solves=_solves,
-                         time_need_min=_time_need_min, log_args=log_args,
+                         time_need_min=_time_need_min, log_args=log_args, jobs_states=_jobs_states,
+                         jobs_row=_jobs_row, jobs_answer=_jobs_answer,
                          script_lines=_script_lines, job_extra=_job_extra, oom_advice=oom_advice,
                          timeout_hint=("with OMCT_SLURM_TIME=estimate rerun with OMCT_SLURM_TIME=timeout; or shorten "
                                        "the stop time / the sweep"),
