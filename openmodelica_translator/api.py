@@ -1,5 +1,5 @@
 """api.py — what the CLI and the MCP server call. JSON in, JSON out.
-Version: 2026.11.19.4
+Version: 2026.11.19.5
 
     tool_status()                  versions; omc, MSL, the C compiler, the build cache; the executor and its caps
     study_format()                 the study format, with status
@@ -231,8 +231,10 @@ def start(studies: dict, solver: str | None = None, prefix: str = "run", inline:
 
 
 def _progress(d: Path, timeout: float) -> dict:
+    from llmt_runtime.jobs import extended_s
     if not d.exists():
         return {"state": "queued", "stage": "waiting for a worker (OMCT_WORKERS)"}
+    timeout = timeout + extended_s(d)               # what extend added (each run's deadline moved by it)
     t0 = min((p.stat().st_mtime for p in d.iterdir()), default=time.time())
     el = max(time.time() - t0, 0.0)
     if (d / "sweep.json").exists():
@@ -443,6 +445,37 @@ def jobs_answer(ans: dict) -> dict:
             row = dict(row, kind="benchmarks", collect=f"bench_status(bench='{row['request']}')")
         rows.append(row)
     return {**ans, "translator": __version__, "executor": executor_status(), "requests": rows}
+
+
+def solver_left_s(folder: Path, study: dict) -> float:
+    """Seconds a running study may still take before omct's own deadline (llmt-runtime's hooks.solver_left_s, which
+    extend uses to decide whether the SLURM job's limit must be raised): its progress's eta_min_max (with what extend
+    added so far), 0 when unknown."""
+    from llmt_runtime import jobs as J
+    try:
+        pr = _progress(Path(folder), J.job_timeout_s(Path(folder), timeout_s(study or {})))
+        return float(pr.get("eta_min_max") or 0.0) * 60.0
+    except (OSError, ValueError, KeyError, json.JSONDecodeError):
+        return 0.0
+
+
+def extend(request: str, hours: float, names: list[str] | None = None) -> dict:
+    """More time for a request's unfinished studies (or the named ones): each run's deadline (omc build, simulation,
+    every sweep point) moves back by `hours` within about 2 s (an 'extend' file in the study's folder, which the run
+    consumes; extended.json keeps the total), and later runs of the study get it too. Within OMCT_MAX_TIMEOUT when set
+    (run.timeout_s plus what was added). A SLURM job's limit is raised only when its time left does not cover the new
+    deadline (SLURM may refuse a user's raise: then an admin has to). llmt-runtime's extend_request."""
+    from .runtime import RT
+    folder = Path(request).expanduser()
+    try:
+        meta = json.loads((folder / "request.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return {"error": f"no request {folder}"}
+    out = RT.jobs.extend_request(folder, meta, meta.get("studies") or {}, hours, names)
+    for rec in out.get("studies", {}).values():
+        if "note" in rec:
+            rec["note"] = "the running build or simulation takes it within about 2 s (extended.json records it)"
+    return out
 
 
 def cancel(request: str, names: list[str] | None = None, at: str | None = None) -> dict:

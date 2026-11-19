@@ -1,10 +1,12 @@
 """simrun.py — run a compiled model from the cache, read its log, check the overrides.
-Version: 2026.10.23.1
+Version: 2026.11.19.5
 
 simulate(build_dir, run_dir, overrides, ...) -> {ok, exit, seconds, log, stats, result, linear, errors, warnings}
   - writes params.txt (every value, modelica.override_file) and runs
     <cache>/omct_model -inputPath=<cache> -outputPath=<run> -overrideFile=params.txt -r=result.mat
-        -startTime -stopTime -stepSize -tolerance -s=<method> -lv=LOG_STATS -alarm=<s> [-variableFilter] [-l=<t>]
+        -startTime -stopTime -stepSize -tolerance -s=<method> -lv=LOG_STATS [-variableFilter] [-l=<t>]
+        (no -alarm since 2026.11.19.5: the executable's own alarm could not move with extend; proc.run's deadline
+        kills the whole process group, and an orphaned run is ended by the worker's parent watch or SLURM)
     in its own process group, with OMP_NUM_THREADS=OMCT_OMP_THREADS (1: measured on mochi, OpenMP threads only
     slow a simulation down);
   - an override the model refuses ("It is not possible to override ...") or does not know ("override variable
@@ -118,7 +120,7 @@ def simulate(build_dir, run_dir, overrides: dict, *, start: float, stop: float, 
     cmd = [build_dir / MODEL, f"-inputPath={build_dir}", f"-outputPath={run_dir}"] + \
           ([f"-overrideFile={pf}"] if overrides else []) + [f"-r={res}",
            f"-startTime={start!r}", f"-stopTime={stop_!r}", f"-stepSize={(stop_ - start) / max(intervals, 1)!r}",
-           f"-tolerance={tolerance!r}", f"-s={method}", "-lv=LOG_STATS", f"-alarm={max(1, int(timeout))}"]
+           f"-tolerance={tolerance!r}", f"-s={method}", "-lv=LOG_STATS"]
     if variable_filter:
         cmd.append(f"-variableFilter={variable_filter}")
     if linearize_at is not None:
@@ -128,8 +130,10 @@ def simulate(build_dir, run_dir, overrides: dict, *, start: float, stop: float, 
                                                              "OPENBLAS_NUM_THREADS": "1"})
     info = parse_log(log.read_text(errors="replace"))
     errs, warns = [], list(info["warnings"])
-    if p["timed_out"] or p["exit"] == 14 or p["exit"] == -14:           # 14: SIGALRM from -alarm
-        errs.append(f"timed out after {timeout:g} s (raise run.timeout_s, or shorten the stop time)")
+    if p["timed_out"] or p["exit"] == 14 or p["exit"] == -14:           # 14: SIGALRM (an -alarm, as before .5)
+        more = f" + {p.get('extended_s', 0):g} s added with extend" if p.get("extended_s") else ""
+        errs.append(f"timed out after {timeout:g} s{more} (extend(request, hours) while it runs, raise "
+                    "run.timeout_s, or shorten the stop time)")
     if p["cancelled"]:
         errs.append("cancelled")
     for n in info["override_refused"]:

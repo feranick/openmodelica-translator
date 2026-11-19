@@ -1,9 +1,10 @@
 """test_api.py — the API (worker pool, request folders, status from files, cancel, jobs, benchmarks, pictures)
 and the MCP server's tool list. Runs with the reference solver: no OpenModelica needed.
-Version: 2026.11.19.4
+Version: 2026.11.19.5
 """
 import asyncio
 import json
+from pathlib import Path
 import time
 
 import pytest
@@ -77,7 +78,7 @@ def test_mcp_tools():
     from openmodelica_translator import mcp_server as m
     names = [t.name for t in asyncio.run(m.server.list_tools())]
     assert names == ["study_format", "validate_studies", "run_studies", "study_status", "get_model", "run_benchmarks",
-                     "bench_status", "jobs", "cancel", "get_image", "render_images", "get_file"]
+                     "bench_status", "jobs", "extend", "cancel", "get_image", "render_images", "get_file"]
     assert len(m.INSTRUCTIONS.splitlines()) <= 30
 
 
@@ -334,3 +335,41 @@ def test_jobs_lists_local_pool_requests_through_the_runtime(tmp_path, monkeypatc
     assert row["studies"]["bad"]["ok"] is False
     assert out["translator"] == api.__version__ and isinstance(out["executor"], dict) and "queue" in out
     assert not any(x["request"] == r["request"] for x in api.jobs(5, active=True)["requests"])
+
+
+def test_extend_moves_a_running_simulations_deadline(tmp_path, monkeypatch):
+    """extend: a running program's deadline moves by what the study's 'extend' file asks (proc.run polls it), and
+    extended.json keeps the total; without it the same program times out."""
+    import time as _t
+
+    from openmodelica_translator import proc
+    monkeypatch.setattr(proc, "EXTEND_POLL_S", 0.2)
+    d = tmp_path / "study"
+    d.mkdir()
+    r = proc.run(["sleep", "3"], d, 1.0, d / "a.log", cancel=d / "cancel")
+    assert r["timed_out"] and r["extended_s"] == 0.0
+    (d / "extend").write_text("5")
+    t0 = _t.time()
+    r = proc.run(["sleep", "3"], d, 1.0, d / "b.log", cancel=d / "cancel")
+    assert not r["timed_out"] and r["exit"] == 0 and r["extended_s"] == 5.0 and _t.time() - t0 >= 2.9
+    assert json.loads((d / "extended.json").read_text())["total_s"] == 5.0 and not (d / "extend").exists()
+
+
+def test_extend_tool_writes_the_files_within_the_cap(tmp_path, monkeypatch):
+    """extend(request, hours): an 'extend' file in each unfinished study (llmt-runtime's extend_request), within
+    OMCT_MAX_TIMEOUT; a finished study has nothing to extend; an unknown request is an error."""
+    monkeypatch.setenv("OMCT_OUT", str(tmp_path))
+    monkeypatch.setenv("OMCT_MAX_TIMEOUT", "4200")
+    r = api.run({"done": study(RC)}, "ref", wait=None)
+    req = Path(r["request"])
+    meta = json.loads((req / "request.json").read_text())
+    meta["names"].append("slow")
+    meta["studies"]["slow"] = study(RC)
+    (req / "request.json").write_text(json.dumps(meta))
+    out = api.extend(str(req), 2.0)
+    assert out["studies"]["done"]["state"].startswith("finished")
+    slow = out["studies"]["slow"]
+    assert slow["added_s"] == 3600.0 and "capped" in slow             # 4200 s cap - 600 s timeout
+    assert float((req / "slow" / "extend").read_text()) == 3600.0
+    assert "error" in api.extend(str(tmp_path / "run_nosuch"), 1.0)
+    assert api.extend(str(req), 0)["error"].startswith("hours")

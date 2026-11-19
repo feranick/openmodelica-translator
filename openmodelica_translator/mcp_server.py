@@ -1,6 +1,6 @@
 """mcp_server.py — MCP server: lets LLM-based tools simulate systems (circuits, drives, heat paths, controllers)
 with OpenModelica and the Modelica Standard Library.
-Version: 2026.11.19.2
+Version: 2026.11.19.5
 
 Tools (all JSON):
   study_format      the study format: component kinds, ports, parameters, analyses, conventions. Read it first.
@@ -11,6 +11,7 @@ Tools (all JSON):
   run_benchmarks    the benchmark studies with closed-form answers (is the toolchain right?)
   bench_status      collects benchmarks still running
   jobs              recent requests and their states
+  extend            more time for a request's running studies (moves their deadlines; raises the SLURM limit if needed)
   cancel            stops a request's studies
   get_image         a PNG (time plots, Bode plots) as an image (seen by the model; users chart outputs.*.series)
   render_images     more pictures of a finished study, without running again
@@ -215,6 +216,16 @@ def jobs(limit: int = 20, active: bool = False) -> dict:
     'benchmarks': collect with bench_status), with each study's state; active=True: only requests with studies
     still running."""
     return api.jobs(int(limit), bool(active))
+
+
+@server.tool()
+@GUARD.tool(ToolError)
+def extend(request: str, hours: float, names: list[str] | None = None) -> dict:
+    """More time for a request's running studies (or the named ones): each run's time limit (the omc build, the
+    simulation, every sweep point) moves back by `hours` within seconds, and the SLURM job's limit is raised when it
+    would end first (SLURM may refuse a user's raise: the answer says so). Within study_format's caps
+    (OMCT_MAX_TIMEOUT). Use it when a study's progress shows it will not finish in time."""
+    return api.extend(request, float(hours), names)
 
 
 @server.tool()

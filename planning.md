@@ -2,7 +2,7 @@
 
 Session context for Claude (the user documentation is README.md). Start a chat with: "Read planning.md and start."
 
-Version: 2026.11.19.4 (2026-11-19). Done: M0-M8 (v1), V2 (coolant, DC machine, heat ports, events), V3 (AC
+Version: 2026.11.19.5 (2026-11-19). Done: M0-M8 (v1), V2 (coolant, DC machine, heat ports, events), V3 (AC
 machines, transient and quasi-static, nonlinear reference), the fixes from use since (docs/history.md), and the
 move onto **llmt-runtime** (2026.11.09.1-.3: workers, SLURM layer and MCP server common code are the runtime's).
 
@@ -46,7 +46,7 @@ lumped parameters.
 | Output folder | `~/omct_runs` (`OMCT_OUT`); server logs in `$OMCT_OUT/.server/` |
 | Build cache | `~/omct_runs/.cache/<hash>/` (`OMCT_CACHE`) |
 
-## Current state (2026-11-03)
+## Current state (2026-11-19)
 
 - **Machines:** carbonio, mochi, spark1, spark2, all shared installs of llm-translators
   (`/opt/llm-translators/current`), all with OpenModelica 1.27.2 and MSL 4.0.0 (exact), all SLURM. The sparks are
@@ -57,13 +57,14 @@ lumped parameters.
   losses, translational and rotational mechanics, heat transfer, FluidHeatFlow coolant loops, blocks and
   controllers. Analyses transient, steady, linearize; sweeps on one build.
 - **Checked:** 37 benchmarks with closed forms pass with OpenModelica 1.27.2 (carbonio, 2026-10-31; the same with
-  1.27.1 on mochi before); 381 tests pass without OpenModelica (3 skipped).
+  1.27.1 on mochi before). SLURM, queueing, reconnecting and the sweep limits checked on carbonio and
+  the sparks (2026-11-19, see Open items).
 - **Runtime:** omct runs on llmt-runtime (`llmt_runtime`, a submodule of llm-translators at
-  `~/Software/llmt-runtime`; pinned 2026.11.18.2; omct declares the floor `llmt-runtime>=2026.11.19.2`). Read its
+  `~/Software/llmt-runtime`; pinned 2026.11.19.2; omct declares the floor `llmt-runtime>=2026.11.19.2`). Read its
   `README.md` (API, hooks, settings) and `PLANNING.md` (open items) before touching SLURM, jobs, memory, workers,
   requests or the MCP server's common code.
-- **Code:** 27 modules (`runtime.py`, `workers.py` thin), about 11,000 lines (`ref.py` alone ~3,000); 405 tests pass
-  in the sandbox with the runtime (3 skipped), 404 on carbonio (release 2026.11.09.27).
+- **Code:** 27 modules (`runtime.py`, `workers.py` thin), about 11,000 lines (`ref.py` alone ~3,000); 420 tests pass
+  in the sandbox with the runtime (3 skipped). MCP tools: 13 (`extend` since 2026.11.19.5).
 
 ## Open items
 
@@ -87,8 +88,8 @@ lumped parameters.
     (job 711: "left the queue without starting (no job.log)"). Removed on both (2026-11-19); OMCT_SLURM_NODE=local now
     pins spark1 to spark-5da5 and spark2 to spark-0808. The router's start estimate on spark1 ("95 min" while idle)
     became "starts now" with it. The other translators' `--nodelist` on the sparks name each machine's own node.
-- **`extend` for omct:** read `take_extension(folder)` in the simulation's wait loop (proc.run), add
-  `hooks.solver_left_s` and an `extend` tool, as feat (llmt-runtime PLANNING.md, section 2).
+## Interconnections
+
 - **From feat:** static stiffness k = applied force / displacement (feat reports `applied_force` N and
   `probes.<p>.mean_u.<c>` mm, so k [N/m] = F / (u · 1e-3)); modal `frequencies` (Hz) and `mass_kg`; thermal
   conductance G = `heat_flow.<face>` / ΔT and capacitance m · c. Benchmark `chain_feat_modal`.
@@ -444,6 +445,14 @@ load, and the quasi-static versions of the machine cases. Chains by name: `chain
 Details: docs/history.md (everything to 2026-10-31) and the README's version table.
 
 ## Recent changes
+
+**2026.11.19.5 (2026-11-19)**: `extend` (the last short-term item). proc.run polls the study folder's `extend` file
+every 2 s (llmt-runtime take_extension; the folder is the cancel flag's, shared by a sweep's points) and runs to
+timeout + extended_s; api._progress counts it; api.solver_left_s (hook) from the progress's eta; api.extend over
+RT.jobs.extend_request; MCP tool `extend`. `-alarm` dropped from the simulation's command line (it fired at the
+original timeout whatever the extension). Tests: a running program outlives its timeout after an extend file and
+records extended.json; the tool's files, cap (OMCT_MAX_TIMEOUT), finished studies, errors.
+**Next (Nicola, 2026-11-19): parameter estimation from measured data, then Modelica.Fluid.**
 
 **2026.11.19.4 (2026-11-19)**: jobs() on llmt-runtime 2026.11.19.2's `list_jobs(all_requests=True)` (every request,
 all of meta's names): hooks `jobs_states` (api.jobs_states over `_collect`, invalid studies included), `jobs_row`
