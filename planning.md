@@ -83,8 +83,9 @@ lumped parameters.
     became "starts now" with it. The other translators' `--nodelist` on the sparks name each machine's own node.
 - **A21 on 1.27.2:** whether the compiled model still cannot read an empty `-overrideFile` (omct omits the flag
   anyway; harmless).
-- **The router's start estimate on spark2** said "95 min" for a 1-CPU job with 2 CPUs free on spark-0808, and the job
-  (715) started at once. Report to the llm-translators chat if it persists.
+- **The router's start estimate on spark2** ("95 min" for a 1-CPU job with 2 CPUs free; job 715 started at once):
+  with the llm-translators chat (2026-11-19). The estimate is SLURM's own `sbatch --test-only` answer; likely
+  cause: a pending job (cfdt's 705) planned first on spark-0808. Not omct's to fix.
 - **The lost-node diagnosis did not fire** for spark2's job 711 (it says "cancelled while queued"): the job ran and
   ended within a second, before any squeue saw its node. For llmt-runtime: ask sacct for the job's node (`NodeList`)
   when job.log is missing.
@@ -95,10 +96,6 @@ lumped parameters.
   `requests.until` for omct's `status()` deadline (its own copy today).
 - **`extend` for omct:** read `take_extension(folder)` in the simulation's wait loop (proc.run), add
   `hooks.solver_left_s` and an `extend` tool, as feat (llmt-runtime PLANNING.md, section 2).
-- **llm-translators `BACKENDS.md`:** still says OpenModelica 1.27.1 on mochi.
-
-## Interconnections
-
 - **From feat:** static stiffness k = applied force / displacement (feat reports `applied_force` N and
   `probes.<p>.mean_u.<c>` mm, so k [N/m] = F / (u · 1e-3)); modal `frequencies` (Hz) and `mass_kg`; thermal
   conductance G = `heat_flow.<face>` / ΔT and capacitance m · c. Benchmark `chain_feat_modal`.
