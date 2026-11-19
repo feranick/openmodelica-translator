@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with closed-form answers: is the toolchain right?
-Version: 2026.11.19.8
+Version: 2026.11.19.9
 
 Each case is a study plus checks [(result path, expected, tolerance, why)]; tolerances are relative unless
 written {"abs": x}. Chains (chain_feat_modal, chain_b3dt_mass, chain_b3dt_inertia) run the other translator first and only when named; they are skipped
@@ -659,6 +659,8 @@ def _fit_thermal(kind):
     st.pop("derived")
     Ta, Q, A = 293.15, 50.0, 0.06
     if kind == "steady":                  # h from two steady temperatures: T = Ta + Q / (h A)
+        # OpenModelica's steady points are runs that must settle: 30 time constants at h = 10 (tau = 3000 s)
+        st["analysis"] = {"kind": "transient", "stop_time": 90000, "intervals": 2000}
         st["fit"] = {"params": {"air.h": {"initial": 30, "min": 1, "max": 200}},
                      "steady": [{"set": {"q.Q_flow": q}, "values": {"T": Ta + q / (10 * A)}} for q in (50, 20)]}
         return st, [("fit.params.air.h.value", 10.0, 1e-5, "T_inf = Ta + Q / (h A) at Q = 50 and 20 W")]

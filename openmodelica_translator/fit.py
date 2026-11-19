@@ -1,5 +1,5 @@
 """fit.py — parameter estimation (V4): adjust a study's run-time values to measured data.
-Version: 2026.11.19.8
+Version: 2026.11.19.9
 
 A study's `fit` key (study_format): params {path: {initial, min, max, scale}}, data {output: {t, y, sigma, unit,
 t_unit, weight} | {csv, t, y, ...}}, steady [{set, values, sigma}], starts, max_evaluations. The model is evaluated
@@ -419,7 +419,8 @@ def settled_end(t: np.ndarray, y: np.ndarray, output: str) -> float:
     rng = float(np.ptp(y))
     if rng > 0 and float(np.ptp(tail)) > SETTLED * rng:
         raise FitError(f"steady point: {output} still changes over the last fifth of the run "
-                       f"({float(np.ptp(tail)) / rng:.2g} of its range): lengthen stop_time / max_time")
+                       f"({float(np.ptp(tail)) / rng:.3g} of its range, more than {SETTLED:g}): lengthen stop_time / max_time "
+                       "(this point's time constant is longer)")
     return float(y[-1])
 
 
@@ -693,7 +694,7 @@ def optimize(params, series, steady, evaluate, starts: int, max_evaluations: int
     m = sum(len(s.t) for s in series) + sum(len(p.values) for p in steady)
     per = max(2 + len(params), max_evaluations // max(starts, 1))
     state = {"evaluations": 0, "failed": 0, "last_error": None, "best_cost": None, "start": 0, "start_evals": 0,
-             "stopped": None}
+             "stopped": None, "failed_x": []}
     lock = threading.Lock()
     last, last_jac = {}, {}
 
@@ -716,6 +717,8 @@ def optimize(params, series, steady, evaluate, starts: int, max_evaluations: int
         except Exception as exc:  # noqa: BLE001 (a run that fails: a large residual, the optimizer steps back)
             with lock:
                 state["failed"] += 1
+                if len(state["failed_x"]) < 10000:
+                    state["failed_x"].append(np.array(x, float))
                 state["last_error"] = f"{type(exc).__name__}: {exc}"[:300]
             return np.full(m, FAILED), False
         with lock:
@@ -769,7 +772,7 @@ def optimize(params, series, steady, evaluate, starts: int, max_evaluations: int
     runs = []
     try:
         for i, x0 in enumerate(_starts(params, starts)):
-            state["start"], state["start_evals"] = i, 0
+            state["start"], state["start_evals"], state["failed_x"] = i, 0, []
             last_jac.clear()
             x0 = np.clip(x0, lo, hi)
             t = time.time()
@@ -787,8 +790,14 @@ def optimize(params, series, steady, evaluate, starts: int, max_evaluations: int
                                           status=-10 if stop == "time_limit" else 0,
                                           message=f"stopped: {stop.replace('_', ' ')}")
             if res is not None:
+                # runs that failed next to the end point (within 1 % of a parameter's range) while the search did not
+                # end on a zero gradient (gtol): it stopped at the edge of where the model runs, not at a minimum
+                # (carbonio 2026-11-19: steady points that had not settled, h 21.5 instead of 10, 'converged' by xtol)
+                width = np.where(hi > lo, hi - lo, 1.0)
+                near = sum(1 for xf in state["failed_x"] if np.max(np.abs(xf - res.x) / width) <= 0.01)
                 runs.append({"start": i, "x0": x0, "res": res, "seconds": time.time() - t,
-                             "evaluations": state["evaluations"] - n0})
+                             "evaluations": state["evaluations"] - n0,
+                             "failed_at_end": near if res.status != 1 else 0})
             if stop == "time_limit":
                 state["stopped"] = "time_limit"
                 break
@@ -891,6 +900,7 @@ def run_fit(name, study, folder: Path, solver: str, timeout: float, cancel: Path
                                                         for p, v in zip(params, r["x0"])},
                        "end": {p.key: p.from_x(float(v)) for p, v in zip(params, r["res"].x)},
                        "cost": float(r["res"].cost), "status": _status(r["res"]), "evaluations": r["evaluations"],
+                       "failed_at_end": r["failed_at_end"],
                        "seconds": round(r["seconds"], 2)} for r in runs],
            "seconds": round(time.time() - t_start, 2), "time_budget_s": round(budget.end() - budget.t0, 1)}
     if state["stopped"]:
@@ -911,6 +921,9 @@ def run_fit(name, study, folder: Path, solver: str, timeout: float, cancel: Path
     out = dict(final)
     out["fit"] = fit
     why = list(out.get("unreliable_because") or [])
+    if best["failed_at_end"]:
+        why.append(f"fit: it stopped where the model's runs fail ({best['failed_at_end']} runs next to its end point "
+                   f"failed: {state['last_error']}): the best fit may lie beyond; fix that and rerun")
     if fit["status"] != "converged":
         why.append({"failed": "fit: the optimizer failed",
                     "max_evaluations": "fit: not converged within max_evaluations (raise it, or start nearer)",

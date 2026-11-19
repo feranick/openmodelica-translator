@@ -1,6 +1,6 @@
 """test_fit.py — parameter estimation (V4): on the reference solver, and through OpenModelica with the fake omc
 (tests/fake_omc.py runs the reference with the override values); synthetic data from the reference itself.
-Version: 2026.11.19.8
+Version: 2026.11.19.9
 """
 import copy
 from pathlib import Path
@@ -464,3 +464,20 @@ def test_images(tmp_path):
     r = run_study("th", st, tmp_path, "ref", 600)
     im = r["images"]
     assert {"fit_T", "fit_steady"} <= set(im) and all(Path(v["path"]).is_file() for v in im.values() if "path" in v)
+
+
+def test_stopping_where_runs_fail_is_unreliable(fake, monkeypatch):
+    # as fit_thermal_steady on carbonio (2026-11-19): steady points too short to settle near the optimum, so the
+    # optimizer stops at the edge of where runs succeed; R2 = 1 kOhm -> tau 50 ms, the run 8 tau (settles at R2 = 300)
+    st = {"components": {"V": {"kind": "step_voltage", "V": 1}, "R1": {"kind": "resistor", "R": 1000},
+                         "R2": {"kind": "resistor", "R": 300}, "C": {"kind": "capacitor", "C": "100 uF"},
+                         "g": {"kind": "ground"}},
+          "connect": [["V.p", "R1.p"], ["R1.n", "C.p"], ["R2.p", "C.p"], ["R2.n", "g"], ["C.n", "g"], ["V.n", "g"]],
+          "outputs": {"v": "C.v"}, "analysis": {"kind": "transient", "stop_time": 0.4, "intervals": 200}}
+    _with_study(monkeypatch, fake, copy.deepcopy(st))
+    st["fit"] = {"params": {"R2.R": {"initial": 300, "min": 10, "max": 1e5}}, "max_evaluations": 40,
+                 "steady": [{"set": {"V.V": 2}, "values": {"v": 1.0}}, {"set": {"V.V": 4}, "values": {"v": 2.0}}]}
+    r = run_study("div", st, fake / "req" / "div", "omc", 60)
+    f = r["fit"]
+    assert f["failed_evaluations"] > 0 and f["starts"][0]["failed_at_end"] > 0
+    assert r["reliable"] is False and any("stopped where the model's runs fail" in w for w in r["unreliable_because"])

@@ -2,7 +2,7 @@
 
 Session context for Claude (the user documentation is README.md). Start a chat with: "Read planning.md and start."
 
-Version: 2026.11.19.8 (2026-11-19). Done: M0-M8 (v1), V2 (coolant, DC machine, heat ports, events), V3 (AC
+Version: 2026.11.19.9 (2026-11-19). Done: M0-M8 (v1), V2 (coolant, DC machine, heat ports, events), V3 (AC
 machines, transient and quasi-static, nonlinear reference), the fixes from use since (docs/history.md), and the
 move onto **llmt-runtime** (2026.11.09.1-.3: workers, SLURM layer and MCP server common code are the runtime's).
 
@@ -63,7 +63,7 @@ lumped parameters.
   `~/Software/llmt-runtime`; pinned 2026.11.19.2; omct declares the floor `llmt-runtime>=2026.11.19.2`). Read its
   `README.md` (API, hooks, settings) and `PLANNING.md` (open items) before touching SLURM, jobs, memory, workers,
   requests or the MCP server's common code.
-- **Code:** 28 modules (`runtime.py`, `workers.py` thin), about 12,300 lines (`ref.py` alone ~3,000); 470 tests pass
+- **Code:** 28 modules (`runtime.py`, `workers.py` thin), about 12,300 lines (`ref.py` alone ~3,000); 471 tests pass
   in the sandbox with the runtime (6 skipped: the real-omc tests). MCP tools: 13 (`extend` since 2026.11.19.5).
 
 ## Open items
@@ -446,6 +446,8 @@ Details: docs/history.md (everything to 2026-10-31) and the README's version tab
 
 ## Recent changes
 
+**2026.11.19.9 (2026-11-19)**: F4 on carbonio (OpenModelica 1.27.2, 2026.11.19.8, bench_20261119_145315_56d73d): fit_rc_tau (R 1000.61, 1.9 se; stderr 0.31659 against 0.31666; chi2_reduced 0.77), fit_rc_unidentifiable (correlation -1.0), fit_thermal_curve (m 2.0000078, h 9.9999932, T0 303.15007), fit_msd (c 799.99998, d 4.0000196) pass, all reliable. **fit_thermal_steady failed and said reliable**: h 21.54 for 10, 'converged' by xtol, 28 of 78 runs failed 'steady point: T still changes' (the bench's 20000 s is 6.7 tau at h = 10; the reference path's exact steady state hid it). Fix: optimize keeps each failed run's x; a start whose end point has a failed run within 1 % of a parameter's (x-space) range and did not end by gtol has failed_at_end > 0 -> unreliable ('it stopped where the model's runs fail', with the last error). A counter of failures since the last Jacobian missed it: a tiny accepted step after the failures reset it. Bench fit_thermal_steady at 90000 s; settled_end's message gives the change and the limit. Test (fake omc): a divider whose steady runs settle only away from the optimum -> unreliable with that reason. **To do: rerun fit_thermal_steady on carbonio after deploying .9.**
+
 **2026.11.19.8 (2026-11-19)**: V4 F3. fit.Budget (timeout from t_start, + extended_s of the study folder, - reserve min(0.25 timeout, max(20 s, 10 x first run)) set by the first evaluation); OmcEvaluator's run timeout also <= the budget left. optimize: Stop (BaseException) from raw() at the budget (time_limit: ends all starts) or at a start's share of max_evaluations (counted in model runs); the start's result = its last Jacobian's x, J, f (status -10 time_limit / 0 max_evaluations); nothing yet -> run_fit ok false 'ran out before its first step'. Not converged -> unreliable_because. Final run's timeout = what is left (>= min(timeout, 60 s)). runner: no record_study for a fit. executor: _parallel (fit: n params) in cpus_for_job and run_study_job; fit_time (expected: 15 iterations a start, upper: the share; run = s_per_interval x max(intervals, 2000) + 0.3 s); estimate_minutes for fits (min(upper, timeout) + final + build); _cache_dir builds a fit's key at the initial values. api.validate warning; api._progress fit stage (fit_progress.json: start, evaluations, failed, best_cost; 'final run' once final/ exists); job_progress passes evaluations. Images: fit.plot (the line from the final run's series); render() reads final/series.npz for a fit; render_images adds fit.plot. **Bug fixed**: with sigma, stderr was sqrt(n) too large (chi_factors undo the 1/sqrt(n) and weight; the earlier test only bounded it); chi2_reduced. Benchmarks fit_rc_tau (stderr against the analytic one: 5 %; chi2 ~1), fit_rc_unidentifiable, fit_thermal_steady, fit_thermal_curve, fit_msd (data from closed forms). MCP instructions: fit, rewrapped to 118 columns (test: <= 30 lines). study_format 31,963 chars. Tests: 470 pass (6 skipped).
 **Next: F4** (on the machines: the fit_* benchmarks with OpenModelica; a real data set if Nicola has one), then Modelica.Fluid. The router's omct description (llm-translators) does not mention fit: for the llmt chat.
 
@@ -616,7 +618,7 @@ path (one build, fast runs, parallel Jacobian), final checked run, uncertainty, 
 values, multistart, images, benchmarks, SLURM sizing and estimates, docs; F4 on the machines (benchmarks, a real
 data set if Nicola has one).
 
-**Status (2026.11.19.8):** F1-F3 done. Left: F4 (fit_* benchmarks with OpenModelica on the machines; a real data set). F2 checked on carbonio (2026-11-19, see Recent changes).
+**Status (2026.11.19.9):** F1-F3 done; F4: four fit_* benchmarks pass with OpenModelica on carbonio, fit_thermal_steady to rerun after .9 (see Recent changes); a real data set if Nicola has one. F2 checked on carbonio (2026-11-19, see Recent changes).
 
 **F3 (built 2026.11.19.8; Nicola, 2026-11-19: whole-fit budget):** run.timeout_s (default 600 s, within the caps) limits the whole fit like one study (job limit = it + 10 min, sweep_rounds stays 1). The optimizer stops at timeout - reserve (reserve for the final run: min(0.25 timeout, max(20 s, 10 x first run))), deadline moved by extend (llmt_runtime.jobs.extended_s of the study folder); each run's timeout also <= the time left. At the deadline: the last accepted iterate (the x of the last Jacobian, its J for the uncertainty), status time_limit; nothing yet: ok false naming the first run's time. max_evaluations counts model runs per start (Jacobian runs included; a hard stop, the same best-so-far path). Not converged (time_limit, max_evaluations, failed) -> unreliable. Sizing: cpus_for_job uses min(run.procs, n_params) for fits (today it gives 1); estimate_minutes for fits from the measured run (runs.json) x expected runs, capped at the timeout; api.validate warns when the expected time exceeds timeout_s. runner.run_study must not record_study a fit's total time (it would become the sweep points' study_s). api._progress: stage from fit_progress.json (start, evaluations, best cost) and 'final run'. Then images (data vs model + residuals, steady model vs data), benchmarks fit_*, README section.
 
