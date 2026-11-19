@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study (kind: threads).
-Version: 2026.11.19.3
+Version: 2026.11.19.8
 
 From 2026.11.09.2 the SLURM layer is llmt-runtime's (llmt_runtime.slurm and llmt_runtime.jobs, configured by
 runtime.RT): the settings, the machine (the cluster's nodes from `scontrol -o show node`, this node, pinning with
@@ -157,6 +157,38 @@ def _points(study: dict) -> int:
         return 1
 
 
+def _parallel(study: dict) -> int:
+    """Runs a study can make at once: a sweep's points, a fit's parameters (its Jacobian's runs), else 1."""
+    f = study.get("fit")
+    if isinstance(f, dict) and isinstance(f.get("params"), dict) and f["params"]:
+        return len(f["params"])
+    return _points(study)
+
+
+def fit_time(study: dict, solver: str = "omc") -> dict:
+    """A fit's seconds: expected (about 15 iterations a start, or its share of max_evaluations if fewer) and upper (its
+    share used up), each iteration one run (each steady point another) plus the Jacobian's n runs w at a time; a run
+    from the build's measured seconds per interval (runs.json) + 0.3 s to start and read it, else the default rate.
+    The fit stops at run.timeout_s whatever these say (fit.Budget)."""
+    f = study["fit"]
+    n = max(1, len(f.get("params") or {}))
+    w = max(1, min(procs_of(study), n))
+    starts = int(f.get("starts", 1) or 1)
+    cap = max(2 + n, int(f.get("max_evaluations", 400) or 400) // starts)
+    per_eval = (1 if f.get("data") else 0) + len(f.get("steady") or [])
+    if solver == "ref":
+        one = 0.2
+    else:
+        d = _cache_dir(study)
+        rec = _runs(d) if d else {}
+        rate = float(rec["s_per_interval"]) if "s_per_interval" in rec else S_PER_INTERVAL
+        one = rate * max(_intervals(study), 2000 if f.get("data") else 0) + 0.3
+    iteration = per_eval * one * (1 + math.ceil(n / w))
+    its_cap = cap / (1 + n)
+    return {"expected_s": starts * min(15, its_cap) * iteration, "upper_s": starts * its_cap * iteration,
+            "timeout_s": timeout_s(study), "run_s": one, "workers": w}
+
+
 def _cache_dir(study: dict) -> Path | None:
     """The build cache folder of the study's model (existing or not), or None when it cannot be told."""
     try:
@@ -164,6 +196,11 @@ def _cache_dir(study: dict) -> Path | None:
         from .omc import cache_root, structure_key
         st = dict(study)
         st.pop("sweep", None)
+        if st.get("fit"):                  # the build a fit uses: the model at the initial values
+            from .fit import load, with_values
+            from .fit import _units
+            params = load(st, _units(st))[0]
+            st = with_values(st, {p.key: p.initial for p in params})
         tr = M.escape_translation(st) if "modelica" in st else M.translate(st, "estimate")
         return cache_root() / structure_key(tr)
     except Exception:  # noqa: BLE001
@@ -185,6 +222,10 @@ AC_TRANSIENT = {"induction_machine", "pmsm", "pmsm_damper"}
 
 def estimate_minutes(study: dict, solver: str = "omc") -> float:
     """An upper estimate of the study's time: the build, then every point (convergence runs twice)."""
+    if study.get("fit"):                  # the fit's own time (at most run.timeout_s), the final run, a build
+        ft = fit_time(study, solver)
+        hit = solver == "ref" or cache_hit(study)
+        return ((0 if hit else 6.0) + min(ft["upper_s"], ft["timeout_s"]) + 3 * ft["run_s"] + 2.0) / 60.0
     if solver == "ref":
         return 0.05 * _points(study)
     d = _cache_dir(study)
@@ -206,7 +247,7 @@ def estimate_minutes(study: dict, solver: str = "omc") -> float:
 def cpus_for_job(study: dict, solver: str = "omc") -> int:
     """The CPUs a study's job asks for: the sweep points it can run at once (run.procs or OMCT_PROCS, at most the
     points), at least OMCT_COMPILE_PROCS when the model must be built, within OMCT_MAX_PROCS and the node's CPUs."""
-    n = min(procs_of(study), _points(study))
+    n = min(procs_of(study), _parallel(study))
     if solver != "ref" and not cache_hit(study):
         n = max(n, compile_procs())
     cap = caps().get("procs")
@@ -480,8 +521,8 @@ def run_study_job(request: str, name: str) -> int:
     study = json.loads(json.dumps(meta["studies"][name]))
     n = os.environ.get("SLURM_CPUS_PER_TASK")
     cpus = int(n) if n and n.isdigit() else procs_of(study)
-    if study.get("sweep"):
-        study.setdefault("run", {})["procs"] = max(1, min(cpus, _points(study)))
+    if study.get("sweep") or study.get("fit"):
+        study.setdefault("run", {})["procs"] = max(1, min(cpus, _parallel(study)))
     if not os.environ.get("SLURM_JOB_ID"):
         os.environ["OMCT_EXECUTION"] = "by hand"
     os.environ["OMCT_PROCS_REQUESTED"] = str(cpus)

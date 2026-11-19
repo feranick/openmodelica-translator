@@ -1,5 +1,5 @@
 """runner.py — one study end to end: validate, translate, build (or reuse), run, read, check, write the result.
-Version: 2026.11.19.6
+Version: 2026.11.19.8
 
 run_study(name, study, folder, solver, timeout, cancel) -> the result dict, also written atomically to
 <folder>/<name>.json. solver: "omc" (OpenModelica) or "ref" (the reference implementation only: linear
@@ -146,13 +146,18 @@ def run_study(name: str, study: dict, folder, solver: str = "omc", timeout: floa
             if res.get("sweep"):
                 from .sweep import plot
                 res["images"] = plot(folder, res)
+            elif res.get("fit"):
+                from .fit import plot
+                from .render import render
+                res["images"] = {**render(folder, res, True), **plot(folder, res)}
             else:
                 from .render import render
                 res["images"] = render(folder, res, True)
         except Exception as exc:  # noqa: BLE001
             res.setdefault("warnings", []).append(f"pictures failed: {type(exc).__name__}: {exc}")
     _atomic(folder / f"{name}.json", res)
-    if res.get("ok") and not res.get("sweep") and (res.get("model_info") or {}).get("hash"):
+    # a study's time on its build (what a sweep point costs): not a fit's (its final run recorded its own)
+    if res.get("ok") and not res.get("sweep") and not study.get("fit") and (res.get("model_info") or {}).get("hash"):
         from .executor import record_study
         record_study(res["model_info"]["hash"], res["seconds"]["total"])
     return res

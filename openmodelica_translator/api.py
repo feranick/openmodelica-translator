@@ -1,5 +1,5 @@
 """api.py — what the CLI and the MCP server call. JSON in, JSON out.
-Version: 2026.11.19.5
+Version: 2026.11.19.8
 
     tool_status()                  versions; omc, MSL, the C compiler, the build cache; the executor and its caps
     study_format()                 the study format, with status
@@ -120,6 +120,17 @@ def validate(studies: dict) -> dict:
                 r["estimate"] = estimate(studies[name], solver)
             except Exception:  # noqa: BLE001 - an estimate is optional; validation stands without it
                 pass
+            if studies[name].get("fit"):
+                try:
+                    from .executor import fit_time
+                    ft = fit_time(studies[name], solver)
+                    if ft["expected_s"] > ft["timeout_s"]:
+                        r.setdefault("warnings", []).append(
+                            f"fit: expected to need about {ft['expected_s'] / 60:.0f} min ({ft['run_s']:.2g} s a run), "
+                            f"more than run.timeout_s ({ft['timeout_s']:g} s), which limits the whole fit: raise "
+                            "run.timeout_s (within the caps)")
+                except Exception:  # noqa: BLE001
+                    pass
     return out
 
 
@@ -237,6 +248,20 @@ def _progress(d: Path, timeout: float) -> dict:
     timeout = timeout + extended_s(d)               # what extend added (each run's deadline moved by it)
     t0 = min((p.stat().st_mtime for p in d.iterdir()), default=time.time())
     el = max(time.time() - t0, 0.0)
+    if (d / "fit_progress.json").exists():
+        try:
+            fp = json.loads((d / "fit_progress.json").read_text())
+        except (OSError, ValueError):
+            fp = {}
+        if (d / "final").exists():
+            stage = "fit: the final run at the best values (with every check)"
+        else:
+            c = fp.get("best_cost")
+            stage = (f"fit: start {fp.get('start', 0) + 1} of {fp.get('starts', 1)}, {fp.get('evaluations', 0)} model "
+                     f"runs ({fp.get('failed', 0)} failed), best cost " + ("-" if c is None else f"{c:.3g}"))
+        return {"state": "running", "stage": stage, "evaluations": fp.get("evaluations", 0),
+                "elapsed_min": round(el / 60, 2), "eta_min_max": round(max(timeout - el, 0) / 60, 1),
+                "note": "a fit stops at run.timeout_s (extend adds time) with its best point so far"}
     if (d / "sweep.json").exists():
         n = json.loads((d / "sweep.json").read_text())["points"]
         done = sum(1 for p in (d / "points").glob("p*/p*.json")) if (d / "points").exists() else 0
@@ -262,7 +287,7 @@ def job_progress(folder: Path, study: dict) -> dict:
     points, elapsed_min, eta_min_max from _progress, with the timeout its job was sized with (job.json)."""
     from llmt_runtime import jobs as J
     pr = _progress(Path(folder), J.job_timeout_s(Path(folder), timeout_s(study or {})))
-    return {k: pr[k] for k in ("stage", "points_done", "points", "elapsed_min", "eta_min_max") if k in pr}
+    return {k: pr[k] for k in ("stage", "points_done", "points", "evaluations", "elapsed_min", "eta_min_max") if k in pr}
 
 
 def _collect(folder: Path) -> dict:
@@ -542,7 +567,11 @@ def render_images(study_folder: str, images=True) -> dict:
     errs = spec_errors(images, list(res.get("outputs") or {}))
     if errs:
         return {"error": "invalid images", "errors": errs}
-    return {"images": render(d, res, images)}
+    out = render(d, res, images)
+    if res.get("fit") and images is True:                 # a fit: data against the model too
+        from .fit import plot
+        out.update(plot(d, res))
+    return {"images": out}
 
 
 def image_path(path: str) -> Path:

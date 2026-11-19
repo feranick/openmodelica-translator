@@ -1,5 +1,5 @@
 """format.py — the study format (study_format) and the static checks (validate, validate_study).
-Version: 2026.11.19.6
+Version: 2026.11.19.8
 
 validate_study(study) -> {ok, errors, warnings}: nothing runs (no omc). It resolves the network (network.build),
 checks outputs, analysis, derived quantities, sweep, expect, run (against the OMCT_MAX_* caps) and images, then
@@ -29,7 +29,7 @@ STUDY_KEYS = {
     "fit": "{params: {'comp.param' | 'comp.v0': {initial, min, max, scale: lin | log}}, data: {output: {t, y, unit, "
            "t_unit, sigma, weight} | {csv, t, y (columns), ...}}, steady: [{set: {path: value}, values: {output: "
            "value}, sigma}], starts (1), max_evaluations (400)}: parameter estimation -> fit.params.<p>.{value, stderr, "
-           "ci95}, correlation, identifiable, quality; outputs from a run at the best values",
+           "ci95}, correlation, identifiable, quality; outputs from a run at the best values; run.timeout_s: the whole fit",
     "cross_check": "modelica only (true): rerun with the other integrator -> checks.cross_solver; false skips",
     "invariants": "[{signal, kind: zero (abs) | constant (abs | rel), name?}] -> checks.invariants",
     "converge": "true | {abs_tol: {output: value}}: rerun at tolerance/10; a change over max(1e-4, 100 x tolerance) "

@@ -1,6 +1,6 @@
 """mcp_server.py — MCP server: lets LLM-based tools simulate systems (circuits, drives, heat paths, controllers)
 with OpenModelica and the Modelica Standard Library.
-Version: 2026.11.19.5
+Version: 2026.11.19.8
 
 Tools (all JSON):
   study_format      the study format: component kinds, ports, parameters, analyses, conventions. Read it first.
@@ -53,36 +53,36 @@ except ImportError:  # 1.x
     from mcp.server.fastmcp.exceptions import ToolError
     _V2 = False
 
-INSTRUCTIONS = """openmodelica-translator simulates whole systems over time with OpenModelica and the Modelica
-Standard Library 4.0.0: circuits (R, L, C, sources, op-amps, transformers), translational and rotational
-mechanics (masses, inertias, springs, dampers, gears, force/torque sources), DC and AC machines (induction,
-PMSM; transient or quasi-static phasor models; losses, heat ports) with grids and drives, heat, coolant loops (pumps, pipes, valves;
-Thermal.FluidHeatFlow) and control blocks (PI, PID, LimPID, limiters, tables). A study lists components (catalog kinds with parameters), connections between their ports,
-outputs, and an analysis: transient, steady or linearize (eigenvalues, modes, Bode); derived quantities (step
-metrics, crossing times, window statistics) and expect checks. It takes other translators' results as values
-(a build123d-translator part result + density gives a mass or a moment of inertia: see study_format).
-Workflow: call study_format once and follow its conventions; validate_studies and fix every error;
-run_studies (studies that take longer come back 'pending': collect them with study_status). Before trusting
-numbers check warnings and checks: balance, initialization, solver, events, overrides (every value read back),
-energy (the energy balance), reference (an independent solver; custom models: cross_solver, another integrator;
-declare "invariants" for balances); if 'reliable' is false, do not report the numbers as results (fix what
-'unreliable_because' says). For accuracy add "converge": true (a second run at tolerance/10). Units: SI everywhere (K, rad/s, m, kg, N.m); values may be strings with units
-("10 mH", "80 degC", "3000 rpm") or {value, unit, from} for chained values. Initial values (v0, i0, s0, w0, T0)
-are fixed only where they are free (a capacitor across a source follows it). Every electrical circuit needs a
-ground. Values change without recompiling: "sweep": {params: {"comp.param": [values]}, mode: grid | zip,
-report: [paths]} runs every point on one build and returns sweep.table (run.procs points at a time). Polling costs tokens: when a run needs more than about 5 minutes, tell the user when
-it should finish and stop; collect it later with study_status.
+INSTRUCTIONS = """openmodelica-translator simulates whole systems over time with OpenModelica and the Modelica Standard Library 4.0.0:
+circuits (R, L, C, sources, op-amps, transformers), translational and rotational mechanics (masses, inertias, springs,
+dampers, gears, force/torque sources), DC and AC machines (induction, PMSM; transient or quasi-static phasor models;
+losses, heat ports) with grids and drives, heat, coolant loops (pumps, pipes, valves; Thermal.FluidHeatFlow) and
+control blocks (PI, PID, LimPID, limiters, tables). A study lists components (catalog kinds with parameters),
+connections between their ports, outputs, and an analysis: transient, steady or linearize (eigenvalues, modes, Bode);
+derived quantities (step metrics, crossing times, window statistics) and expect checks. It takes other translators'
+results as values (build123d-translator parts give masses and moments of inertia: see study_format).
+Workflow: call study_format once and follow its conventions; validate_studies and fix every error; run_studies (longer
+ones come back 'pending': collect them with study_status). Before trusting numbers check warnings and checks: balance,
+initialization, solver, events, overrides, energy, reference (an independent solver; custom models: cross_solver,
+another integrator; declare "invariants" for balances); if 'reliable' is false, do not report the numbers as results
+(fix what 'unreliable_because' says). For accuracy add "converge": true (a second run at tolerance/10). Units: SI
+everywhere (K, rad/s, m, kg, N.m); values may be strings with units ("10 mH", "80 degC", "3000 rpm") or {value, unit,
+from} for chained values. Initial values (v0, i0, s0, w0, T0) are fixed only where they are free (a capacitor across a
+source follows it). Circuits need a ground. Values change without recompiling: "sweep": {params: {"comp.param":
+[values]}, mode: grid | zip, report: [paths]} runs every point on one build and returns sweep.table (run.procs points
+at a time). Measured data: "fit": {params: {"comp.param": {initial, min, max}}, data | steady} estimates values
+(fit.params.<p>.value, stderr, ci95; identifiable false: the data cannot tell them apart; run.timeout_s limits the
+whole fit). Polling costs tokens: for a run of more than about 5 minutes, tell the user when it should finish and
+stop.
 Long studies (big sweeps) run as SLURM jobs on the machine (when OMCT_EXECUTOR=slurm): run_studies returns them
-pending with job ids. They do not depend on this conversation. Report the expected finish time and stop; do not
-poll. Later, study_status(request) collects them; jobs() lists recent and active runs (also those started in
-other conversations); cancel(request) stops them. A study's "run": {timeout_s, mem, procs, queue} overrides the
-machine's defaults for that study (procs: sweep points at once), within the caps in study_format's status.
-Pictures: the user usually does not see images inside tool results (get_image shows them to you). To show the
-user a plot, draw outputs.<name>.series {t, y} (in every result) with your own charting or artifact tools, and never
-say "the image above". "images": true + get_image(results.images.<name>.path) lets you check a run by eye;
-render_images makes others for a finished study. Results: outputs.<name>.{final, min, max, ...}, derived.<name>.*,
-steady.<name>.*, linearization.{eigenvalues, modes, natural_frequencies_Hz, damping_ratios, dc_gain, bode},
-sweep.table.<i>.{params, values, reliable}."""
+pending with job ids. They do not depend on this conversation. Report the expected finish time and stop; do not poll.
+Later, study_status(request) collects them; jobs() lists recent and active runs (also from other conversations);
+cancel(request) stops them. A study's "run": {timeout_s, mem, procs, queue} overrides the machine's defaults for that
+study (procs: sweep points at once), within the caps in study_format's status.
+Pictures: the user usually does not see images inside tool results (get_image shows them to you). To show the user a
+plot, draw outputs.<name>.series {t, y} with your own charting or artifact tools, and never say "the image above".
+"images": true + get_image(results.images.<name>.path) lets you check a run by eye; render_images makes others for a
+finished study. Results: outputs.<name>.{final, min, max}, derived, steady, linearization, sweep.table, fit."""
 
 server = _Server("openmodelica-translator", instructions=INSTRUCTIONS)
 

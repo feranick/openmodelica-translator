@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with closed-form answers: is the toolchain right?
-Version: 2026.10.21.25
+Version: 2026.11.19.8
 
 Each case is a study plus checks [(result path, expected, tolerance, why)]; tolerances are relative unless
 written {"abs": x}. Chains (chain_feat_modal, chain_b3dt_mass, chain_b3dt_inertia) run the other translator first and only when named; they are skipped
@@ -629,6 +629,68 @@ NONLINEAR_CASES = {"im_grid_slip", "pmsm_current_torque", "im_vf_start", "pmsm_d
                    "qs_im_grid_delta"}
 
 
+# ---- parameter estimation (V4): data from the closed forms (not from the reference), with a fixed noise --------------
+def _fit_rc(kind):
+    st, _ = _rc()
+    st = dict(st, analysis={"kind": "transient", "stop_time": 0.005, "intervals": 1000})
+    st.pop("derived")
+    t = np.linspace(0, 0.005, 201)
+    if kind == "tau":                     # R from a noisy step (sigma 1e-3), C known
+        sig = 1e-3
+        y = 1 - np.exp(-t / 1e-3) + np.random.default_rng(7).normal(0, sig, t.size)
+        st["fit"] = {"params": {"R.R": {"initial": "3 kOhm", "min": 100, "max": 1e5}},
+                     "data": {"v": {"t": t.tolist(), "y": y.tolist(), "sigma": sig}}}
+        J = t / (1000.0 ** 2 * 1e-6) * np.exp(-t / 1e-3)             # dv/dR (v = 1 - exp(-t/(RC)))
+        se = sig / math.sqrt(float(J @ J))
+        return st, [("fit.params.R.R.value", 1000.0, {"abs": 4 * se}, f"R within 4 standard errors ({se:.3g} Ohm)"),
+                    ("fit.params.R.R.stderr", se, 0.05, "the stderr against sigma / |dv/dR| (linearised)"),
+                    ("fit.chi2_reduced", 1.0, {"abs": 0.3}, "the noise is sigma: reduced chi-square about 1")]
+    y = 1 - np.exp(-t / 1e-3)             # R and C: only RC is in the data
+    st["fit"] = {"params": {"R.R": {"initial": 3000, "min": 100, "max": 1e5},
+                            "C.C": {"initial": "2 uF", "min": 1e-8, "max": 1e-4}},
+                 "data": {"v": {"t": t.tolist(), "y": y.tolist()}}}
+    return st, [("fit.identifiable", 0, {"abs": 0.5}, "R and C from one RC step: not separable"),
+                ("fit.not_separable.0.2", -1.0, {"abs": 0.02}, "their correlation is -1 (only R C is determined)")]
+
+
+def _fit_thermal(kind):
+    st, _ = _thermal("rc")
+    st = dict(st)
+    st.pop("derived")
+    Ta, Q, A = 293.15, 50.0, 0.06
+    if kind == "steady":                  # h from two steady temperatures: T = Ta + Q / (h A)
+        st["fit"] = {"params": {"air.h": {"initial": 30, "min": 1, "max": 200}},
+                     "steady": [{"set": {"q.Q_flow": q}, "values": {"T": Ta + q / (10 * A)}} for q in (50, 20)]}
+        return st, [("fit.params.air.h.value", 10.0, 1e-5, "T_inf = Ta + Q / (h A) at Q = 50 and 20 W")]
+    t = np.linspace(0, 20000, 81)         # m, h and T0 from a heating curve
+    C, G = 1800.0, 10 * A
+    T0 = 303.15
+    y = Ta + Q / G + (T0 - Ta - Q / G) * np.exp(-t * G / C)
+    st["components"] = {**st["components"], "blk": dict(st["components"]["blk"], T0=T0)}
+    st["fit"] = {"params": {"blk.m": {"initial": 5, "min": 0.1, "max": 50},
+                            "air.h": {"initial": 30, "min": 1, "max": 200},
+                            "blk.T0": {"initial": 290, "min": 273.15, "max": 340}},
+                 "data": {"T": {"t": t.tolist(), "y": y.tolist()}}}
+    return st, [("fit.params.blk.m.value", 2.0, 1e-4, "C = m cp = 1800 J/K"),
+                ("fit.params.air.h.value", 10.0, 1e-4, "G = h A = 0.6 W/K"),
+                ("fit.params.blk.T0.value", T0, {"abs": 1e-3}, "T(0) = 30 degC")]
+
+
+def _fit_msd():
+    st, _ = _msd("free")
+    st = dict(st, analysis={"kind": "transient", "stop_time": 1, "intervals": 2000})
+    st.pop("derived")
+    m, c, d, x0 = 2.0, 800.0, 4.0, 0.1
+    wn, ze = math.sqrt(c / m), d / (2 * math.sqrt(c * m))
+    wd = wn * math.sqrt(1 - ze * ze)
+    t = np.linspace(0, 1, 201)
+    y = x0 * np.exp(-ze * wn * t) * (np.cos(wd * t) + ze / math.sqrt(1 - ze * ze) * np.sin(wd * t))
+    st["fit"] = {"params": {"k.c": {"initial": 600, "min": 100, "max": 2000}, "d.d": {"initial": 2, "min": 0.1, "max": 50}},
+                 "data": {"s": {"t": t.tolist(), "y": y.tolist()}}}
+    return st, [("fit.params.k.c.value", c, 1e-4, "free vibration: wn = sqrt(c/m)"),
+                ("fit.params.d.d.value", d, 1e-3, "zeta = d / (2 sqrt(c m))")]
+
+
 def omc_only() -> set:
     """Cases the reference does not cover: the nonlinear ones when OMCT_REF_NONLINEAR=0 switches it off."""
     from .ref import nonlinear_on
@@ -653,7 +715,10 @@ def cases() -> dict:
                      ("pmsm_damper_grid", _pmd_grid), ("quadratic_load", _quad_load),
                      ("qs_im_grid_slip", _qs_im_grid), ("qs_pmsm_current_torque", _qs_pmsm_current),
                      ("qs_im_vf_start", _qs_im_vf), ("qs_pmsm_damper_grid", _qs_pmd_grid),
-                     ("im_grid_delta", lambda: _delta(False)), ("qs_im_grid_delta", lambda: _delta(True))):
+                     ("im_grid_delta", lambda: _delta(False)), ("qs_im_grid_delta", lambda: _delta(True)),
+                     ("fit_rc_tau", lambda: _fit_rc("tau")), ("fit_rc_unidentifiable", lambda: _fit_rc("both")),
+                     ("fit_thermal_steady", lambda: _fit_thermal("steady")),
+                     ("fit_thermal_curve", lambda: _fit_thermal("curve")), ("fit_msd", _fit_msd)):
         st, checks = fn()
         out[name] = {"study": st, "checks": checks}
     return out

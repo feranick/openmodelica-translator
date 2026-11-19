@@ -1,5 +1,5 @@
 """render.py — pictures of a finished study as PNG (matplotlib, Agg): time plots and Bode plots.
-Version: 2026.10.21.5
+Version: 2026.11.19.8
 
 save_state(folder, t, values, units)   series.npz: the full output series, for pictures made later
 default_images(res)                    'outputs' (one panel per unit) for a run, 'bode' for a linearisation
@@ -106,6 +106,9 @@ def render(folder: Path, res: dict, specs=True) -> dict:
     specs = default_images(res) if specs is True else specs
     out = {}
     name = res.get("name", folder.name)
+    data = folder
+    if not (folder / "series.npz").is_file() and (folder / "final" / "series.npz").is_file():
+        data = folder / "final"           # a fit: its outputs are the final run's (at the best values)
     for s in specs:
         p = img / f"{s['name']}.png"
         if s.get("bode"):
@@ -116,10 +119,10 @@ def render(folder: Path, res: dict, specs=True) -> dict:
             _bode_plot(p, bode, f"{name}: Bode")
             out[s["name"]] = {"path": str(p), "what": "Bode: gain and phase per input -> output"}
         else:
-            if not (folder / "series.npz").is_file():
+            if not (data / "series.npz").is_file():
                 out[s["name"]] = {"error": "no saved series (a run's folder: <request>/<study>)"}
                 continue
-            t, values, units = load_state(folder)
+            t, values, units = load_state(data)
             names = s.get("outputs") or list(values)
             _time_plot(p, t, values, units, names, s.get("window"), f"{name}: {', '.join(names)}")
             out[s["name"]] = {"path": str(p), "what": "time series: " + ", ".join(names)}

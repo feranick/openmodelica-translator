@@ -1,8 +1,9 @@
 """test_fit.py — parameter estimation (V4): on the reference solver, and through OpenModelica with the fake omc
 (tests/fake_omc.py runs the reference with the override values); synthetic data from the reference itself.
-Version: 2026.11.19.7
+Version: 2026.11.19.8
 """
 import copy
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -342,3 +343,124 @@ def test_real_custom_model(tmp_path, monkeypatch):
     r = run_study("m", st, tmp_path / "m", "omc", 300)
     assert r["ok"], (r.get("why"), r.get("errors"))
     assert r["fit"]["params"]["k"]["value"] == pytest.approx(2.5, rel=1e-4)
+
+
+# ---- the fit's time (run.timeout_s is the whole fit's) and max_evaluations ----------------------------------------
+def _slow_line(delay):
+    import time as _t
+
+    from openmodelica_translator.fit import Param, Series
+    t = np.linspace(0, 1, 11)
+    s = [Series("y", t, 2.0 * t + 0.5 * t ** 2, 1.0)]
+    p = [Param("a", 1.0, 0.0, 5.0, False), Param("b", 0.0, -5.0, 5.0, False)]
+
+    def ev(vals):
+        _t.sleep(delay)
+        return {"y": vals["a"] * t + vals["b"] * t ** 2}, []
+    return p, s, ev
+
+
+def test_budget_stops_at_the_last_accepted_point():
+    from openmodelica_translator.fit import Budget, _status
+    p, s, ev = _slow_line(0.05)
+    best, runs, state = optimize(p, s, [], ev, 3, 400, 1e-6, budget=Budget(0.4, None))
+    assert state["stopped"] == "time_limit" and len(runs) == 1
+    assert _status(best["res"]) == "time_limit" and best["res"].jac.shape == (11, 2)
+
+
+def test_max_evaluations_ends_a_start():
+    from openmodelica_translator.fit import Param, Series, _status
+    t = np.linspace(0, 1, 11)
+    s = [Series("y", t, np.exp(-3 * t), 1.0)]
+    p = [Param("k", 0.2, 0.01, 100, True)]
+    best, runs, state = optimize(p, s, [], lambda v: ({"y": np.exp(-v["k"] * t)}, []), 2, 8, 1e-6)
+    assert state["evaluations"] <= 8 and len(runs) == 2
+    assert {_status(r["res"]) for r in runs} == {"max_evaluations"}
+
+
+def test_budget_follows_extend(tmp_path):
+    from openmodelica_translator.fit import Budget
+    b = Budget(10, tmp_path, reserve=2)
+    assert 7.5 < b.left() <= 8
+    (tmp_path / "extended.json").write_text('{"total_s": 100}')
+    assert 107.5 < b.left() <= 108
+
+
+def test_time_runs_out_before_the_first_step(tmp_path):
+    st = rc_fit()
+    st["run"] = {"timeout_s": 0.001}
+    r = run_study("rc", st, tmp_path, "ref", 0.001)
+    assert not r["ok"] and "ran out before its first step" in r["why"]
+
+
+def test_time_limit_is_unreliable(tmp_path, monkeypatch):
+    import openmodelica_translator.fit as F
+    real = F.RefEvaluator.__call__
+
+    def slow(self, values):
+        import time as _t
+        _t.sleep(0.2)
+        return real(self, values)
+    monkeypatch.setattr(F.RefEvaluator, "__call__", slow)
+    st = rc_fit(starts=2)
+    r = run_study("rc", st, tmp_path, "ref", 1.5)
+    f = r["fit"]
+    assert f["stopped"] == "time_limit" and f["time_budget_s"] == 1.5
+    assert r["reliable"] is False and any("run.timeout_s" in w for w in r["unreliable_because"])
+
+
+def test_a_fit_does_not_record_its_time_as_the_builds(fake, monkeypatch):
+    import openmodelica_translator.executor as X
+    calls = []
+    monkeypatch.setattr(X, "record_study", lambda key, s: calls.append(s))
+    st = rc_fit()
+    _with_study(monkeypatch, fake, {k: v for k, v in st.items() if k != "fit"})
+    r = run_study("rc", st, fake / "req" / "rc", "omc", 60)
+    assert r["ok"] and len(calls) == 1 and calls[0] < r["seconds"]["total"]      # the final run's only
+
+
+# ---- sizing, estimate, progress -----------------------------------------------------------------------------------
+def test_fit_job_cpus_and_estimate():
+    from openmodelica_translator import executor as X
+    st = rc_fit()
+    st["fit"]["params"]["C.v0"] = {"initial": 0, "min": -1, "max": 1}
+    st["run"] = {"procs": 8}
+    assert X.cpus_for_job(st, "ref") == 2                                         # the Jacobian's runs at once
+    st["run"] = {"procs": 8, "timeout_s": 30}
+    est = X.estimate_minutes(st, "ref")
+    assert 0 < est <= 1.0                                                        # at most the fit's time + the final run
+    ft = X.fit_time(st, "ref")
+    assert ft["workers"] == 2 and ft["expected_s"] <= ft["upper_s"] and ft["timeout_s"] == 30
+
+
+def test_validate_warns_when_the_fit_needs_more_than_its_time():
+    from openmodelica_translator import api
+    st = rc_fit()
+    st["run"] = {"timeout_s": 1}
+    w = api.validate({"a": st})["studies"]["a"]["warnings"]
+    assert any("more than run.timeout_s" in x for x in w)
+    assert not any("run.timeout_s" in x for x in api.validate({"a": rc_fit()})["studies"]["a"].get("warnings", []))
+
+
+def test_progress_of_a_fit(tmp_path):
+    import json as _json
+
+    from openmodelica_translator import api
+    (tmp_path / "fit_progress.json").write_text(_json.dumps({"evaluations": 12, "failed": 1, "best_cost": 0.5,
+                                                             "start": 1, "starts": 3}))
+    p = api._progress(tmp_path, 600)
+    assert p["stage"].startswith("fit: start 2 of 3, 12 model runs (1 failed), best cost 0.5")
+    assert p["evaluations"] == 12 and p["eta_min_max"] <= 10
+    (tmp_path / "final").mkdir()
+    assert "final run" in api._progress(tmp_path, 600)["stage"]
+
+
+def test_images(tmp_path):
+    st = thermal(params={"conv.h": {"initial": 30, "min": 1, "max": 200}},
+                 steady=[{"set": {"q.Q_flow": 50}, "values": {"T": "120 degC"}},
+                         {"set": {"q.Q_flow": 25}, "values": {"T": "70 degC"}}],
+                 data={"T": {"t": [0, 10000, 20000], "y": [20, 104.5, 118.4], "unit": "degC"}})
+    st["images"] = True
+    r = run_study("th", st, tmp_path, "ref", 600)
+    im = r["images"]
+    assert {"fit_T", "fit_steady"} <= set(im) and all(Path(v["path"]).is_file() for v in im.values() if "path" in v)
