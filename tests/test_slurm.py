@@ -1,7 +1,7 @@
 """test_slurm.py — SLURM execution (llm-translators docs/EXECUTION.md) against llmt-runtime's fake SLURM
 (llmt_runtime.testing.fake_slurm; omct's own tests/fake_slurm.py until 2026.11.09.1), with the reference solver (no
 OpenModelica needed).
-Version: 2026.11.18.2
+Version: 2026.11.19.1
 """
 from __future__ import annotations
 
@@ -461,3 +461,50 @@ def test_run_after_short_study_without_queue(slurm, monkeypatch):
     r = api.run({"a": study(RC, run={"queue": True}), "b": study(RC, run={"after": "a"})}, "ref", wait=0)
     req = Path(r["request"])
     assert (req / "b" / "job.json").is_file(), "b ran in the local pool instead of waiting for a"
+
+
+# ---- a sweep's time limit from its measured points (2026-11-19, spark1) -------------------------------------
+def _measured(study_s, intervals=500):
+    """A build of RC with a measured point (runs.json study_s), as the cache keeps after one run."""
+    from openmodelica_translator import executor as X
+    d = X._cache_dir(study(RC))
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "meta.json").write_text("{}")
+    (d / "runs.json").write_text(json.dumps({"study_s": study_s, "intervals": intervals}))
+    return d
+
+
+def test_sweep_limit_from_measured_points(slurm, monkeypatch):
+    """120 points of 0.1 s on 1 CPU: each point 120 s (the floor), the job 120 rounds x 2 min + 10 = 250 min (was 1210
+    with the 600 s timeout); without a measurement, or with run.timeout_s, the full timeout as before."""
+    from openmodelica_translator import executor as X
+    pts = [float(100 * (i + 1)) for i in range(120)]
+    st = study(RC, sweep={"params": {"R.R": pts}}, run={"procs": 1, "queue": True})
+    monkeypatch.setattr(X, "cache_hit", lambda s: True)
+    assert X.point_timeout_s(st) is None and X.time_need_min(st) == 1210          # nothing measured yet
+    _measured(0.1)
+    assert X.point_timeout_s(st) == 120.0 and X.time_need_min(st) == 250
+    assert X.time_need_min(study(RC)) == 20                                      # a single study: unchanged
+    _measured(10.0)                                                              # 20 x 1.5 x 10 s = 300 s per point
+    assert X.point_timeout_s(st) == 300.0
+    _measured(10.0, intervals=2000)                                              # measured on 4x the intervals: / 2
+    assert X.point_timeout_s(st) == 150.0
+    _measured(100.0)                                                             # capped at the timeout
+    assert X.point_timeout_s(st) == 600.0
+    own = study(RC, sweep={"params": {"R.R": pts}}, run={"procs": 1, "timeout_s": 900})
+    assert X.point_timeout_s(own) is None
+    _measured(0.1)
+    r = api.run({"sw": st}, "ref", wait=0)
+    j = json.loads((Path(r["request"]) / "sw" / "job.json").read_text())
+    assert j["timeout_s"] == 120.0 and j["time_min"] == 250 and "--time=250" in (Path(r["request"]) / "sw" / "job.sh").read_text()
+
+
+def test_running_sweep_has_its_stage_and_eta(slurm, monkeypatch):
+    """A running SLURM study keeps omct's progress (stage, eta_min_max): the pass-through for unknown states had come
+    before 'running' and swallowed it, so 'next' said 'at most ? min' (2026.11.18.1 to .3)."""
+    monkeypatch.setenv("FAKE_SBATCH_DELAY", "30")
+    r = api.run({"rc": study(RC, run={"queue": True})}, "ref", wait=0)
+    st = api.status(r["request"], 2)
+    p = st["progress"]["rc"]
+    assert p["state"] == "running" and "stage" in p and p.get("eta_min_max") is not None, p
+    assert "at most ?" not in st["next"]

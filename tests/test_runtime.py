@@ -1,7 +1,7 @@
 """omct on llmt-runtime: the shared pieces are the runtime's, configured for omct (2026.11.09.1, phase 1: workers,
 final_state, versions; 2026.11.09.2, phase 2: the SLURM layer, with omct's sizing as hooks; 2026.11.09.3, phase 3: the
 MCP server's stale checks, tool wrapper, deadline and log).
-Version: 2026.11.09.3
+Version: 2026.11.19.1
 """
 import asyncio
 import inspect
@@ -115,7 +115,8 @@ def _request(state_dir: Path, jid: str, log: str | None = None, job: dict | None
 def test_slurm_layer_is_the_runtimes_with_omcts_hooks(monkeypatch):
     monkeypatch.setenv("OMCT_SOLVER", "ref")
     h = RT.hooks
-    assert h.time_need_min is None and h.resource_lines is None             # the runtime's, with omct's solves
+    assert h.resource_lines is None                                         # the runtime's
+    assert h.time_need_min is not None      # omct's (2026.11.19.1): a sweep's measured points; else rounds x timeout
     assert h.study_procs(study(RC)) is None and X.procs_of(study(RC, run={"procs": 3})) == 3
     assert S.time_need_min(RT, {"run": {"timeout_s": 600}}) == 20 == X.time_limit_min({"run": {"timeout_s": 600}})
     sw = study(RC, sweep=SWEEP12, run={"procs": 4})

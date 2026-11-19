@@ -2,7 +2,7 @@
 
 Session context for Claude (the user documentation is README.md). Start a chat with: "Read planning.md and start."
 
-Version: 2026.11.18.3 (2026-11-18). Done: M0-M8 (v1), V2 (coolant, DC machine, heat ports, events), V3 (AC
+Version: 2026.11.19.1 (2026-11-19). Done: M0-M8 (v1), V2 (coolant, DC machine, heat ports, events), V3 (AC
 machines, transient and quasi-static, nonlinear reference), the fixes from use since (docs/history.md), and the
 move onto **llmt-runtime** (2026.11.09.1-.3: workers, SLURM layer and MCP server common code are the runtime's).
 
@@ -83,10 +83,6 @@ lumped parameters.
     became "starts now" with it. The other translators' `--nodelist` on the sparks name each machine's own node.
 - **The router's start estimate on spark2** said "95 min" for a 1-CPU job with 2 CPUs free on spark-0808, and the job
   (715) started at once. Report to the llm-translators chat if it persists.
-- **A sweep's SLURM limit and eta:** a 120-point sweep with `procs: 1` gets 120 rounds x the 600 s timeout = 1210 min,
-  so a sweep queued behind it is told "start in 1305 min" though it ran in 15 s. Consider `OMCT_SLURM_TIME=estimate`
-  as the default for sweeps, or a per-point timeout from the measured run time. Also: a running sweep's `next` said
-  "at most ? min once running" (no eta_min_max while a SLURM sweep runs).
 - **The lost-node diagnosis did not fire** for spark2's job 711 (it says "cancelled while queued"): the job ran and
   ended within a second, before any squeue saw its node. For llmt-runtime: ask sacct for the job's node (`NodeList`)
   when job.log is missing.
@@ -456,6 +452,17 @@ load, and the quasi-static versions of the machine cases. Chains by name: `chain
 Details: docs/history.md (everything to 2026-10-31) and the README's version table.
 
 ## Recent changes
+
+**2026.11.19.1 (2026-11-19)**: from the machine tests. (1) A sweep's SLURM limit counted every point with the full
+600 s timeout (120 points of 0.1 s on 1 CPU: 1210 min; a sweep queued behind it was told 1305 min, spark1 jobs
+716/718). `executor.point_timeout_s`: once the build has a measured point (runs.json study_s), each point's timeout
+is min(timeout, max(OMCT_SWEEP_POINT_MIN_S 120, OMCT_SWEEP_POINT_FACTOR 20 x the measured point scaled by
+sqrt(intervals ratio), x runs per point)); the runtime's `hooks.time_need_min` (`executor.time_need_min`) counts it,
+and `job_extra` writes it to job.json `timeout_s`, which run-study uses for every point. The example: 250 min.
+(2) `slurm_states`: the pass-through for job states omct does not know (2026.11.18.1) came before `running`, so a
+running SLURM study had no stage or eta_min_max and `next` said "at most ? min"; now after it. Tests in
+test_slurm.py (limits with and without a measurement, scaling, cap, run.timeout_s, job.json/job.sh; a running job's
+stage and eta). Machine check after deploying: a 120-point sweep on a spark (its job.json timeout_s and --time).
 
 **2026.11.18.3 (2026-11-18)**: llm-translators' prompt "Worker pools through llmt-runtime's workers.make_pool":
 the run pool (`api._Pool.ensure`, `make_pool`) and the sweep's `make_executor`; floor `llmt-runtime>=2026.11.18.5`.

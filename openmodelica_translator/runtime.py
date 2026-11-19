@@ -1,5 +1,5 @@
 """runtime.py — omct's llmt-runtime: the executor code the translators share, with omct's settings and hooks.
-Version: 2026.11.09.3
+Version: 2026.11.19.1
 
     RT                 llmt_runtime.Runtime for omct (OMCT_ settings, the `omct` CLI, threads: sweep points at once)
     RUNTIME_VERSION    llmt-runtime's version (tool_status().executor.runtime)
@@ -61,6 +61,11 @@ def _solves(study: dict) -> int:
     return sweep_rounds(study)
 
 
+def _time_need_min(study: dict) -> int:
+    from .executor import time_need_min
+    return time_need_min(study)
+
+
 def _script_lines(request: Path, name: str, study: dict) -> list:
     from .executor import script_lines
     return script_lines(request, name, study)
@@ -79,6 +84,7 @@ def _running_progress(folder: Path, study: dict) -> dict:
 RT = Runtime(prefix="OMCT", cli="omct", package="openmodelica_translator", version=__version__, kind="threads",
              out_default="~/omct_runs", min_minutes=1.0, timeout_default=600.0, slurm_time_default="timeout",
              hooks=Hooks(study_procs=_study_procs, procs=_procs, mem_auto=_mem_auto, solves=_solves,
+                         time_need_min=_time_need_min,
                          script_lines=_script_lines, job_extra=_job_extra, oom_advice=oom_advice,
                          timeout_hint=("with OMCT_SLURM_TIME=estimate rerun with OMCT_SLURM_TIME=timeout; or shorten "
                                        "the stop time / the sweep"),

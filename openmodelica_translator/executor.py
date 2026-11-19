@@ -1,5 +1,5 @@
 """executor.py — where studies run: the local worker pool, or one SLURM job per study (kind: threads).
-Version: 2026.11.18.1
+Version: 2026.11.19.1
 
 From 2026.11.09.2 the SLURM layer is llmt-runtime's (llmt_runtime.slurm and llmt_runtime.jobs, configured by
 runtime.RT): the settings, the machine (the cluster's nodes from `scontrol -o show node`, this node, pinning with
@@ -27,6 +27,9 @@ Implements llm-translators' docs/EXECUTION.md. Settings (environment):
     OMCT_PROCS             sweep points at once per study (1); a study's run.procs overrides it
     OMCT_COMPILE_PROCS     the C compile's parallelism (4): a job that must build asks for at least these CPUs
     OMCT_TIMEOUT           seconds per run (600)
+    OMCT_SWEEP_POINT_FACTOR, OMCT_SWEEP_POINT_MIN_S
+                           a SLURM sweep's points, once this build has measured one: each point's timeout is
+                           min(timeout, max(MIN_S 120, FACTOR 20 x the measured point)), and the job's limit counts that
     OMCT_SLURM_NODE        local | any | a node list (local): where jobs may run in a cluster of several nodes
                            (llm-translators docs/EXECUTION.md, "Clusters of several nodes"); a --nodelist / -w in
                            OMCT_SLURM_ARGS wins
@@ -226,6 +229,43 @@ def mem_auto(study: dict, cpus: int | None = None) -> str:
     return f"{1024 + 256 * int(cpus if cpus is not None else job_cpus(study))}M"
 
 
+def _float(env: str, default: str) -> float:
+    try:
+        return float(os.environ.get(env, default) or default)
+    except ValueError:
+        return float(default)
+
+
+SWEEP_POINT_FACTOR = 20.0     # a sweep point's timeout: this many times its measured time ...
+SWEEP_POINT_MIN_S = 120.0     # ... at least this, at most the study's timeout
+
+
+def point_timeout_s(study: dict) -> float | None:
+    """The timeout of each point of a sweep sent to SLURM, when this build has measured one (runs.json study_s, kept by
+    every point): min(timeout, max(OMCT_SWEEP_POINT_MIN_S 120, OMCT_SWEEP_POINT_FACTOR 20 x the measured point, scaled
+    to the study's intervals)); None (the full timeout) for a single study, a cache miss, nothing measured yet, or a
+    study's own run.timeout_s. Before, every point had the full timeout in the job's limit: 120 points of 0.1 s on
+    1 CPU asked for 1210 min, and a job queued behind that one was told it would start in 22 h (spark1, 2026-11-19)."""
+    if _points(study) <= 1 or (study.get("run") or {}).get("timeout_s"):
+        return None
+    d = _cache_dir(study)
+    rec = _runs(d) if d and (d / "meta.json").is_file() else {}
+    if "study_s" not in rec:
+        return None
+    one = 1.5 * float(rec["study_s"]) * (_intervals(study) / max(int(rec.get("intervals") or 1), 1)) ** 0.5
+    one *= 1 + bool(study.get("converge")) + ("modelica" in study and study.get("cross_check", True))
+    fac = _float("OMCT_SWEEP_POINT_FACTOR", str(SWEEP_POINT_FACTOR))
+    lo = _float("OMCT_SWEEP_POINT_MIN_S", str(SWEEP_POINT_MIN_S))
+    return float(min(timeout_s(study), max(lo, fac * one)))
+
+
+def time_need_min(study: dict) -> int:
+    """Minutes a study's job needs (the runtime's hooks.time_need_min): rounds x each run's timeout + 10, with a
+    sweep's measured point timeout (point_timeout_s) when there is one."""
+    pt = point_timeout_s(study or {}) if study else None
+    return int(math.ceil(sweep_rounds(study or {}) * (pt or timeout_s(study or {})) / 60)) + 10
+
+
 def sweep_rounds(study: dict, cpus: int | None = None) -> int:
     """Runs one after the other in a study's job, each with the full timeout (the runtime's hooks.solves, so the job's
     limit is ceil(rounds x timeout / 60) + 10 minutes): 1 without a sweep; a sweep's first point alone (it builds the
@@ -251,9 +291,12 @@ def job_extra(study: dict) -> dict:
     est = _ctx("est")
     if est is None:
         est = estimate_minutes(study, _solver_now())
-    t, _ = S.job_time(RT, study, est)
-    return {"estimate_min": round(float(est), 3),
-            "time_min": int(t) if t.isdigit() else S.time_need_min(RT, study)}
+    t, info = S.job_time(RT, study, est)
+    out = {"estimate_min": round(float(est), 3), "time_min": int(t) if t.isdigit() else S.time_need_min(RT, study)}
+    pt = point_timeout_s(study) if info.get("time_from") == "timeout" else None
+    if pt:                                    # each point's own timeout fits the limit (run-study reads it)
+        out.update(timeout_s=pt, time_from="sweep points (measured)")
+    return out
 
 
 def mem_for_job(study: dict, cpus: int) -> str | None:
@@ -538,17 +581,18 @@ def slurm_states(request: Path, names: list[str], studies: dict | None = None, w
                 st["expected_start"] = s["expected_start"]
             out[n] = {k: v for k, v in st.items() if v is not None or k in ("reason",)}
             continue
-        if state is not None and state not in FINAL:
-            # a state of the runtime this mapping does not know (a newer runtime): report it, never as a failure
-            # (2026-11-18: 'waiting' fell through here and was written as the study's failed result)
-            out[n] = {**{k: v for k, v in s.items() if k != "name"}, **base, "state": state}
-            continue
         if state == "running":
             prog = _progress(request / n, float(j.get("timeout_s") or timeout_s((studies or {}).get(n))))
             st = {**prog, "state": "running", **base, "job_elapsed_min": s.get("job_elapsed_min")}
             if s.get("node"):
                 st["node"] = s["node"]
             out[n] = st
+            continue
+        if state is not None and state not in FINAL:
+            # a state of the runtime this mapping does not know (a newer runtime): report it, never as a failure
+            # (2026-11-18: 'waiting' fell through and was written as the study's failed result; 2026.11.19.1: this
+            # branch now comes after 'running', which it had swallowed: running sweeps lost their stage and eta)
+            out[n] = {**{k: v for k, v in s.items() if k != "name"}, **base, "state": state}
             continue
         why = s.get("why") or "the job left the queue without a result"
         if state not in FINAL:
