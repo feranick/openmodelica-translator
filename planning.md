@@ -75,6 +75,10 @@ lumped parameters.
     ran (job 716, 15 s, 120/120 reliable), the second queued with reason Resources (718) and started after it ✓.
   - Collected after the MCP connection was closed and reopened ✓: after an app restart, jobs() from the new servers
     reports the second sweep (run_20261119_092619_dccce5, job 718) done, ok, reliable.
+  - After deploying 2026.11.19.4 (runtime 2026.11.19.2, all four machines, 2026-11-19 10:15): a 120-point sweep on
+    spark1 (job 724) got time_min 250 (was 1210), each point timeout_s 120 (`time_from: sweep points (measured)`),
+    ran_on spark-5da5; while running it showed its stage and eta_min_max (0.3 min) instead of "at most ? min"; jobs()
+    through list_jobs listed local-pool requests (job_id null), SLURM ones and a bench_* request (kind, collect).
   - Left: mochi (rc_step as a SLURM job, when its queue has room).
   - Fixed on the way: both sparks had `OMCT_SLURM_ARGS="--mem=16G --nodelist=spark-5da5"` in /etc/llm-translators/env
     (a stopgap from before OMCT_SLURM_NODE), so spark2's jobs ran on spark1, where spark2's run folder does not exist
