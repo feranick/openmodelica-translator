@@ -1,5 +1,5 @@
 """test_format.py — the study format and validation: every error names its fix.
-Version: 2026.11.19.6
+Version: 2026.11.19.10
 """
 import json
 
@@ -18,7 +18,10 @@ def test_format_is_compact_and_lists_every_kind():
     sf = study_format()
     assert len(json.dumps(sf)) < 32000
     listed = {k for d in sf["kinds"].values() for k in d}
-    assert listed == set(C.public_kinds())
+    fluid = study_format("fluid")
+    assert len(json.dumps(fluid)) < 32000 and "fluid" in sf["topics"]
+    assert listed | set(fluid["kinds"]) == set(C.public_kinds()) and not listed & set(fluid["kinds"])
+    assert "error" in study_format("nope")
 
 
 @pytest.mark.parametrize("st", [RC, RLC, MSD, THERMAL, DC_PI, TWO_MASS, EXAMPLE["rlc_step"]])

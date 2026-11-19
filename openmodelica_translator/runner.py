@@ -1,5 +1,5 @@
 """runner.py — one study end to end: validate, translate, build (or reuse), run, read, check, write the result.
-Version: 2026.11.19.8
+Version: 2026.11.19.10
 
 run_study(name, study, folder, solver, timeout, cancel) -> the result dict, also written atomically to
 <folder>/<name>.json. solver: "omc" (OpenModelica) or "ref" (the reference implementation only: linear
@@ -58,6 +58,7 @@ def _times(an: dict):
 
 
 RETRY_FACTOR = 100.0
+from .post import CONSTANT_REL  # noqa: E402  (a range below this x its size: constant)
 
 
 INDEPENDENT = ("reference", "cross_solver")
@@ -228,7 +229,9 @@ def allowed(y, lim, tol) -> float:
         return lim
     rng = float(np.max(y) - np.min(y))
     mag = float(np.max(np.abs(y)))
-    return float(max(lim, 10 * tol * mag / rng)) if rng > 0 else lim
+    # constant up to rounding (a range below CONSTANT_REL of its size): judged on its size (post.compare does the
+    # same); before, 10 tol mag / rng gave it a limit of 7.7e9 (carbonio 2026-11-19, a pump's constant flow)
+    return float(max(lim, 10 * tol * mag / rng)) if rng > CONSTANT_REL * mag else lim
 
 
 def _reference(out, study, tr, t, vals, tol):

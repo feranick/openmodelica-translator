@@ -1,6 +1,6 @@
 """check_catalog_msl.py — checks catalog.py against the MSL 4.0.0 sources (a checkout of
 github.com/modelica/ModelicaStandardLibrary at tag v4.0.0): class paths, ports, parameters, variables, inits.
-Version: 2026.10.21.14
+Version: 2026.11.19.10
 Usage: python tools/check_catalog_msl.py /path/to/ModelicaStandardLibrary
 """
 import re
@@ -59,30 +59,40 @@ def full_text(path: str, depth=0) -> str:
     return t
 
 
-def check(root) -> list[str]:
-    """Problems found (empty: every class, port, parameter, variable and initial value exists in MSL)."""
+def check(root, prefix: str = "") -> list[str]:
+    """Problems found (empty: every class, port, parameter, variable and initial value exists in MSL). prefix:
+    only the kinds whose name starts with it (fl_: Modelica.Fluid, with a partial checkout)."""
     global ROOT
     ROOT = Path(root)
     out = []
     for k, v in sorted(C.KINDS.items()):
-        if v.get("parts") is not None:
+        if v.get("parts") is not None or not k.startswith(prefix):
             continue
         t = full_text(v["msl"])
         if not t:
             out.append(f"MISSING CLASS {k}: {v['msl']}")
             continue
-        names = {C.PORT_PATHS.get((k, p), p).split(".")[0].split("[")[0] for p in v["ports"]}
+        fl = v.get("fluid") or {}
+        redirected = {fl["collector"][0]: fl["collector"][1]} if fl.get("collector") else {}
+        if fl.get("speed_in"):
+            redirected[fl["speed_in"][0]] = fl["speed_in"][1]
+        names = {(v.get("multi", {}).get(p, (None,))[0] or redirected.get(p) or C.PORT_PATHS.get((k, p), p))
+                 .split(".")[0].split("[")[0] for p in v["ports"]}
         for p, spec in v["params"].items():
             if spec.get("msl") is not False:
                 names.add((spec.get("msl") or p).split(".")[0])
         names |= {(v["params"][m]["msl"] if m in v["params"] and isinstance(v["params"][m].get("msl"), str) else m).split(".")[0]
                   for m in v["mods"]} | set(v["text"])
-        names |= {C.var_path(k, x).split(".")[0].split("[")[0] for x in v["vars"]}
+        for x in v["vars"]:
+            vp = C.var_path(k, x)
+            for q in ([q for _, q in vp] if isinstance(vp, list) else [vp]):
+                names.add(q.split(".")[0].split("[")[0])
+        names |= {sz for _, sz in v.get("multi", {}).values()}
         names |= {i["var"] for i in v["inits"].values()}
         names |= {s_.split(".")[0] for s_ in v.get("block_states", {})}
-        names |= set(v.get("cond_ports", {}).values())
+        names |= {f for f in v.get("cond_ports", {}).values() if f}
         if "medium" in v["params"]:
-            names.add("medium")
+            names.add("Medium" if v["params"]["medium"]["type"] == "fmedium" else "medium")
         for n in sorted(names):
             if not re.search(r"\b" + re.escape(n) + r"\b\s*(\(|=|;|\[|\"|$|annotation|if\b)", t, re.M):
                 out.append(f"{k}: '{n}' not declared in {v['msl']} or its bases")
@@ -90,6 +100,6 @@ def check(root) -> list[str]:
 
 
 if __name__ == "__main__":
-    problems = check(sys.argv[1] if len(sys.argv) > 1 else "/tmp/msl")
+    problems = check(sys.argv[1] if len(sys.argv) > 1 else "/tmp/msl", sys.argv[2] if len(sys.argv) > 2 else "")
     print("\n".join(problems))
     print("problems:", len(problems))

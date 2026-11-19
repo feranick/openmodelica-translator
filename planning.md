@@ -2,7 +2,7 @@
 
 Session context for Claude (the user documentation is README.md). Start a chat with: "Read planning.md and start."
 
-Version: 2026.11.19.9 (2026-11-19). Done: M0-M8 (v1), V2 (coolant, DC machine, heat ports, events), V3 (AC
+Version: 2026.11.19.10 (2026-11-19). Done: M0-M8 (v1), V2 (coolant, DC machine, heat ports, events), V3 (AC
 machines, transient and quasi-static, nonlinear reference), the fixes from use since (docs/history.md), and the
 move onto **llmt-runtime** (2026.11.09.1-.3: workers, SLURM layer and MCP server common code are the runtime's).
 
@@ -63,7 +63,7 @@ lumped parameters.
   `~/Software/llmt-runtime`; pinned 2026.11.19.2; omct declares the floor `llmt-runtime>=2026.11.19.2`). Read its
   `README.md` (API, hooks, settings) and `PLANNING.md` (open items) before touching SLURM, jobs, memory, workers,
   requests or the MCP server's common code.
-- **Code:** 28 modules (`runtime.py`, `workers.py` thin), about 12,300 lines (`ref.py` alone ~3,000); 471 tests pass
+- **Code:** 28 modules (`runtime.py`, `workers.py` thin), about 12,300 lines (`ref.py` alone ~3,000); 489 tests pass
   in the sandbox with the runtime (6 skipped: the real-omc tests). MCP tools: 13 (`extend` since 2026.11.19.5).
 
 ## Open items
@@ -446,10 +446,13 @@ Details: docs/history.md (everything to 2026-10-31) and the README's version tab
 
 ## Recent changes
 
+**2026.11.19.10 (2026-11-19)**: V5 FL2, Modelica.Fluid kinds. catalog: port type mfluid; kind() takes multi ({port: (array, size)}) and fluid ({build(p, e) -> (modifier texts, lifted values), collector, speed_in, pressure_ref, vessel, volume, liquid_only/gas_only, pump}); FMEDIA, fmedium(), FMED; 19 fl_* kinds (MSL names checked: tools/check_catalog_msl.py /tmp/msl_src fl_ -> 0 problems; the tool now knows multi ports, redirects, var sums, fmedium). network: fmedium values; multi ports -> 'port[k]' per connection (_multi_index), port_type/mpath for them; redirects (helpers' ports); var_paths as sums; cond_ports with flag None; _fluid_sets (system naming, flags _n_ports/_opening_connected/_w_in/_heat, valve sizing, curve falling, medium spread and mixing, pressure reference, valve phase, closed-loop rule via _closed_loops/_cycle_edges (bridges), modelStructure av_b/av_vb). modelica: fmedia packages, redeclare Medium/FlowModel/HeatTransfer/functions, lifted top-level parameters (+ their overrides), helpers (ThermalCollector, Gain rad/s -> rpm), inner system (default or fl_system). ref: Modelica.Fluid stand-in (heat/flange flows 0, outputs 0; not covered). format: study_format(topic='fluid') (6.6 k chars; the main one 31,946: two convention sentences shortened), MCP study_format(topic). Fixes: simrun min/max violations -> warnings (minmax); runner.allowed / post.compare: range < CONSTANT_REL (1e-9) x size = constant. **Checked on carbonio (escape hatch with the generated text and every override, run_fl2_generated1-2):** loop (tank, pump, pipe, valve) ✓ 21 overrides read back; dynamic pipe after the pump with heat (ThermalCollector) and the speed input (Gain) ✓ 25 overrides, 50 kW into the water, pump at 1594.7 rpm from 167 rad/s, cross-solver retried at 1e-8 (2e-6); air volume filled through a pipe and emptied through fl_valve_gas ✓; tank draining through an orifice with a pressure sensor ✓; glycol47 through a resistance with T, mass-flow and relative-pressure sensors and fl_system steady_state_initial ✓; fl_pump_shaft on an inertia ✓. A DynamicPipe's length and height_ab were fixed by the build (structural now). tests/test_mfluid.py (16). Tests: 489 pass (6 skipped).
+**Next: FL3** (balances, cross-solver for Fluid studies, fit_*-style benchmarks with closed forms on carbonio), then FL4 (the reference for liquids), FL5 (cfdt chain). Deploy .10 and rerun the generated cases through the normal path (catalog studies, not the escape hatch).
+
 **2026.11.19.9 (2026-11-19)**: F4 on carbonio (OpenModelica 1.27.2, 2026.11.19.8, bench_20261119_145315_56d73d): fit_rc_tau (R 1000.61, 1.9 se; stderr 0.31659 against 0.31666; chi2_reduced 0.77), fit_rc_unidentifiable (correlation -1.0), fit_thermal_curve (m 2.0000078, h 9.9999932, T0 303.15007), fit_msd (c 799.99998, d 4.0000196) pass, all reliable. **fit_thermal_steady failed and said reliable**: h 21.54 for 10, 'converged' by xtol, 28 of 78 runs failed 'steady point: T still changes' (the bench's 20000 s is 6.7 tau at h = 10; the reference path's exact steady state hid it). Fix: optimize keeps each failed run's x; a start whose end point has a failed run within 1 % of a parameter's (x-space) range and did not end by gtol has failed_at_end > 0 -> unreliable ('it stopped where the model's runs fail', with the last error). A counter of failures since the last Jacobian missed it: a tiny accepted step after the failures reset it. Bench fit_thermal_steady at 90000 s; settled_end's message gives the change and the limit. Test (fake omc): a divider whose steady runs settle only away from the optimum -> unreliable with that reason. **Rerun on carbonio with .9 (bench_20261119_153328_39e8e8): all five fit_* pass, reliable; fit_thermal_steady h 10.000000021.**
 
 **2026.11.19.8 (2026-11-19)**: V4 F3. fit.Budget (timeout from t_start, + extended_s of the study folder, - reserve min(0.25 timeout, max(20 s, 10 x first run)) set by the first evaluation); OmcEvaluator's run timeout also <= the budget left. optimize: Stop (BaseException) from raw() at the budget (time_limit: ends all starts) or at a start's share of max_evaluations (counted in model runs); the start's result = its last Jacobian's x, J, f (status -10 time_limit / 0 max_evaluations); nothing yet -> run_fit ok false 'ran out before its first step'. Not converged -> unreliable_because. Final run's timeout = what is left (>= min(timeout, 60 s)). runner: no record_study for a fit. executor: _parallel (fit: n params) in cpus_for_job and run_study_job; fit_time (expected: 15 iterations a start, upper: the share; run = s_per_interval x max(intervals, 2000) + 0.3 s); estimate_minutes for fits (min(upper, timeout) + final + build); _cache_dir builds a fit's key at the initial values. api.validate warning; api._progress fit stage (fit_progress.json: start, evaluations, failed, best_cost; 'final run' once final/ exists); job_progress passes evaluations. Images: fit.plot (the line from the final run's series); render() reads final/series.npz for a fit; render_images adds fit.plot. **Bug fixed**: with sigma, stderr was sqrt(n) too large (chi_factors undo the 1/sqrt(n) and weight; the earlier test only bounded it); chi2_reduced. Benchmarks fit_rc_tau (stderr against the analytic one: 5 %; chi2 ~1), fit_rc_unidentifiable, fit_thermal_steady, fit_thermal_curve, fit_msd (data from closed forms). MCP instructions: fit, rewrapped to 118 columns (test: <= 30 lines). study_format 31,963 chars. Tests: 470 pass (6 skipped).
-**Next: Modelica.Fluid** (F4 done in .9): design and FL1 probe results in "V5: Modelica.Fluid" (2026-11-19); FL2 next (go-ahead pending). The router's omct description (llm-translators) does not mention fit: for the llmt chat.
+**Next: Modelica.Fluid** (F4 done in .9): see "V5: Modelica.Fluid" (FL2 in .10). The router's omct description (llm-translators) does not mention fit: for the llmt chat.
 
 **2026.11.19.7 (2026-11-19)**: V4 F2, fitting with OpenModelica. fit.OmcEvaluator: build once at the initial values; `_moved` translates each parameter at a second value and finds the override paths it moves (none, or one compiled in (changeable false): FitError up front); a variant build when other compiled-in values differ (as runner); each evaluation translates the point (1-2 ms), checks the structure is the build's, runs simrun.simulate with the outputs-only filter at tol/10 in evaluations/eNNNNN (removed after), combines the outputs; per-run timeout min(timeout, max(OMCT_SWEEP_POINT_MIN_S, FACTOR x first run)). series_grid: stop = last data time; the data's grid when uniform from t0 (x an integer up to the study's intervals), else max(intervals, 2000) and np.interp after _dedupe (events keep the later value). Steady points: settled_end (last fifth < 1e-5 of the range, else 'lengthen'; the ref fallback uses it too). optimize: own forward-difference Jacobian (steps diff_step x max(1, |x|), backward at the upper bound, the other side when a run fails, zero column when both fail) on a ThreadPoolExecutor of min(run.procs, n_params) (1 for ref); fit_progress.json (evaluations, failed, best_cost, start). run_fit: ref refuses custom models; FitError from the evaluator -> ok false with why. tests/fake_omc.py `_apply`: override values that differ from the study's are set back (comp.param, comp.<init var>). tests/test_fit.py: omc (fake): R recovered, one build = the final run's, run folders removed; R and v0 with 2 workers; steady points (divider R2 from two V); compiled-in R.R refused; Jacobian fallback; series_grid; settled_end/_dedupe; 3 real-omc tests (RC R, heating curve m/h/T0 through composite overrides with 3 workers, a custom model's k) skip in the sandbox and where OpenModelica is only the llmt server's (the machines: pytest there has no omc on its PATH). **Checked on carbonio (2026-11-19, OpenModelica 1.27.2, through the omct server, request run_fit_f2_check)**: the same three as studies, all reliable: R 999.99920 (stderr 7e-5; 14 evaluations, 15 runs, 1.1 s); m 2.0000010, h 9.9999927, T0 293.14990 K (3 workers, 32 evaluations, 2.9 s); k 2.4999998 (14 evaluations, 2.6 s). Composite overrides (blk.C = m cp, conv__Gc.k = h A) and a custom model's parameter move at run time as assumed.
 **Next: F3** (images: data vs model and residuals; benchmarks fit_*; SLURM sizing and an estimate (today a fit job gets one study's limit: a long fit can hit it); api progress from fit_progress.json; README section).
@@ -626,7 +629,7 @@ data set if Nicola has one).
 variable filter on the outputs only); the CSV's location for router placement (a path under the machine's home: the
 router cannot see it; the study gives `run.host`).
 
-## V5: Modelica.Fluid (design, 2026-11-19; FL1 probes done 2026-11-19, FL2 next)
+## V5: Modelica.Fluid (design, 2026-11-19; FL1 probes, FL2 built 2026.11.19.10)
 
 Nicola's choices (2026-11-19): media = liquids (constant properties, Incompressible tables) and ideal-gas air;
 components = pipes/fittings/valves, pumps, vessels and boundaries, and the cfdt chain (pump curves, fitting losses);
@@ -759,6 +762,23 @@ modelStructure av_b (its volume at the inlet) and refuses closed volumes, with a
 (an open tank, or an open circuit with boundaries). FL2 starts with a probe matrix on carbonio (pipe positions next
 to pumps, valves, tanks and tees; several pumps; two tanks; pumps with V > 0) and widens the rule from what builds;
 each case is recorded here. Open circuits and gases are not restricted.
+
+**FL2 probe matrix (carbonio, 2026-11-19, requests run_fl2_matrix1-3; ConstantPropertyLiquidWater, FixedInitial
+unless said):**
+- In a closed loop (a cycle through tanks, pumps, pipes, valves): ✓ only a DynamicPipe av_b whose port_a is the
+  single partner of one pump's port_b (also with the pump's V = 0.001 or its balances steady). ✗ (structurally
+  singular / StateSet Jacobian non-linear): av_b on the suction side, after the valve, after a static pipe, after
+  two pumps in parallel, as two branches after one pump, connected backwards; two tanks in a loop with a dynamic
+  pipe; a ClosedVolume at the pump outlet; av_vb. With massDynamics SteadyState everywhere but the tanks: the same
+  ✗ (and av_vb fails in the C build).
+- Without a cycle: ✓ tank -> pump -> DynamicPipe av_vb -> Boundary_pT; ✓ tank -> DynamicPipe av_vb -> tank (no pump);
+  ✓ tank -> pump -> ClosedVolume -> static pipe -> Boundary_pT (cross-solver retried at 1e-8: 4.6e-8).
+- ✓ two tanks in a loop with a pump and static pipes only.
+- **Rule built (FL2):** with a constant-density medium, a fixed-volume component (fl_dynamic_pipe, fl_volume) on
+  a hydraulic cycle is refused, except a dynamic pipe whose inlet connects only to one pump's outlet (omct gives it
+  av_b). Cycles: the graph of connection sets joined by two-port components and by tanks (a tank's ports share its
+  volume); boundaries (fixed pressure) cut it. Open circuits and gases: no restriction. Closed liquid loops with
+  heat transfer: the FluidHeatFlow kinds (coolant loops, V2.2) model them.
 
 **Milestones:** FL1 probes (above) and their record; FL2 catalog, network (mfluid, ports[k], media sets, system),
 modelica (redeclare Medium, system, ThermalCollector, the generated custom medium), validation, study_format

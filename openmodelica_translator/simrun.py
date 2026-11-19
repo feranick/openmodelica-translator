@@ -1,5 +1,5 @@
 """simrun.py — run a compiled model from the cache, read its log, check the overrides.
-Version: 2026.11.19.5
+Version: 2026.11.19.10
 
 simulate(build_dir, run_dir, overrides, ...) -> {ok, exit, seconds, log, stats, result, linear, errors, warnings}
   - writes params.txt (every value, modelica.override_file) and runs
@@ -48,7 +48,7 @@ def parse_log(text: str) -> dict:
             msgs[-1]["text"] += "\n" + c.group(1).rstrip()
     out = {"messages": msgs, "init_ok": False, "homotopy_steps": None, "finished": False, "asserts": [],
            "chattering": None, "steady_state_time": None, "override_refused": [], "override_unknown": [],
-           "warnings": [], "stats": {}, "linear_model": None}
+           "warnings": [], "stats": {}, "linear_model": None, "minmax": []}
     for m in msgs:
         t, s, lv = m["text"], m["stream"], m["level"]
         if s == "LOG_SUCCESS" and "initialization finished successfully" in t:
@@ -57,6 +57,14 @@ def parse_log(text: str) -> dict:
             out["homotopy_steps"] = int(h.group(1)) if h else 0
         elif s == "LOG_SUCCESS" and "simulation finished successfully" in t:
             out["finished"] = True
+        elif s == "LOG_ASSERT" and lv in ("info", "warning") and "Variable violating min/max constraint" in t:
+            # OpenModelica reports a variable outside its min/max and goes on (MSL Fluid during homotopy, an
+            # opening of 1+1e-6): a warning, not a failure (carbonio 2026-11-19: PumpingSystem finished but was
+            # reported failed)
+            m_ = re.search(r'min/max constraint: (.*?), has value: ([^"\n]*)', t)
+            tm = re.search(r"violated at time ([-+0-9.eE]+)", t)
+            out["minmax"].append({"what": m_.group(1) if m_ else t[:200], "value": m_.group(2) if m_ else None,
+                                  "t": float(tm.group(1)) if tm else None})
         elif s == "LOG_ASSERT" and lv in ("error", "info", "warning") and (lv == "error" or "assert" in t.lower()
                                                                              or "violated" in t):
             out["asserts"].append(t)
@@ -150,6 +158,11 @@ def simulate(build_dir, run_dir, overrides: dict, *, start: float, stop: float, 
         errs.append(f"the simulation exited with {p['exit']} (see sim.log)")
     if info["homotopy_steps"]:
         warns.append(f"initialisation needed {info['homotopy_steps']} homotopy steps")
+    for mm in info["minmax"][:5]:
+        warns.append(f"outside its range at t = {mm['t']:g} s: {mm['what']} (value {mm['value']}; OpenModelica went on)"
+                     if mm["t"] is not None else f"outside its range: {mm['what']} (value {mm['value']})")
+    if len(info["minmax"]) > 5:
+        warns.append(f"... and {len(info['minmax']) - 5} more values outside their range (sim.log)")
     if info["chattering"]:
         warns.append(f"chattering (many events in a row) around t = {info['chattering'].get('t0')}")
     out = {"ok": not errs, "exit": p["exit"], "seconds": p["seconds"], "stats": info["stats"],

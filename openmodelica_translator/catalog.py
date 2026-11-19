@@ -1,5 +1,5 @@
 """catalog.py — the curated MSL 4.0.0 components: kinds, ports, parameters (SI), variables, initial values.
-Version: 2026.10.21.25
+Version: 2026.11.19.10
 
 Every name below was checked against the MSL 4.0.0 sources (tag v4.0.0): class paths, port names, parameter
 names and defaults. A kind is either elementary (one MSL class) or composite (parts that are elementary kinds,
@@ -35,6 +35,9 @@ PORT_TYPES = {
     "cvout": {"domain": "signal", "width": 3, "complex": True},
     "fluid": {"domain": "fluid", "potential": "p", "flow": "m_flow", "extra": ("h", "H_flow"),
               "units": {"p": "Pa", "m_flow": "kg/s", "h": "J/kg", "H_flow": "W"}},
+    # Modelica.Fluid.Interfaces.FluidPort: p, m_flow and the stream h_outflow (V5, 2026.11.19.10); never joined to
+    # the FluidHeatFlow coolant ports ("fluid")
+    "mfluid": {"domain": "mfluid", "potential": "p", "flow": "m_flow", "units": {"p": "Pa", "m_flow": "kg/s"}},
     "in": {"domain": "signal"},
     "vin": {"domain": "signal", "width": 3},          # a three-element signal input (inside drives)
     "vout": {"domain": "signal", "width": 3},
@@ -61,19 +64,23 @@ KINDS: dict[str, dict] = {}
 
 def kind(name, msl, ports, params=None, vars=None, inits=None, *, doc="", text=None, mods=None, rigid=(),
          linear=True, islands=None, hidden=False, block_states=None, alternatives=None, domain=None, cond_ports=None,
-         port_groups=None, var_paths=None):
+         port_groups=None, var_paths=None, multi=None, fluid=None):
     """text: fixed (structural) modifier text; mods: {msl_param: function(params) -> value} for parameters
     computed from the study's (alternatives such as m + cp -> C); rigid: port pairs at the same point
     (Mass, Inertia: L = 0); islands: groups of ports linked through the component (for the ground and
     reference checks; default: all physical ports of one domain together); cond_ports: {port: MSL Boolean} for
     ports that exist only when connected (the Boolean is then set true in the model text); port_groups: {name:
     [ports]}: connecting the name connects every port of the group (a machine's six heat ports at once);
-    var_paths: {var: Modelica path inside the component} for variables in records or subcomponents."""
+    var_paths: {var: Modelica path inside the component} for variables in records or subcomponents, or a list of
+    (coefficient, path) for a sum (a pipe's dp = port_a.p - port_b.p);
+    multi: {study port: (Modelica array, size parameter)}: a port connected any number of times, each connection
+    its own array element (Modelica.Fluid's ports[nPorts]); fluid: Modelica.Fluid specifics (see FLUID below)."""
     KINDS[name] = {"name": name, "msl": msl, "ports": ports, "params": params or {}, "vars": vars or {},
                    "inits": inits or {}, "doc": doc, "text": text or {}, "mods": mods or {}, "rigid": list(rigid),
                    "linear": linear, "islands": islands, "hidden": hidden, "parts": None,
                    "block_states": block_states or {}, "alternatives": alternatives or [], "domain": domain,
-                   "cond_ports": cond_ports or {}, "port_groups": port_groups or {}, "var_paths": var_paths or {}}
+                   "cond_ports": cond_ports or {}, "port_groups": port_groups or {}, "var_paths": var_paths or {},
+                   "multi": multi or {}, "fluid": fluid}
 
 
 def composite(name, parts, ports, params, vars, inits=None, *, conns=(), doc="", linear=True, alternatives=None,
@@ -883,6 +890,264 @@ PORT_PATHS = {("table", "y"): "y[1]", **{("dc_machine", h): "thermalPort." + h f
                                                        ("pmsm_damper_core", PMD_HEAT), ("qs_im_core", IM_HEAT),
                                                        ("qs_pmsm_core", PM_HEAT), ("qs_pmsm_damper_core", PMD_HEAT))
                  for h in hs}}
+
+
+
+# ------------------------------------------------------------------------------------------- Modelica.Fluid (V5)
+# Probed on carbonio (OpenModelica 1.27.2, 2026-11-19; planning.md V5): every value below that is not structural
+# changes at run time; values used inside a function or model modifier (pump curves, flow-model and heat-transfer
+# data, a valve's constant opening) are "lifted" into top-level parameters omct_<element>_<name>, which the probes
+# showed are changeable too. Media are packages: one per connected set (redeclare package Medium).
+MF = "Modelica.Fluid."
+FMEDIA = {          # name: (MSL package, class): liquid_const = constant density (the closed-loop rule applies)
+    "water": ("Modelica.Media.Water.ConstantPropertyLiquidWater", "liquid_const"),
+    "glycol47": ("Modelica.Media.Incompressible.Examples.Glycol47", "liquid"),
+    "essotherm650": ("Modelica.Media.Incompressible.Examples.Essotherm650", "liquid"),
+    "air": ("Modelica.Media.Air.DryAirNasa", "gas"),
+    "simple_air": ("Modelica.Media.Air.SimpleAir", "gas"),
+}
+FMEDIUM_KEYS = {"rho": "d_const", "cp": "cp_const", "eta": "eta_const", "lambda": "lambda_const"}
+
+
+def fmedium(v) -> dict:
+    """{name, msl (the package text), class} of a Modelica.Fluid medium value (an FMEDIA name or a custom liquid
+    {rho, cp[, eta, lambda]}: ConstantPropertyLiquidWater with those constants, probe P3)."""
+    if isinstance(v, str):
+        pkg, cls = FMEDIA[v]
+        return {"name": v, "msl": pkg, "class": cls}
+    d = dict(v)
+    args = ", ".join(f"{FMEDIUM_KEYS[k]}={float(d[k])!r}" for k in sorted(d))
+    return {"name": "custom", "msl": f"Modelica.Media.Water.ConstantPropertyLiquidWater({args})",
+            "class": "liquid_const"}
+
+
+def is_liquid(v) -> bool:
+    return fmedium(v)["class"].startswith("liquid")
+
+
+FMED = {"medium": P("1", None, structural=True, type="fmedium", msl=False,
+                    doc="one of " + ", ".join(FMEDIA) + ", or a liquid {rho, cp, eta, lambda} (SI); given on one "
+                        "component of a connected set, the others take it (default water)")}
+FAB_M = {"port_a": "mfluid", "port_b": "mfluid"}
+TWO_VARS = {"m_flow": "kg/s", "dp": "Pa", "p_a": "Pa", "p_b": "Pa"}
+TWO_PATHS = {"m_flow": "port_a.m_flow", "dp": [(1.0, "port_a.p"), (-1.0, "port_b.p")], "p_a": "port_a.p",
+             "p_b": "port_b.p"}
+DYN = {"fixed_initial": "FixedInitial", "steady_state_initial": "SteadyStateInitial",
+       "free_initial": "DynamicFreeInitial"}
+W_RPM = 60.0 / (2 * 3.141592653589793)          # rad/s -> rev/min (MSL pumps)
+
+kind("fl_system", MF + "System", {},
+     {"p_ambient": P("Pa", 101325.0, gt=0), "T_ambient": P("K", 293.15, gt=0, abs_T=True),
+      "g": P("m/s2", 9.80665, min=0), "m_flow_small": P("kg/s", 0.01, gt=0, doc="regularisation of small flows"),
+      "dp_small": P("Pa", 1.0, gt=0), "dynamics": P("1", "fixed_initial", type="enum", choices=list(DYN), msl=False,
+      structural=True, doc="energy and mass balances: fixed_initial (each storage starts at its T_start, p_start, "
+                           "level_start), steady_state_initial, free_initial"),
+      "allowFlowReversal": P("1", True, type="bool", structural=True)},
+     domain="mfluid",
+     mods={"energyDynamics": lambda p: "Modelica.Fluid.Types.Dynamics." + DYN[p["dynamics"]],
+           "massDynamics": lambda p: "Modelica.Fluid.Types.Dynamics." + DYN[p["dynamics"]]},
+     doc="Modelica.Fluid's system settings; the component must be named 'system' (one per study; omct adds one "
+         "with these defaults when absent)")
+kind("fl_boundary", MF + "Sources.Boundary_pT", {"port": "mfluid", "p_in": "in", "T_in": "in"},
+     {**FMED, "p": P("Pa", 101325.0, gt=0), "T": P("K", 293.15, gt=0, abs_T=True)},
+     multi={"port": ("ports", "nPorts")}, cond_ports={"p_in": "use_p_in", "T_in": "use_T_in"}, domain="mfluid",
+     fluid={"pressure_ref": True},
+     doc="a reservoir at p and T (inputs p_in [Pa], T_in [K] when connected); its port takes any number of "
+         "connections")
+kind("fl_mass_flow", MF + "Sources.MassFlowSource_T", {"port": "mfluid", "m_flow_in": "in", "T_in": "in"},
+     {**FMED, "m_flow": P("kg/s", 0.0, doc="into the network"), "T": P("K", 293.15, gt=0, abs_T=True)},
+     multi={"port": ("ports", "nPorts")}, cond_ports={"m_flow_in": "use_m_flow_in", "T_in": "use_T_in"},
+     domain="mfluid", doc="a prescribed mass flow into the network at T (inputs m_flow_in, T_in when connected)")
+
+
+def _flow_model(p, e):
+    f = p["friction"]
+    if f == "detailed":
+        return {}, {}
+    if f == "turbulent":
+        return {"FlowModel": "Modelica.Fluid.Pipes.BaseClasses.FlowModels.TurbulentPipeFlow"}, {}
+    cls = {"nominal_laminar": "NominalLaminarFlow", "nominal_turbulent": "NominalTurbulentPipeFlow"}[f]
+    return ({"FlowModel": f"Modelica.Fluid.Pipes.BaseClasses.FlowModels.{cls}(dp_nominal=omct_{e}_dp_nominal, "
+                          f"m_flow_nominal=omct_{e}_m_flow_nominal)"},
+            {"dp_nominal": p["dp_nominal"], "m_flow_nominal": p["m_flow_nominal"]})
+
+
+PIPE = {"length": P("m", gt=0), "diameter": P("m", gt=0), "roughness": P("m", 2.5e-5, min=0),
+        "height_ab": P("m", 0.0, doc="height of port_b over port_a"),
+        "nParallel": P("1", 1.0, gt=0, doc="identical pipes in parallel"),
+        "friction": P("1", "detailed", type="enum", structural=True, msl=False,
+                      choices=["detailed", "turbulent", "nominal_laminar", "nominal_turbulent"],
+                      doc="wall friction: detailed (laminar and turbulent, roughness; MSL's default), turbulent, or "
+                          "nominal_* through {dp_nominal, m_flow_nominal}"),
+        "dp_nominal": P("Pa", None, gt=0, msl=False), "m_flow_nominal": P("kg/s", None, gt=0, msl=False)}
+kind("fl_pipe", MF + "Pipes.StaticPipe", FAB_M, {**FMED, **PIPE}, TWO_VARS, var_paths=TWO_PATHS, domain="mfluid",
+     fluid={"build": _flow_model},
+     doc="a pipe without storage: wall friction and static head (height_ab)")
+
+
+def _dyn_pipe(p, e):
+    mods, lifted = _flow_model(p, e)
+    if p.get("_heat"):
+        ht = p["heat_transfer"]
+        if ht == "constant":
+            mods["HeatTransfer"] = ("Modelica.Fluid.Pipes.BaseClasses.HeatTransfer.ConstantFlowHeatTransfer("
+                                    f"alpha0=omct_{e}_alpha)")
+            lifted["alpha"] = p["alpha"]
+        elif ht == "local":
+            mods["HeatTransfer"] = "Modelica.Fluid.Pipes.BaseClasses.HeatTransfer.LocalPipeFlowHeatTransfer"
+    if p.get("_structure"):
+        mods["modelStructure"] = "Modelica.Fluid.Types.ModelStructure." + p["_structure"]
+    return mods, lifted
+
+
+# a DynamicPipe's length and height_ab are fixed when OpenModelica builds it (carbonio 2026-11-19, run_fl2_generated1:
+# "pipe.length, pipe.height_ab: OpenModelica fixed it when building"): structural here (a StaticPipe's change at run time)
+DPIPE = {**PIPE, "length": P("m", gt=0, structural=True), "height_ab": P("m", 0.0, structural=True,
+                                                                         doc="height of port_b over port_a")}
+kind("fl_dynamic_pipe", MF + "Pipes.DynamicPipe", {**FAB_M, "heat": "heat"},
+     {**FMED, **DPIPE, "nNodes": P("1", 2, type="int", structural=True, min=1, doc="volumes along the pipe"),
+      "heat_transfer": P("1", "ideal", type="enum", structural=True, msl=False, choices=["ideal", "constant", "local"],
+                         doc="with heat connected: ideal (wall = fluid temperature), constant {alpha}, local "
+                             "(Dittus-Boelter / laminar from the flow)"),
+      "alpha": P("W/(m2.K)", 1000.0, gt=0, msl=False, doc="heat transfer coefficient (heat_transfer constant)"),
+      "T_start": P("K", None, gt=0, abs_T=True), "p_a_start": P("Pa", None, gt=0), "p_b_start": P("Pa", None, gt=0)},
+     TWO_VARS, var_paths=TWO_PATHS, cond_ports={"heat": "use_HeatTransfer"}, domain="mfluid",
+     fluid={"build": _dyn_pipe, "volume": True, "collector": ("heat", "heatPorts", "nNodes")},
+     doc="a pipe with nNodes volumes (mass and energy storage); heat: one port joined to every volume's wall "
+         "(a ThermalCollector)")
+kind("fl_resistance", MF + "Fittings.GenericResistances.VolumeFlowRate", FAB_M,
+     {**FMED, "a": P("Pa.s2/m6", min=0, doc="dp = a V_flow^2 + b V_flow"), "b": P("Pa.s/m3", 0.0, min=0)},
+     {**TWO_VARS, "V_flow": "m3/s"}, var_paths=TWO_PATHS, domain="mfluid",
+     doc="a generic resistance dp = a V_flow|V_flow| + b V_flow (a fitting, a filter, a heat exchanger's side)")
+kind("fl_orifice", MF + "Fittings.SimpleGenericOrifice", FAB_M,
+     {**FMED, "diameter": P("m", gt=0), "zeta": P("1", gt=0, doc="loss factor: dp = zeta rho v^2 / 2")},
+     {**TWO_VARS, "V_flow": "m3/s"}, var_paths=TWO_PATHS, domain="mfluid", doc="a loss coefficient on a diameter")
+
+
+def _valve(p, e):
+    mods, lifted = {}, {}
+    given = [k for k in ("Kv", "Cv", "Av") if p.get(k) is not None]
+    mods["CvData"] = "Modelica.Fluid.Types.CvTypes." + (given[0] if given else "OpPoint")
+    ch = p["characteristic"]
+    if ch != "linear":
+        fn = {"quadratic": "quadratic", "equal_percentage": "equalPercentage(rangeability=omct_%s_rangeability)" % e}[ch]
+        mods["valveCharacteristic"] = "Modelica.Fluid.Valves.BaseClasses.ValveCharacteristics." + fn
+        if ch == "equal_percentage":
+            lifted["rangeability"] = p["rangeability"]
+    if not p.get("_opening_connected"):
+        mods["opening"] = f"omct_{e}_opening"
+        lifted["opening"] = p["opening"]
+    return mods, lifted
+
+
+VALVE = {"Kv": P("1", None, gt=0, doc="metric Kv [m3/h] (a number, as on data sheets)"),
+         "Cv": P("1", None, gt=0, doc="US Cv [USG/min]"), "Av": P("m2", None, gt=0),
+         "dp_nominal": P("Pa", gt=0, doc="the nominal operating point (sizing without Kv/Cv/Av, regularisation)"),
+         "m_flow_nominal": P("kg/s", gt=0),
+         "characteristic": P("1", "linear", type="enum", structural=True, msl=False,
+                             choices=["linear", "quadratic", "equal_percentage"]),
+         "rangeability": P("1", 20.0, gt=1, msl=False),
+         "opening": P("1", 1.0, min=0, max=1, msl=False, doc="constant opening when the opening input is not connected"),
+         "checkValve": P("1", False, type="bool", structural=True)}
+kind("fl_valve", MF + "Valves.ValveIncompressible", {**FAB_M, "opening": "in"}, {**FMED, **VALVE},
+     {**TWO_VARS, "V_flow": "m3/s"}, var_paths=TWO_PATHS, cond_ports={"opening": None}, domain="mfluid",
+     fluid={"build": _valve, "liquid_only": True},
+     doc="a valve for liquids (IEC 534): sized by one of Kv, Cv, Av, else by its op point; opening 0-1 (input or "
+         "constant)")
+kind("fl_valve_gas", MF + "Valves.ValveCompressible", {**FAB_M, "opening": "in"},
+     {**FMED, **VALVE, "p_nominal": P("Pa", gt=0, doc="nominal inlet pressure"),
+      "Fxt_full": P("1", 0.5, gt=0, doc="pressure-drop ratio factor at full opening")},
+     {**TWO_VARS, "V_flow": "m3/s"}, var_paths=TWO_PATHS, cond_ports={"opening": None}, domain="mfluid",
+     fluid={"build": _valve, "gas_only": True}, doc="a valve for gases (IEC 534, choked flow)")
+kind("fl_valve_linear", MF + "Valves.ValveLinear", {**FAB_M, "opening": "in"},
+     {**FMED, "dp_nominal": P("Pa", gt=0), "m_flow_nominal": P("kg/s", gt=0),
+      "opening": P("1", 1.0, min=0, max=1, msl=False)},
+     {**TWO_VARS, "V_flow": "m3/s"}, var_paths=TWO_PATHS, cond_ports={"opening": None}, domain="mfluid",
+     fluid={"build": lambda p, e: (({} if p.get("_opening_connected") else {"opening": f"omct_{e}_opening"}),
+                                   ({} if p.get("_opening_connected") else {"opening": p["opening"]}))},
+     doc="m_flow = m_flow_nominal opening dp / dp_nominal")
+
+
+def _pump(p, e):
+    pts = p["curve"]
+    n = len(pts)
+    fn = {2: "linearFlow", 3: "quadraticFlow"}.get(n, "polynomialFlow")
+    mods = {"flowCharacteristic": f"Modelica.Fluid.Machines.BaseClasses.PumpCharacteristics.{fn}("
+                                  f"V_flow_nominal=omct_{e}_V_curve, head_nominal=omct_{e}_head_curve)",
+            "efficiencyCharacteristic": "Modelica.Fluid.Machines.BaseClasses.PumpCharacteristics.constantEfficiency("
+                                        f"eta_nominal=omct_{e}_eta)"}
+    lifted = {"V_curve": [r[0] for r in pts], "head_curve": [r[1] for r in pts], "eta": p["eta"]}
+    if p.get("_w_in"):
+        mods["use_N_in"] = "true"
+    return mods, lifted
+
+
+PUMP = {"curve": P("1", type="table", structural=False, msl=False,
+                   doc="head curve [[V_flow (m3/s), head (m)], ...] at N_nominal: 2 points linear, 3 quadratic, "
+                       "more polynomial; head falling with flow"),
+        "N_nominal": P("rad/s", gt=0, doc="speed of the curve (units: '1450 rpm')"),
+        "eta": P("1", 0.8, gt=0, max=1, msl=False, doc="constant efficiency (power = rho g V head / eta)"),
+        "nParallel": P("1", 1, type="int", structural=True, min=1),
+        "V": P("m3", 0.0, min=0, structural=True, doc="volume inside (0: none)"),
+        "checkValve": P("1", False, type="bool", structural=True),
+        "m_flow_start": P("kg/s", None, doc="start guess of the flow"), "T_start": P("K", None, gt=0, abs_T=True)}
+PUMP_VARS = {"m_flow": "kg/s", "V_flow": "m3/s", "head": "m", "dp": "Pa", "W": "W", "eta": "1", "w": "rad/s"}
+PUMP_PATHS = {"dp": "dp_pump", "W": "W_total", "w": [(1.0 / W_RPM, "N")]}
+kind("fl_pump", MF + "Machines.PrescribedPump", {**FAB_M, "w_in": "in"},
+     {**FMED, **PUMP, "N": P("rad/s", None, gt=0, msl=False, doc="constant speed (default N_nominal)")},
+     PUMP_VARS, var_paths=PUMP_PATHS, cond_ports={"w_in": None}, domain="mfluid",
+     mods={"N_nominal": lambda p: p["N_nominal"] * W_RPM,
+           "N_const": lambda p: (p["N"] if p.get("N") is not None else p["N_nominal"]) * W_RPM},
+     fluid={"build": _pump, "pump": True, "speed_in": ("w_in", "N_in", W_RPM)},
+     doc="a centrifugal pump at a prescribed speed (constant N, or the input w_in [rad/s]); affinity laws off the "
+         "nominal speed")
+kind("fl_pump_shaft", MF + "Machines.Pump", {**FAB_M, "shaft": "flange_r"}, {**FMED, **PUMP},
+     PUMP_VARS, var_paths=PUMP_PATHS, domain="mfluid", mods={"N_nominal": lambda p: p["N_nominal"] * W_RPM},
+     fluid={"build": _pump, "pump": True},
+     doc="a centrifugal pump driven by its shaft (a motor or a speed source): torque = W / w")
+
+
+def _tank(p, e):
+    mods = {}
+    n = p.get("_n_ports") or 0
+    if p.get("port_diameter") is not None and n:
+        mods["portsData"] = "{" + ", ".join(
+            f"Modelica.Fluid.Vessels.BaseClasses.VesselPortsData(diameter={p['port_diameter']!r})" for _ in range(n)) + "}"
+        mods["use_portsData"] = "true"
+    else:
+        mods["use_portsData"] = "false"
+    return mods, {}
+
+
+kind("fl_tank", MF + "Vessels.OpenTank", {"port": "mfluid", "heatPort": "heat"},
+     {**FMED, "height": P("m", gt=0), "crossArea": P("m2", gt=0), "level_start": P("m", min=0),
+      "T_start": P("K", None, gt=0, abs_T=True),
+      "port_diameter": P("m", None, gt=0, msl=False, doc="diameter of every port (losses at the ports; none: no "
+                                                          "port losses)")},
+     {"level": "m", "m": "kg", "V": "m3", "T": "K"}, var_paths={"T": "medium.T"},
+     multi={"port": ("ports", "nPorts")}, cond_ports={"heatPort": "use_HeatTransfer"}, domain="mfluid",
+     fluid={"build": _tank, "pressure_ref": True, "vessel": True},
+     doc="an open tank at the system's p_ambient: level from the mass balance; ports at the bottom")
+kind("fl_volume", MF + "Vessels.ClosedVolume", {"port": "mfluid", "heatPort": "heat"},
+     {**FMED, "V": P("m3", gt=0), "p_start": P("Pa", None, gt=0), "T_start": P("K", None, gt=0, abs_T=True)},
+     {"p": "Pa", "T": "K", "m": "kg"}, var_paths={"p": "medium.p", "T": "medium.T"},
+     multi={"port": ("ports", "nPorts")}, cond_ports={"heatPort": "use_HeatTransfer"}, domain="mfluid",
+     text={"use_portsData": "false"}, fluid={"volume": True, "vessel": True},
+     doc="a closed volume (ideally mixed); compressible media store mass, liquids only energy")
+kind("fl_pressure", MF + "Sensors.Pressure", {"port": "mfluid", "p": "out"}, FMED, domain="mfluid",
+     doc="p = the port's pressure [Pa]")
+kind("fl_temperature", MF + "Sensors.TemperatureTwoPort", {**FAB_M, "T": "out"}, FMED, domain="mfluid",
+     doc="T = the temperature of the flow through it [K]")
+kind("fl_mass_flow_sensor", MF + "Sensors.MassFlowRate", {**FAB_M, "m_flow": "out"}, FMED, domain="mfluid",
+     doc="m_flow from port_a to port_b [kg/s]")
+kind("fl_volume_flow_sensor", MF + "Sensors.VolumeFlowRate", {**FAB_M, "V_flow": "out"}, FMED, domain="mfluid",
+     doc="V_flow from port_a to port_b [m3/s]")
+kind("fl_relative_pressure", MF + "Sensors.RelativePressure", {**FAB_M, "p_rel": "out"}, FMED, domain="mfluid",
+     doc="p_rel = port_a.p - port_b.p [Pa]")
+FL_OUT_UNITS = {("fl_pressure", "p"): "Pa", ("fl_temperature", "T"): "K", ("fl_mass_flow_sensor", "m_flow"): "kg/s",
+                ("fl_volume_flow_sensor", "V_flow"): "m3/s", ("fl_relative_pressure", "p_rel"): "Pa"}
+
+OUT_UNITS.update(FL_OUT_UNITS)
 
 
 # ------------------------------------------------------------------------------------------- helpers

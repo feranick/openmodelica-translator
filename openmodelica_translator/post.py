@@ -1,5 +1,5 @@
 """post.py — results from the simulated series: outputs, derived quantities, steady states, comparisons, expect.
-Version: 2026.10.21.22
+Version: 2026.11.19.10
 
 outputs(t, values, units)      {name: {unit, finite, initial, final, min, max, t_min, t_max, series: {t, y}}}
                                (series: <= 400 points, 6 significant digits, for plotting)
@@ -177,6 +177,9 @@ def derived(t, values: dict, specs: list, t_start: float, level_si=None) -> dict
 
 
 # ---- comparisons ----------------------------------------------------------------------------------
+CONSTANT_REL = 1e-9    # an output whose range is below this x its size is constant (rounding noise only)
+
+
 def not_events(t) -> np.ndarray:
     """Mask of the points that are not on either side of an event (a repeated time)."""
     t = np.asarray(t, float)
@@ -196,7 +199,8 @@ def compare(a, b, mask=None, floor=0.0) -> float:
     if a.size == 0:
         return 0.0
     scale = float(np.max(b) - np.min(b))
-    scale = scale if scale > 0 else float(np.max(np.abs(b)))
+    size = float(np.max(np.abs(b)))
+    scale = scale if scale > CONSTANT_REL * size else size        # constant up to rounding: on its size
     return float(np.max(np.abs(a - b)) / max(scale, floor, 1e-300))
 
 

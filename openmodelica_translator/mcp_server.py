@@ -1,6 +1,6 @@
 """mcp_server.py — MCP server: lets LLM-based tools simulate systems (circuits, drives, heat paths, controllers)
 with OpenModelica and the Modelica Standard Library.
-Version: 2026.11.19.8
+Version: 2026.11.19.10
 
 Tools (all JSON):
   study_format      the study format: component kinds, ports, parameters, analyses, conventions. Read it first.
@@ -149,10 +149,11 @@ def _watch_install(period: float | None = None) -> None:
 
 @server.tool()
 @GUARD.tool(ToolError)
-def study_format() -> dict:
+def study_format(topic: str | None = None) -> dict:
     """The study format: component kinds by domain (ports, parameters with SI units and defaults, variables,
-    initial values), analyses, derived quantities, conventions, an example; and whether omc and MSL are found."""
-    return api.study_format()
+    initial values), analyses, derived quantities, conventions, an example; and whether omc and MSL are found.
+    topic='fluid': the Modelica.Fluid kinds (pipes, valves, pumps, tanks with real media), read before using them."""
+    return api.study_format(topic)
 
 
 @server.tool()

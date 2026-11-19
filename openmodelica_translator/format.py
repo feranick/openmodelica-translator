@@ -1,5 +1,5 @@
 """format.py — the study format (study_format) and the static checks (validate, validate_study).
-Version: 2026.11.19.8
+Version: 2026.11.19.10
 
 validate_study(study) -> {ok, errors, warnings}: nothing runs (no omc). It resolves the network (network.build),
 checks outputs, analysis, derived quantities, sweep, expect, run (against the OMCT_MAX_* caps) and images, then
@@ -29,7 +29,7 @@ STUDY_KEYS = {
     "fit": "{params: {'comp.param' | 'comp.v0': {initial, min, max, scale: lin | log}}, data: {output: {t, y, unit, "
            "t_unit, sigma, weight} | {csv, t, y (columns), ...}}, steady: [{set: {path: value}, values: {output: "
            "value}, sigma}], starts (1), max_evaluations (400)}: parameter estimation -> fit.params.<p>.{value, stderr, "
-           "ci95}, correlation, identifiable, quality; outputs from a run at the best values; run.timeout_s: the whole fit",
+           "ci95}, correlation, identifiable, quality; run.timeout_s: the whole fit",
     "cross_check": "modelica only (true): rerun with the other integrator -> checks.cross_solver; false skips",
     "invariants": "[{signal, kind: zero (abs) | constant (abs | rel), name?}] -> checks.invariants",
     "converge": "true | {abs_tol: {output: value}}: rerun at tolerance/10; a change over max(1e-4, 100 x tolerance) "
@@ -76,8 +76,7 @@ CONVENTIONS = [
     "each thermal network a capacitor or a fixed/prescribed temperature. Every signal input is driven by one output.",
     "Coolant loops (Thermal.FluidHeatFlow, incompressible, constant properties): fluid ports flowPort_a/flowPort_b "
     "(flow a -> b positive); every loop has one medium (all its components: medium = a name in 'media' or {rho, cp, "
-    "cv, lambda, nu}) and a pressure reference (pressure_reference in a closed loop, ambients at open ends). Pumps: "
-    "volume_flow, pressure_increase (or their signal_ forms), ideal_pump (driven by its flange). Pipes: give "
+    "cv, lambda, nu}) and a pressure reference (pressure_reference in a closed loop, ambients at open ends). Pipes: give "
     "V_flowNominal and dpNominal (the operating point), m (kg of medium inside) for temperature dynamics, and "
     "connect heatPort to a thermal network for heat exchange (connecting it switches it on). T of a component is its outlet temperature; at junctions streams mix.",
     "Three-phase: a plug (plug_p, plug_n, ...) is three pins; plugs connect to plugs phase by phase. Sources are "
@@ -131,6 +130,8 @@ def _kind_line(name: str) -> str:
         tag = "*" if s["structural"] else ""
         if s["type"] == "medium":
             ps.append(f"{p}*={d}")
+        elif s["type"] == "fmedium":
+            ps.append(f"{p}*")
         elif s["type"] in ("enum",):
             ps.append(f"{p}{tag}={'|'.join(s['choices'])}" + (f"({d})" if d is not C.REQ and d is not None else ""))
         elif d is C.REQ:
@@ -154,11 +155,50 @@ def _kind_line(name: str) -> str:
     return out
 
 
-def study_format() -> dict:
+FLUID_TOPIC = {
+    "about": "Modelica.Fluid (MSL 4.0.0): real media (liquids, ideal-gas air), pipes sized by geometry, valves, pumps "
+             "on head curves, tanks; port type mfluid (p, m_flow; temperatures travel with the flow). FluidHeatFlow "
+             "coolant kinds (pipe, volume_flow, ...) are a separate, simpler domain: the two never connect.",
+    "conventions": [
+        "Medium: one per connected circuit, given on any of its components (the others take it; default water): "
+        "water (constant properties), glycol47, essotherm650 (T-dependent), air (ideal gas), simple_air, or a liquid "
+        "{rho, cp, eta, lambda}. A medium is structural (a rebuild).",
+        "Every circuit needs a pressure: an fl_boundary or an fl_tank (gases: also an fl_volume). Ports of "
+        "fl_boundary, fl_mass_flow, fl_tank and fl_volume take any number of connections ('tank.port' each time); "
+        "three or more connections at one port mix ideally.",
+        "Closed loops of a constant-density liquid (water, a custom liquid): no fl_volume and no fl_dynamic_pipe on "
+        "the loop, except a dynamic pipe right after one pump (OpenModelica 1.27.2 cannot build them); heated closed "
+        "liquid loops: the coolant kinds. Open circuits and gases: no limit.",
+        "fl_system (named 'system') sets p_ambient, T_ambient, g and the initial balances (default fixed_initial: "
+        "storages start at T_start, p_start, level_start); omct adds one when absent.",
+        "Speeds in rad/s ('1450 rpm' allowed): fl_pump N_nominal, N, input w_in. Pump curve [[V_flow m3/s, head m], "
+        "...] with head falling. Valves: Kv [m3/h] or Cv [USG/min] or Av [m2], else the op point (dp_nominal, "
+        "m_flow_nominal, always required); opening 0-1 constant or the input. Pipe dp = port_a.p - port_b.p "
+        "(friction + rho g height_ab).",
+        "Outputs: comp.var (vars below), comp.port_a.p / .m_flow (into the component), sensors' signal outputs. "
+        "Checks: the reference does not cover Modelica.Fluid yet (cross-solver and balances: coming).",
+    ],
+}
+
+
+def fluid_kinds() -> list[str]:
+    return [n for n in C.public_kinds() if C.KINDS[n].get("domain") == "mfluid"]
+
+
+def study_format(topic: str | None = None) -> dict:
+    if topic is not None:
+        if topic != "fluid":
+            return {"error": f"unknown topic '{topic}' (topics: fluid)"}
+        return {"topic": "fluid", **FLUID_TOPIC, "kinds": {n: _kind_line(n) for n in fluid_kinds()},
+                "media": {n: v[0] for n, v in C.FMEDIA.items()},
+                "kinds_legend": "as in study_format(): ports | parameters [SI unit]=default (* structural) | vars"}
     domains = {
         "electrical": [], "quasi-static": [], "translational": [], "rotational": [], "thermal": [], "fluid": [],
         "signals": []}
+    fl = set(fluid_kinds())
     for name in C.public_kinds():
+        if name in fl:
+            continue
         pts = C.port_types(name).values()
         doms = {C.domain_of(t) for t in pts}
         d = next((x for x in ("fluid", "quasi-static", "electrical", "translational", "rotational", "thermal") if x in doms),
@@ -174,7 +214,9 @@ def study_format() -> dict:
                             "name* structural; [*] a signal value: any unit, converted to SI) | vars (outputs: comp.var; ports: comp.port.v/i, .s/.f, .phi/.tau, "
                             ".T/.Q_flow, .p/.m_flow/.h/.H_flow) | init (initial values) | equation",
             "media": {"columns": "rho, cp, cv, lambda, nu (SI)", **{n: list(v[1:6]) for n, v in C.MEDIA.items()}},
-            "example": EXAMPLE}
+            "example": EXAMPLE,
+            "topics": {"fluid": "Modelica.Fluid kinds fl_* (real media, pipes, valves, pumps, tanks): "
+                                "study_format(topic='fluid')"}}
 
 
 # ------------------------------------------------------------------------------------------- run caps

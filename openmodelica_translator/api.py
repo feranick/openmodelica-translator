@@ -1,5 +1,5 @@
 """api.py — what the CLI and the MCP server call. JSON in, JSON out.
-Version: 2026.11.19.8
+Version: 2026.11.19.10
 
     tool_status()                  versions; omc, MSL, the C compiler, the build cache; the executor and its caps
     study_format()                 the study format, with status
@@ -83,7 +83,9 @@ def tool_status() -> dict:
     return out
 
 
-def study_format() -> dict:
+def study_format(topic: str | None = None) -> dict:
+    if topic is not None:
+        return {**_format(topic), "translator": __version__}
     return {**_format(), "translator": __version__, "status": tool_status()}
 
 

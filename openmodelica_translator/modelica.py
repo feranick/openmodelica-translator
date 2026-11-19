@@ -1,5 +1,5 @@
 """modelica.py — a study -> the Modelica model, the omc build script, and the values applied at run time.
-Version: 2026.10.26.1
+Version: 2026.11.19.10
 
 translate(study, name) -> Translation with
   text        model.mo: `model omct_model` with one declaration per element (sorted), every value in SI with
@@ -53,17 +53,74 @@ class Translation:
     pass
 
 
+def _has_medium(d, typ):
+    spec = C.KINDS[d["kind"]]["params"].get("medium")
+    return spec is not None and spec["type"] == typ and d["params"].get("medium") is not None
+
+
 def media(net) -> dict:
     """{repr(medium value): top-level parameter name}: one Medium record per distinct medium (coolant loops)."""
     if getattr(net, "media_names", None) is None:
-        vals = sorted({repr(d["params"]["medium"]) for d in net.elems.values() if "medium" in C.KINDS[d["kind"]]["params"]
-                       and d["params"].get("medium") is not None})
+        vals = sorted({repr(d["params"]["medium"]) for d in net.elems.values() if _has_medium(d, "medium")})
         net.media_names = {v: f"omct_medium_{i + 1}" for i, v in enumerate(vals)}
         net.media_values = {}
         for d in net.elems.values():
-            if "medium" in C.KINDS[d["kind"]]["params"] and d["params"].get("medium") is not None:
+            if _has_medium(d, "medium"):
                 net.media_values[repr(d["params"]["medium"])] = d["params"]["medium"]
     return net.media_names
+
+
+def fmedia(net) -> dict:
+    """{repr(medium value): package name}: one Modelica.Fluid medium package per distinct medium (V5)."""
+    if getattr(net, "fmedia_names", None) is None:
+        vals = {}
+        for d in net.elems.values():
+            if _has_medium(d, "fmedium"):
+                vals[repr(d["params"]["medium"])] = d["params"]["medium"]
+        net.fmedia_names = {v: f"omct_fmedium_{i + 1}" for i, v in enumerate(sorted(vals))}
+        net.fmedia_values = vals
+    return net.fmedia_names
+
+
+REDECLARE = {"FlowModel": "model", "HeatTransfer": "model", "flowCharacteristic": "function",
+             "efficiencyCharacteristic": "function", "valveCharacteristic": "function"}
+
+
+def fluid_parts(net, e: str):
+    """(structural modifiers {name: text}, lifted {name: value}) of a Modelica.Fluid element: its kind's build
+    function (curves, flow models, heat transfer, a constant valve opening), nPorts, the medium package."""
+    d = net.elems[e]
+    k = C.KINDS[d["kind"]]
+    fk = k.get("fluid") or {}
+    mods, lifted = (fk["build"](d["params"], e) if fk.get("build") else ({}, {}))
+    for base, (_, size) in k.get("multi", {}).items():
+        mods[size] = str(d.get("multi_n", {}).get(base, 0))
+    if _has_medium(d, "fmedium"):
+        mods["Medium"] = fmedia(net)[repr(d["params"]["medium"])]
+    return mods, lifted
+
+
+def helpers(net, e: str):
+    """(declarations, connections) of the helper components omct adds next to a Modelica.Fluid element: a
+    ThermalCollector joining a dynamic pipe's nNodes wall ports into one heat port, a Gain turning a pump's speed
+    input from rad/s into MSL's rev/min. Their study ports are redirected (net.mpath)."""
+    d = net.elems[e]
+    fk = C.KINDS[d["kind"]].get("fluid") or {}
+    decls, conns = [], []
+    col = fk.get("collector")
+    if col and col[0] in d.get("enabled", ()):
+        port, vec, size = col
+        decls.append(f"  Modelica.Thermal.HeatTransfer.Components.ThermalCollector omct_{e}_coll(m={int(d['params'][size])}) "
+                     f"\"{d['comp']}: its {port} port\";")
+        conns.append((f"{e}.{vec}", f"omct_{e}_coll.port_a"))
+        d.setdefault("redirect", {})[port] = f"omct_{e}_coll.port_b"
+    sp = fk.get("speed_in")
+    if sp and sp[0] in d.get("enabled", ()):
+        port, msl_in, gain = sp
+        decls.append(f"  Modelica.Blocks.Math.Gain omct_{e}_rpm(k={fmt(gain)}) \"{d['comp']}: {port} rad/s to rev/min\";")
+        conns.append((f"omct_{e}_rpm.y", f"{e}.{msl_in}"))
+        d.setdefault("redirect", {})[port] = f"omct_{e}_rpm.u"
+    return decls, conns
 
 
 def element_values(net, e: str, selected: set):
@@ -100,10 +157,13 @@ def element_values(net, e: str, selected: set):
             values[mname] = float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else v
     for mname, text in k["text"].items():
         structural[mname] = text
-    if "medium" in k["params"] and p.get("medium") is not None:
+    if _has_medium(d, "medium"):
         structural["medium"] = media(net)[repr(p["medium"])]
+    if k.get("domain") == "mfluid":
+        fmods, _ = fluid_parts(net, e)
+        structural.update(fmods)
     for port, flag in k.get("cond_ports", {}).items():
-        if port in d.get("enabled", ()):
+        if flag is not None and port in d.get("enabled", ()):
             structural[flag] = "true"
     starts = {}
     for iname, spec in k["inits"].items():
@@ -131,6 +191,12 @@ def _decl(net, e, selected, placeholder: bool):
     mods, nested = [], {}
     for name in sorted(set(structural) | set(values)):
         text = structural[name] if name in structural else _vtext(values[name], placeholder)
+        if name == "Medium":
+            mods.append(f"redeclare package Medium = {text}")
+            continue
+        if name in REDECLARE:
+            mods.append(f"redeclare {REDECLARE[name]} {name} = {text}")
+            continue
         if "." in name:                        # a record's field: frictionParameters(PRef=...)
             rec, field = name.split(".", 1)
             nested.setdefault(rec, []).append(f"{field}={text}")
@@ -138,7 +204,7 @@ def _decl(net, e, selected, placeholder: bool):
             mods.append(f"{name}={text}")
     for rec in sorted(nested):
         mods.append(f"{rec}({', '.join(nested[rec])})")
-    mods.sort(key=lambda m: m.split("(")[0].split("=")[0])
+    mods.sort(key=lambda m: m.split("(")[0].split("=")[0].replace("redeclare ", "~"))
     for var in sorted(starts):
         st = starts[var]
         if isinstance(st, tuple):              # per phase: start for all, fixed where free
@@ -148,7 +214,8 @@ def _decl(net, e, selected, placeholder: bool):
             mods.append(f"{var}(start={_vtext(st, placeholder)}, fixed=true)")
     m = "(" + ", ".join(mods) + ")" if mods else ""
     comment = f' "{d["comp"]}: {d["kind"]}' + (f' ({d["part"]})' if d["part"] else "") + '"'
-    return f"  {k['msl']} {e}{m}{comment};"
+    inner = "inner " if d["kind"] == "fl_system" else ""
+    return f"  {inner}{k['msl']} {e}{m}{comment};"
 
 
 def translate(study: dict, name: str = "study", ref=None) -> Translation:
@@ -173,13 +240,36 @@ def translate(study: dict, name: str = "study", ref=None) -> Translation:
     for oname, oref in (study.get("outputs") or {}).items():
         tr.outputs[oname] = net.var_expr(oref)
 
+    fluid = any(C.KINDS[d["kind"]].get("domain") == "mfluid" for d in net.elems.values())
+    lifted, hdecls, hconns = {}, [], []
+    for e in sorted(net.elems):
+        if C.KINDS[net.elems[e]["kind"]].get("domain") == "mfluid":
+            _, lf = fluid_parts(net, e)
+            for lname, v in lf.items():
+                lifted[f"omct_{e}_{lname}"] = [float(x) for x in v] if isinstance(v, list) else float(v)
+            dl, cl = helpers(net, e)
+            hdecls += dl
+            hconns += cl
+
     def body(placeholder: bool):
         lines = []
         for rv, mname in sorted(media(net).items(), key=lambda x: x[1]):
             lines.append(f"  parameter Modelica.Thermal.FluidHeatFlow.Media.Medium {mname} = "
                          f"{C.medium_props(net.media_values[rv])['msl']} \"coolant medium\";")
+        for rv, pname in sorted(fmedia(net).items(), key=lambda x: x[1]):
+            lines.append(f"  package {pname} = {C.fmedium(net.fmedia_values[rv])['msl']} \"Modelica.Fluid medium\";")
+        for lname, v in sorted(lifted.items()):
+            if isinstance(v, list):
+                lines.append(f"  parameter Real {lname}[{len(v)}] = {_vtext(v, placeholder)};")
+            else:
+                lines.append(f"  parameter Real {lname} = {_vtext(float(v), placeholder)};")
+        if fluid and "system" not in net.elems:
+            lines.append("  inner Modelica.Fluid.System system(energyDynamics=Modelica.Fluid.Types.Dynamics.FixedInitial, "
+                         "massDynamics=Modelica.Fluid.Types.Dynamics.FixedInitial) \"Modelica.Fluid settings (omct's "
+                         "defaults)\";")
         for e in sorted(net.elems):
             lines.append(_decl(net, e, selected, placeholder))
+        lines += hdecls
         if lin:
             for iname in sorted(net.free_inputs):
                 lines.append(f"  Modelica.Blocks.Interfaces.RealInput omct_u_{iname} \"linearisation input\";")
@@ -187,6 +277,7 @@ def translate(study: dict, name: str = "study", ref=None) -> Translation:
                 lines.append(f"  Modelica.Blocks.Interfaces.RealOutput omct_y_{oname} \"output {oname}\";")
         lines.append("equation")
         pairs = sorted(tuple(sorted((net.mpath(a), net.mpath(b)))) for a, b in net.conns)
+        pairs = sorted(set(pairs) | {tuple(sorted(c)) for c in hconns})
         for a, b in pairs:
             lines.append(f"  connect({a}, {b});")
         if lin:
@@ -224,6 +315,12 @@ def translate(study: dict, name: str = "study", ref=None) -> Translation:
                         ov[f"{e}.{var}[{j + 1}]"] = x
             else:
                 ov[f"{e}.{var}"] = v
+    for lname, v in lifted.items():                      # lifted Modelica.Fluid values (top-level parameters)
+        if isinstance(v, list):
+            for j, x in enumerate(v):
+                ov[f"{lname}[{j + 1}]"] = x
+        else:
+            ov[lname] = v
     tr.overrides = ov
     tr.fixed = sorted(f"{net.elems[e]['comp']}.{i}" if net.elems[e]["part"] is None else f"{e}.{i}" for e, i in selected)
     # (per-phase initial values appear as name[k])

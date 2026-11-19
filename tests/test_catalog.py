@@ -1,5 +1,5 @@
 """test_catalog.py — the catalog is consistent, matches MSL 4.0.0, and the reference covers every variable.
-Version: 2026.10.21.25
+Version: 2026.11.19.10
 """
 import importlib.util
 import os
@@ -82,7 +82,8 @@ SAMPLE = {"table": [[0.0, 0.0], [1.0, 1.0]], "b": [1.0], "a": [1.0, 1.0], "contr
           "TorqueDirection": False}
 
 
-@pytest.mark.parametrize("kname", sorted(k for k, v in C.KINDS.items() if v.get("parts") is None))
+@pytest.mark.parametrize("kname", sorted(k for k, v in C.KINDS.items() if v.get("parts") is None
+                                         and v.get("domain") != "mfluid"))     # Modelica.Fluid: FL4
 def test_reference_covers_every_variable(kname):
     k = C.KINDS[kname]
     params = {}

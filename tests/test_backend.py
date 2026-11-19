@@ -1,6 +1,6 @@
 """test_backend.py — the omc driver, the runner and the result reading: on outputs recorded on mochi
 (tests/fixtures), with a fake omc (tests/fake_omc.py), and with the real OpenModelica when it is installed.
-Version: 2026.11.19.2
+Version: 2026.11.19.10
 """
 import json
 import math
@@ -457,3 +457,21 @@ def test_converge_limit_matches_the_reference_check():
     y = np.sin(6 * t)
     assert judge_converge(y, y + 3.5e-5 * np.ptp(y), converge_limit(1e-7), 1e-7)["ok"]
     assert not judge_converge(y, y + 2e-4 * np.ptp(y), converge_limit(1e-7), 1e-7)["ok"]
+
+
+def test_minmax_violations_are_warnings():
+    # MSL Fluid's PumpingSystem on carbonio (2026-11-19): OpenModelica reported two min/max violations as LOG_ASSERT
+    # warning/info and finished; omct called the run failed
+    m = simrun.parse_log((FIX / "run_minmax.log").read_text())
+    assert m["finished"] and m["init_ok"] and m["asserts"] == []
+    assert m["minmax"][0]["what"].startswith("0.0 <= pipe.flowModel.m_flows[1]") and m["minmax"][0]["t"] == 0.0
+    assert m["minmax"][1]["value"] == "1" and m["minmax"][1]["t"] == 200.0
+
+
+def test_constant_up_to_rounding_is_judged_on_its_size():
+    from openmodelica_translator.post import compare
+    from openmodelica_translator.runner import allowed
+    y = np.full(20, 4.779039069824914)
+    y[3] += 1e-15                                       # rounding: range 1e-15 of a 4.78 output
+    assert allowed(y, 1e-4, 1e-6) == 1e-4               # was 10 tol mag / range = 4.8e7
+    assert compare(y * (1 + 1e-6), y) == pytest.approx(1e-6, rel=1e-3)

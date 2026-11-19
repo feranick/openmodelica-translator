@@ -1,6 +1,6 @@
 """network.py — a study's components, values and connections, resolved: the common ground of validation, the
 Modelica generator and the reference implementation.
-Version: 2026.10.21.25
+Version: 2026.11.19.10
 
 build(study) -> Net, with net.errors (each says the fix) and net.warnings. It
   - resolves kinds (or "msl" class paths) and parameter values to SI (units.to_si), with defaults;
@@ -53,7 +53,10 @@ class Net:
 
     def port_type(self, eport: str) -> str:
         e, p = eport.split(".", 1)
-        ports = C.KINDS[self.elems[e]["kind"]]["ports"]
+        k = C.KINDS[self.elems[e]["kind"]]
+        ports = k["ports"]
+        if "[" in p and p.split("[", 1)[0] in k.get("multi", {}):      # one connection of a multi port
+            return ports[p.split("[", 1)[0]]
         if ".pin[" in p:                      # a phase of a plug
             return "qs_pin" if ports[p.split(".", 1)[0]] == "qs_plug" else "pin"
         if p.endswith((".re", ".im")) and "[" in p:      # a part of an element of a complex vector signal
@@ -68,6 +71,13 @@ class Net:
         if ".pin[" in p:
             q, k = p.split(".", 1)
             return f"{e}." + C.PORT_PATHS.get((self.elems[e]["kind"], q), q) + "." + k
+        kd = C.KINDS[self.elems[e]["kind"]]
+        if "[" in p and p.split("[", 1)[0] in kd.get("multi", {}):    # ports[k] of a Modelica.Fluid vessel
+            base, idx = p.split("[", 1)
+            return f"{e}.{kd['multi'][base][0]}[{idx}"
+        redirect = self.elems[e].get("redirect", {})
+        if p in redirect:                    # a port of a helper the generator adds (a collector, a gain)
+            return redirect[p]
         return f"{e}." + C.PORT_PATHS.get((self.elems[e]["kind"], p), p)
 
     def pins(self, eport: str) -> list:
@@ -95,7 +105,10 @@ class Net:
                         part, pv = t.strip().split(".", 1)
                         terms += self.var_expr_elem(f"{comp}__{part}", pv)[0]
                     return terms, unit
-                return [(1.0, f"{comp}.{C.var_path(kname, v)}")], k["vars"][v]
+                vp = C.var_path(kname, v)
+                if isinstance(vp, list):            # a sum of variables (a pipe's dp)
+                    return [(float(c), f"{comp}.{q}") for c, q in vp], k["vars"][v]
+                return [(1.0, f"{comp}.{vp}")], k["vars"][v]
             if v in pts and pts[v] in ("in", "out"):
                 ep = self.elem_port(comp, v)
                 e, p = ep.split(".", 1)
@@ -160,6 +173,21 @@ def _value(spec, v, where, rec_key, net):
                 raise UnitError(f"{where}: medium properties are positive numbers (SI)")
             return {k: float(x) for k, x in sorted(v.items())}
         raise UnitError(f"{where}: a medium name ({', '.join(C.MEDIA)}) or {{rho, cp, cv, lambda, nu}}")
+    if typ == "fmedium":
+        if isinstance(v, str):
+            if v not in C.FMEDIA:
+                raise UnitError(f"{where}: unknown Modelica.Fluid medium '{v}' (media: {', '.join(C.FMEDIA)}, or a "
+                                f"liquid {{rho, cp, eta, lambda}})")
+            return v
+        if isinstance(v, dict):
+            bad = set(v) - set(C.FMEDIUM_KEYS)
+            if bad or not {"rho", "cp"} <= set(v):
+                raise UnitError(f"{where}: a custom liquid has rho [kg/m3] and cp [J/(kg.K)], optionally eta [Pa.s] and "
+                                f"lambda [W/(m.K)] (SI numbers){'; unknown ' + str(sorted(bad)) if bad else ''}")
+            if not all(isinstance(x, (int, float)) and not isinstance(x, bool) and x > 0 for x in v.values()):
+                raise UnitError(f"{where}: medium properties are positive numbers (SI)")
+            return {k: float(x) for k, x in sorted(v.items())}
+        raise UnitError(f"{where}: a medium name ({', '.join(C.FMEDIA)}) or a liquid {{rho, cp, eta, lambda}}")
     if typ == "table":
         ok = isinstance(v, list) and len(v) >= 1 and all(isinstance(r, list) and len(r) == 2 and all(
             isinstance(x, (int, float)) and not isinstance(x, bool) for x in r) for r in v)
@@ -442,8 +470,9 @@ def _connections(study, net):
             net.errors.append(f"{w}: connect the port group {ca}.{pa} to one port, not to another group")
             continue
         net.study_conns.append((f"{ca}.{pa}", f"{cb}.{pb}"))
+        pa_, pb_ = _multi_index(net, ca, pa), _multi_index(net, cb, pb)
         pairs = [(net.elem_port(ca, m), net.elem_port(cb, pb)) for m in ga] if ga else \
-            [(net.elem_port(ca, pa), net.elem_port(cb, m)) for m in gb] if gb else [(net.elem_port(ca, pa), net.elem_port(cb, pb))]
+            [(net.elem_port(ca, pa), net.elem_port(cb, m)) for m in gb] if gb else [(net.elem_port(ca, pa_), net.elem_port(cb, pb_))]
         for a, b in pairs:
             net.conns.append((a, b))
             for ep in (a, b):
@@ -457,12 +486,24 @@ def _connections(study, net):
         for port, flag in k["cond_ports"].items():
             flags.setdefault(flag, []).append(port)
         for flag, ports in flags.items():
+            if flag is None:                   # optional ports without an MSL switch (a valve's opening input)
+                continue
             on = [p for p in ports if p in d["enabled"]]
             if on and len(on) < len(ports):
                 grp = next((g for g, m in k.get("port_groups", {}).items() if set(m) == set(ports)), None)
                 net.errors.append(f"{d['comp']}: heat ports {sorted(set(ports) - set(on))} are not connected: connect "
                                   + (f"{d['comp']}.{grp} (every loss into one node) or " if grp else "") +
                                   f"all of {ports}")
+
+
+def _multi_index(net, comp, port):
+    """A multi port (Modelica.Fluid's ports[nPorts]): each connection its own element, 'port[k]'."""
+    d = net.elems.get(comp)
+    if d is None or port not in C.KINDS[d["kind"]].get("multi", {}):
+        return port
+    n = d.setdefault("multi_n", {}).get(port, 0) + 1
+    d["multi_n"][port] = n
+    return f"{port}[{n}]"
 
 
 class _UF:
@@ -492,6 +533,13 @@ def _topology(study, net):
             if p in k["cond_ports"] and p not in d["enabled"]:
                 continue
             ep = f"{e}.{p}"
+            if p in k.get("multi", {}):
+                n = d.get("multi_n", {}).get(p, 0)
+                if n == 0:
+                    net.errors.append(f"{_study_port(net, ep)} is not connected: connect it (it takes any number of "
+                                      f"connections)")
+                phys += [f"{ep}[{j}]" for j in range(1, n + 1)]
+                continue
             if t == "in":
                 sig_in.append(ep)
             elif t == "out":
@@ -571,8 +619,13 @@ def _topology(study, net):
                 if C.domain_of(t) != "signal":
                     by_dom.setdefault(C.domain_of(t), []).append(p)
             groups = list(by_dom.values())
-        groups = [[x for q in g for x in (net.pins(f"{e}.{q}") if (q not in k["cond_ports"] or q in d["enabled"]) else [])
-                   if x in net.node_of] for g in groups]
+        multi_n = d.get("multi_n", {})
+
+        def expand(q):
+            if q in k.get("multi", {}):
+                return [f"{e}.{q}[{j}]" for j in range(1, multi_n.get(q, 0) + 1)]
+            return net.pins(f"{e}.{q}") if (q not in k["cond_ports"] or q in d["enabled"]) else []
+        groups = [[x for q in g for x in expand(q) if x in net.node_of] for g in groups]
         for g in groups:
             for x in g[1:]:
                 isl.union(net.node_of[g[0]], net.node_of[x])
@@ -619,6 +672,7 @@ def _topology(study, net):
                 desc = "; ".join(f"{m} ({', '.join(sorted(set(c))[:4])})" for m, c in media.items())
                 net.errors.append(f"the coolant loop of {label} mixes media ({desc}): give every component of a loop "
                                   f"the same medium")
+    _fluid_sets(net, members)
     # unconnected physical ports
     connected = {y for c in net.conns for x in c for y in (net.pins(x) if C.domain_of(net.port_type(x)) != "signal" else [x])}
     reported = set()
@@ -644,6 +698,9 @@ def _topology(study, net):
             elif t == "fluid":
                 net.errors.append(f"{ref} is not connected (an open fluid port is a closed end: no flow): connect it, "
                                   f"or end the line in an ambient")
+            elif t == "mfluid":
+                net.errors.append(f"{ref} is not connected (a closed end: no flow): connect it, or end the line in an "
+                                  f"fl_boundary")
             elif t == "heat" and kname not in ("heat_capacitor",):
                 net.warnings.append(f"{ref} is not connected: no heat flows through it (adiabatic)")
             elif t in ("flange_t", "flange_r") and kname not in ("mass", "inertia"):
@@ -672,3 +729,176 @@ def _study_port(net, eport):
         if target == f"{d['part']}.{p}":
             return f"{d['comp']}.{sp}"
     return f"{d['comp']} (inside: {d['part']}.{p})"
+
+
+# ---- Modelica.Fluid (V5) ---------------------------------------------------------------------------------------
+FL_VOLUMES = ("fl_dynamic_pipe", "fl_volume")
+
+
+def _fluid_sets(net, members):
+    """Modelica.Fluid's connected sets: one medium each (given on any component, default water), a pressure
+    reference, valves for the medium's phase, the closed-loop rule for constant-density liquids (probed on carbonio
+    2026-11-19, planning.md V5: a volume on a hydraulic cycle does not build in OpenModelica 1.27.2, except a dynamic
+    pipe right after one pump), the system component, and the flags the generator needs (_n_ports, ...)."""
+    fl = [e for e, d in net.elems.items() if C.KINDS[d["kind"]].get("domain") == "mfluid"]
+    if not fl:
+        return
+    systems = [e for e in fl if net.elems[e]["kind"] == "fl_system"]
+    if len(systems) > 1:
+        net.errors.append(f"fl_system: one per study ({', '.join(sorted(systems))})")
+    for e in systems:
+        if e != "system":
+            net.errors.append(f"components.{e}: an fl_system must be named 'system' (Modelica.Fluid's inner system)")
+    if "system" in net.elems and net.elems["system"]["kind"] != "fl_system":
+        net.errors.append("components.system: with Modelica.Fluid parts the name 'system' is taken by fl_system "
+                          "(Modelica.Fluid's inner system): rename it")
+    for e in fl:
+        d = net.elems[e]
+        k = C.KINDS[d["kind"]]
+        d["params"]["_n_ports"] = sum(d.get("multi_n", {}).values())
+        d["params"]["_opening_connected"] = "opening" in d.get("enabled", ())
+        d["params"]["_w_in"] = "w_in" in d.get("enabled", ())
+        d["params"]["_heat"] = "heat" in d.get("enabled", ())
+        fk = k.get("fluid") or {}
+        if fk.get("collector") and fk["collector"][0] in d.get("enabled", ()):     # see modelica.helpers
+            d.setdefault("redirect", {})[fk["collector"][0]] = f"omct_{e}_coll.port_b"
+        if fk.get("speed_in") and fk["speed_in"][0] in d.get("enabled", ()):
+            d.setdefault("redirect", {})[fk["speed_in"][0]] = f"omct_{e}_rpm.u"
+        if d["kind"] == "fl_dynamic_pipe" and d["params"].get("heat_transfer") not in (None, "ideal") \
+                and not d["params"]["_heat"]:
+            net.warnings.append(f"components.{e}: heat_transfer is set but heat is not connected (adiabatic)")
+        if (k.get("fluid") or {}).get("speed_in") and "N" in d["params"] and d["params"].get("N") is not None \
+                and d["params"]["_w_in"]:
+            net.errors.append(f"components.{e}: give the speed as N or through w_in, not both")
+        if d["kind"] in ("fl_valve", "fl_valve_gas", "fl_valve_linear") and d["params"]["_opening_connected"] \
+                and "opening" in (net.comps.get(e, {}).get("given") or set()):
+            net.errors.append(f"components.{e}: opening is given and its input connected: one of the two")
+        if d["kind"] in ("fl_valve", "fl_valve_gas"):
+            given = [x for x in ("Kv", "Cv", "Av") if d["params"].get(x) is not None]
+            if len(given) > 1:
+                net.errors.append(f"components.{e}: size it by one of Kv, Cv, Av ({', '.join(given)} given)")
+        if d["kind"] in ("fl_pump", "fl_pump_shaft") and d["params"].get("curve") is not None:
+            pts = d["params"]["curve"]
+            if len(pts) < 2:
+                net.errors.append(f"components.{e}.curve: at least 2 points [[V_flow, head], ...]")
+            elif any(b[1] >= a[1] for a, b in zip(pts, pts[1:])):
+                net.errors.append(f"components.{e}.curve: head must fall as the flow rises")
+    # the connected sets (islands of mfluid ports)
+    seen = set()
+    for ports in members.values():
+        if C.domain_of(net.port_type(next(iter(ports)))) != "mfluid":
+            continue
+        elems = sorted({x.split(".")[0] for x in ports})
+        seen |= set(elems)
+        label = ", ".join(sorted({net.elems[x]["comp"] for x in elems})[:6])
+        given = {}
+        for x in elems:
+            mv = net.elems[x]["params"].get("medium")
+            if mv is not None:
+                given.setdefault(repr(mv), (mv, []))[1].append(net.elems[x]["comp"])
+        if len(given) > 1:
+            desc = "; ".join(f"{m} ({', '.join(sorted(c)[:4])})" for m, (_, c) in given.items())
+            net.errors.append(f"the fluid circuit of {label} mixes media ({desc}): one medium per connected circuit")
+            continue
+        medium = next(iter(given.values()))[0] if given else "water"
+        for x in elems:
+            net.elems[x]["params"]["medium"] = medium
+        liquid = C.is_liquid(medium)
+        kinds = {net.elems[x]["kind"] for x in elems}
+        if not any((C.KINDS[kk].get("fluid") or {}).get("pressure_ref") for kk in kinds) and \
+                not (not liquid and "fl_volume" in kinds):
+            net.errors.append(f"the fluid circuit of {label} has nothing that sets its pressure: add an fl_boundary "
+                              f"or an fl_tank (a gas: also an fl_volume)")
+        for x in elems:
+            fk = C.KINDS[net.elems[x]["kind"]].get("fluid") or {}
+            if fk.get("liquid_only") and not liquid:
+                net.errors.append(f"components.{net.elems[x]['comp']}: fl_valve is for liquids; with {medium} use "
+                                  f"fl_valve_gas")
+            if fk.get("gas_only") and liquid:
+                net.errors.append(f"components.{net.elems[x]['comp']}: fl_valve_gas is for gases; with a liquid use "
+                                  f"fl_valve")
+        if C.fmedium(medium)["class"] == "liquid_const":
+            _closed_loops(net, elems, label)
+    for e in fl:                                       # parts on no circuit (fl_system) keep the default
+        if e not in seen and "medium" in C.KINDS[net.elems[e]["kind"]]["params"]:
+            net.elems[e]["params"]["medium"] = net.elems[e]["params"].get("medium") or "water"
+
+
+def _closed_loops(net, elems, label):
+    """Constant density: refuse a volume (fl_dynamic_pipe, fl_volume) on a hydraulic cycle, except a dynamic pipe
+    whose inlet meets only one pump's outlet (it gets modelStructure av_b); open dynamic pipes keep MSL's av_vb.
+    Cycles: an undirected graph of the connection nodes, two-port components as edges, a vessel (tank, volume) as a
+    hub joined to each of its ports; boundaries and mass-flow sources cut it (their pressure or flow is set)."""
+    adj, edges = {}, []
+
+    def add(u, v, e):
+        edges.append((u, v, e))
+        adj.setdefault(u, []).append((v, len(edges) - 1))
+        adj.setdefault(v, []).append((u, len(edges) - 1))
+
+    for x in elems:
+        d = net.elems[x]
+        kd = C.KINDS[d["kind"]]
+        if (kd.get("fluid") or {}).get("vessel"):
+            hub = f"hub:{x}"
+            for base in kd.get("multi", {}):
+                for j in range(1, d.get("multi_n", {}).get(base, 0) + 1):
+                    add(hub, net.node_of[f"{x}.{base}[{j}]"], x)
+        elif "port_a" in kd["ports"] and "port_b" in kd["ports"] and kd["ports"]["port_a"] == "mfluid":
+            add(net.node_of[f"{x}.port_a"], net.node_of[f"{x}.port_b"], x)
+    on_cycle = _cycle_edges(adj, edges)
+    by_node = {}
+    for ep, nid in net.node_of.items():
+        if net.port_type(ep) == "mfluid":
+            by_node.setdefault(nid, []).append(ep)
+    for x in elems:
+        d = net.elems[x]
+        if d["kind"] not in FL_VOLUMES:
+            continue
+        cyc = any(edges[i][2] == x for i in on_cycle)
+        if d["kind"] == "fl_dynamic_pipe":
+            if not cyc:
+                d["params"]["_structure"] = "av_vb"
+                continue
+            mates = [ep for ep in by_node.get(net.node_of[f"{x}.port_a"], []) if ep != f"{x}.port_a"]
+            if len(mates) == 1 and mates[0].endswith(".port_b") and \
+                    net.elems[mates[0].split(".")[0]]["kind"] in ("fl_pump", "fl_pump_shaft"):
+                d["params"]["_structure"] = "av_b"
+                continue
+        if cyc:
+            net.errors.append(
+                f"components.{d['comp']}: a {d['kind']} on a closed loop of a constant-density liquid does not build in "
+                f"OpenModelica 1.27.2 (structurally singular; probed 2026-11-19). In a closed liquid loop a dynamic "
+                f"pipe may sit right after one pump (port_a to the pump's port_b only); otherwise use fl_pipe, open "
+                f"the circuit with fl_boundary, or model the heated loop with the coolant kinds (pipe, volume_flow, "
+                f"pressure_reference)")
+
+
+def _cycle_edges(adj, edges) -> set:
+    """Indices of the edges on a cycle (not bridges; parallel edges are on a cycle), Tarjan's bridges."""
+    disc, low, bridges, t = {}, {}, set(), [0]
+    for root in adj:
+        if root in disc:
+            continue
+        stack = [(root, None, iter(adj[root]))]
+        disc[root] = low[root] = t[0]
+        t[0] += 1
+        while stack:
+            u, pe, it = stack[-1]
+            for v, ei in it:
+                if ei == pe:
+                    continue
+                if v not in disc:
+                    disc[v] = low[v] = t[0]
+                    t[0] += 1
+                    stack.append((v, ei, iter(adj[v])))
+                    break
+                low[u] = min(low[u], disc[v])
+            else:
+                stack.pop()
+                if stack:
+                    w = stack[-1][0]
+                    low[w] = min(low[w], low[u])
+                    if low[u] > disc[w]:
+                        bridges.add(pe)
+    return {i for i in range(len(edges)) if i not in bridges}

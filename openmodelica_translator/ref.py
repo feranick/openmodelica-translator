@@ -1,5 +1,5 @@
 """ref.py — an independent implementation of the study's equations, without OpenModelica.
-Version: 2026.10.21.27
+Version: 2026.11.19.10
 
 Built from the study (network.Net), never from the generated Modelica text, so a translation mistake shows up as
 a mismatch. Each catalog kind writes its equations (the MSL 4.0.0 ones, read from the library's sources) into a
@@ -421,6 +421,8 @@ def _ports_paths(c: _Ctx):
     for p, t in c.k["ports"].items():
         if p in c.k["cond_ports"] and not c.enabled(p):
             continue
+        if t == "mfluid" or p in c.k.get("multi", {}):
+            continue                    # Modelica.Fluid: not in the reference (stand-in, _stamp_mfluid)
         mp = c.net.mpath(f"{c.e}.{p}")
         if C.is_complex(t):
             continue                    # quasi-static ports and complex signals: refqs (no port paths)
@@ -440,6 +442,23 @@ def _ports_paths(c: _Ctx):
             if t == "fluid":
                 c.s.paths[f"{mp}.h"] = {c.hpot(p): 1.0}
                 c.s.paths[f"{mp}.H_flow"] = {c.hflow(p): 1.0}
+
+
+def _stamp_mfluid(c: _Ctx):
+    """Modelica.Fluid parts are not in the reference (V5: FL4 brings liquids). A stand-in keeps the rest of the
+    system well posed for the choice of initial values: their heat ports and shafts carry no flow, their sensor
+    outputs read 0, their signal inputs are consumers; the reference check is then not covered."""
+    for p, t in c.k["ports"].items():
+        if t == "mfluid" or p in c.k.get("multi", {}) or (p in c.k["cond_ports"] and not c.enabled(p)):
+            continue
+        if t in ("heat", "flange_r", "flange_t", "pin"):
+            c.eq({c.flow(p): 1.0})
+        elif t == "out":
+            c.eq({c.sig(p): 1.0})
+    if not getattr(c.s, "mfluid_noted", False):
+        c.s.mfluid_noted = True
+        c.s.exact = False
+        c.s.not_exact.append("Modelica.Fluid parts (not in the reference implementation)")
 
 
 def _one_port(c: _Ctx, a="p", b="n"):
@@ -506,6 +525,9 @@ def _stamp(c: _Ctx):
     _ports_paths(c)
     if c.k.get("domain") == "fluid":
         _stamp_fluid(c)
+        return
+    if c.k.get("domain") == "mfluid":
+        _stamp_mfluid(c)
         return
     if kn == "dc_machine":
         _stamp_dc_machine(c)
@@ -1962,6 +1984,8 @@ class Ref:
         nodes, fluid, qsn = {}, {}, {}
         for ep, nid in net.node_of.items():
             pt = net.port_type(ep)
+            if pt == "mfluid":
+                continue                       # Modelica.Fluid nodes: not in the reference
             (fluid if pt == "fluid" else qsn if pt == "qs_pin" else nodes).setdefault(nid, []).append(ep)
         for nid in sorted(nodes):
             s.eq({f"{ep}#flow": 1.0 for ep in sorted(nodes[nid])})
