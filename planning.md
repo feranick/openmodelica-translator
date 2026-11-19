@@ -67,18 +67,29 @@ lumped parameters.
 
 ## Open items
 
-- **The sparks' settings send spark2's jobs to spark1:** both have `OMCT_SLURM_ARGS="--mem=16G
-  --nodelist=spark-5da5"` (a stopgap from before `OMCT_SLURM_NODE`). Remove the `--nodelist` on both: the default
-  `OMCT_SLURM_NODE=local` pins each machine's jobs to its own node.
-- **The `converge` limit:** physical outputs that changed by 3.5e-5 of their range between tolerances 1e-7 and 1e-8
-  are over max(1e-6, 100 tol) = 1e-5 (2026.10.23.4); the reference check allows max(1e-4, 100 tol). Loosen
-  `converge` to match, if a real study trips on it.
-- **A21 on 1.27.2:** whether the compiled model still cannot read an empty `-overrideFile` (omct omits the flag
-  anyway; harmless).
-- **`jobs()` lists `run_*` requests only,** not `bench_*` ones.
-- **Deploy 2026.11.09.3 to mochi, spark1, spark2** (carbonio has it) and run the runtime's machine tests there: omct
-  `rc_step` through SLURM, two benchmarks at once from two servers (they queue), a result collected after the MCP
-  connection was closed and reopened (llmt-runtime PLANNING.md, section 1).
+- **Machine tests** (llmt-runtime PLANNING.md, section 1; 2026-11-19, omct 2026.11.18.3 on llmt-runtime 2026.11.18.5
+  everywhere):
+  - rc_step as a SLURM job: carbonio ✓ (job 5924: crossing 0.9999967 ms for 1 ms, reference 2.8e-6), spark1 ✓ (709),
+    spark2 ✓ (715, after the fix below), mochi not run (40 of 40 CPUs busy, start expected in ~12 h).
+  - Two at once: two 120-point sweeps on spark1, each `run.mem: 70G` of the node's 121 GB, sent together: the first
+    ran (job 716, 15 s, 120/120 reliable), the second queued with reason Resources (718) and started after it ✓.
+  - Collected after the MCP connection was closed and reopened ✓: after an app restart, jobs() from the new servers
+    reports the second sweep (run_20261119_092619_dccce5, job 718) done, ok, reliable.
+  - Left: mochi (rc_step as a SLURM job, when its queue has room).
+  - Fixed on the way: both sparks had `OMCT_SLURM_ARGS="--mem=16G --nodelist=spark-5da5"` in /etc/llm-translators/env
+    (a stopgap from before OMCT_SLURM_NODE), so spark2's jobs ran on spark1, where spark2's run folder does not exist
+    (job 711: "left the queue without starting (no job.log)"). Removed on both (2026-11-19); OMCT_SLURM_NODE=local now
+    pins spark1 to spark-5da5 and spark2 to spark-0808. The router's start estimate on spark1 ("95 min" while idle)
+    became "starts now" with it. The other translators' `--nodelist` on the sparks name each machine's own node.
+- **The router's start estimate on spark2** said "95 min" for a 1-CPU job with 2 CPUs free on spark-0808, and the job
+  (715) started at once. Report to the llm-translators chat if it persists.
+- **A sweep's SLURM limit and eta:** a 120-point sweep with `procs: 1` gets 120 rounds x the 600 s timeout = 1210 min,
+  so a sweep queued behind it is told "start in 1305 min" though it ran in 15 s. Consider `OMCT_SLURM_TIME=estimate`
+  as the default for sweeps, or a per-point timeout from the measured run time. Also: a running sweep's `next` said
+  "at most ? min once running" (no eta_min_max while a SLURM sweep runs).
+- **The lost-node diagnosis did not fire** for spark2's job 711 (it says "cancelled while queued"): the job ran and
+  ended within a second, before any squeue saw its node. For llmt-runtime: ask sacct for the job's node (`NodeList`)
+  when job.log is missing.
 - **Shared items to fix in llmt-runtime, not here** (its PLANNING.md, section 2): a `Server` hook for the log's
   argument summary (omct logged study names and flags; the runtime logs `name=value`); `list_jobs` hooks (omct keeps
   its own `jobs()`, which reports `_collect` per request); `queue_summary` counting only `$USER`'s jobs (omct's
