@@ -532,6 +532,85 @@ setuptools 59 too old); pip installs a current setuptools into the isolated buil
 
 **2026.10.25.3 (2026-10-25)**: llm-translators' checklist for translators (six items). Already done: (3) stale servers (2026.10.23.3 + the serving guard of 2026.10.25.1; run-study and tests never refuse or exit), (4) estimates in validation (2026.10.22.1; procs after the caps, mem as --mem). Done in 2026.10.25.2, completed now: (1) node pinning: the node list and CPUs now from `scontrol -o show node` (the checklist's source; was sinfo), and a job's CPUs capped at this node's (with any: the largest node's), so the estimate the router tests with sbatch --test-only matches the job; (5) failed scontrol not remembered (and msl_status: an lru_cache kept a failed first MSL load for the server's lifetime: now only success is kept, and its omc call is bounded at 40 s since study_format runs it). New: (2) OMCT_SLURM_ARGS with several options: shlex everywhere already; mem_mb_for_job now reads "--mem 8G" (two words) and --mem-per-cpu (x CPUs), test with "--mem=8G --nodelist=spark-5da5"; (6) wait bounds: sbatch timeout 60 -> 15 s and, after a timeout, the request's other studies fail at once for 30 s (a dead controller made run_studies wait 60 s per study); _run (squeue/sacct/scontrol) 20 -> 10 s; status() starts no collect it cannot finish by the deadline (measured from the last one); run() counts the submit time against wait. Compiling and simulating were already in the pool or SLURM jobs; get_model and validate_studies only translate. Tests: fake two-node scontrol (sizes 20 and 12 CPUs), args with two options, hanging sbatch, slow collect.
 
+## V4: parameter estimation (design, 2026-11-19; not built yet)
+
+Nicola's choices (2026-11-19): data inline and from a CSV file on the machine; a local bounded least-squares fit with
+optional multistart; transient time series, steady values and initial values; standard errors and correlations from
+the Jacobian (no profile likelihood). Order: V4 (this), then Modelica.Fluid.
+
+**The study key `fit`** (any catalog study, transient or steady analysis; custom models too):
+
+```json
+"fit": {
+  "params": {"R.R": {"initial": 800, "min": 100, "max": 1e4},
+             "C.v0": {"initial": 0, "min": -1, "max": 1},
+             "th.G": {"initial": "2 W/K", "min": "0.1 W/K", "max": "50 W/K", "scale": "log"}},
+  "data": {"v": {"t": [0, 0.001, ...], "y": [0, 0.63, ...], "sigma": 0.01},
+           "T": {"csv": "~/meas/heat.csv", "t": "time_s", "y": "T_C", "unit": "degC"}},
+  "steady": [{"set": {"P.Q_flow": 20}, "values": {"T": "45 degC"}},
+             {"set": {"P.Q_flow": 40}, "values": {"T": "70 degC"}}],
+  "starts": 1, "max_evaluations": 400
+}
+```
+
+- `params`: run-time values only, by the sweep's rules (catalog parameters that are not structural, and initial
+  values `v0`, `w0`, `T0`, ...); `initial`, `min`, `max` with units; `scale` lin | log (log by default when min > 0:
+  R, C, J, G span decades).
+- `data`: per study output, a time series inline (`t`, `y`; units; at most ~5000 points per output inline) or from a
+  CSV on the machine (`csv` path, `t`/`y` column names, `unit`, optional `t_unit`); `sigma` (absolute, with units)
+  or none (then each output is scaled by its data range, so outputs weigh equally); `weight` optional. Times within
+  the analysis' [start_time, stop_time].
+- `steady`: operating points; each sets values (`set`, as a sweep point) and gives measured steady outputs; each is
+  a run to steady state. A fit may have `data`, `steady` or both.
+- `starts` (1): more spread the starts over the bounds (log scale where log), deterministic (a Sobol-like sequence),
+  the best kept and every start's end reported. `max_evaluations` caps the runs.
+- Not with `sweep` or `converge` in the same study (validation says so); `expect` applies to the fitted run.
+
+**How it runs** (`fit.py`):
+1. Validate, translate, build once (as a sweep). Parameters change by override; values read back on the final run.
+2. Residual function: for parameter vector p, run the model (and every steady point) without the checks (no
+   reference, no energy: the fast path a sweep point uses minus its checks), interpolate each output at the data's
+   times (event points excluded as everywhere), r = w (y_model - y_data) / (sigma or range) / sqrt(n_output).
+3. `scipy.optimize.least_squares` (trf, bounds, x_scale by parameter, diff_step tied to the solver tolerance:
+   finite differences need the runs' noise below the step, so the fit runs at tolerance/10 of the study's unless set).
+   Each Jacobian = n_params runs in parallel (the sweep's process pool, `run.procs`); the line search runs single.
+4. A failed run (solver error, assertion) returns a large residual and is counted, so the optimizer steps back.
+5. At the best p: the full study run with every check (reference, energy, overrides read back) = the result's
+   outputs and checks; `reliable` requires that run reliable and the optimizer converged.
+
+**The result** (`fit` key, plus the usual result of the final run):
+- `params.<name>`: value (SI and as given), initial, stderr, ci95 [lo, hi], at_bound; `correlation` matrix;
+  `identifiable` false with the pair named when |corr| > 0.98 or J^T J is near singular (e.g. R and C from an RC
+  step: only RC is determined).
+- `cost`, per output `rms`, `r2`, `max_abs` and the residual series (t, data, model) for plotting; per steady point
+  the model vs data values.
+- `status` (converged / max_evaluations / failed), `evaluations`, `iterations`, `starts` (each start's end and cost).
+- Standard errors: cov = s^2 (J^T J)^-1 in the fit's scaled coordinates, mapped back (delta method for log
+  parameters); s^2 = 1 with sigma given, else the residual variance (reduced chi^2); stated in the result.
+- `images: true`: data vs model per output, residuals.
+
+**Checks and benchmarks** (closed forms, synthetic data from the reference):
+- fit_rc_tau: RC step generated with R = 1000; fit R (C known) from 1000 points with noise 1e-3: R within 3
+  stderr, stderr against the analytic one.
+- fit_rc_unidentifiable: fit R and C together: `identifiable` false, |corr(R, C)| ~ 1.
+- fit_thermal: heated block: C and G from a heating curve; G also from two steady points alone.
+- fit_msd: mass-spring-damper free vibration: c and d recovered.
+- fit_initial: T0 fitted with C and G.
+- A fit with `solver: ref` runs in the sandbox (the reference as the model), so fit.py is tested without OpenModelica.
+
+**Cost and SLURM:** estimate = starts x (iterations ~ 10-30) x (n_params + 1) runs x the measured run time (+ steady
+points); a fit is one job, CPUs = min(run.procs, n_params) for the Jacobian; its time limit from the measured run
+time as sweeps (each run's timeout = the sweep point's rule). Progress: evaluations done, best cost so far.
+
+**Milestones:** F1 format, validation, data (inline, CSV), fit.py on the reference solver, tests; F2 the OpenModelica
+path (one build, fast runs, parallel Jacobian), final checked run, uncertainty, results; F3 steady points, initial
+values, multistart, images, benchmarks, SLURM sizing and estimates, docs; F4 on the machines (benchmarks, a real
+data set if Nicola has one).
+
+**Open questions** (decide while building, or ask): whether the fast path may skip reading the full MAT file (a
+variable filter on the outputs only); the CSV's location for router placement (a path under the machine's home: the
+router cannot see it; the study gives `run.host`).
+
 ## Version 2 (done 2026-10-21: all checked on mochi)
 
 Nicola's order: (V2.1) rotational chains from build123d-translator moments of inertia; (V2.2) coolant loops with
