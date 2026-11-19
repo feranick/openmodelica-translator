@@ -2,7 +2,7 @@
 
 Session context for Claude (the user documentation is README.md). Start a chat with: "Read planning.md and start."
 
-Version: 2026.11.19.1 (2026-11-19). Done: M0-M8 (v1), V2 (coolant, DC machine, heat ports, events), V3 (AC
+Version: 2026.11.19.2 (2026-11-19). Done: M0-M8 (v1), V2 (coolant, DC machine, heat ports, events), V3 (AC
 machines, transient and quasi-static, nonlinear reference), the fixes from use since (docs/history.md), and the
 move onto **llmt-runtime** (2026.11.09.1-.3: workers, SLURM layer and MCP server common code are the runtime's).
 
@@ -81,12 +81,8 @@ lumped parameters.
     (job 711: "left the queue without starting (no job.log)"). Removed on both (2026-11-19); OMCT_SLURM_NODE=local now
     pins spark1 to spark-5da5 and spark2 to spark-0808. The router's start estimate on spark1 ("95 min" while idle)
     became "starts now" with it. The other translators' `--nodelist` on the sparks name each machine's own node.
-- **The `converge` limit:** physical outputs that changed by 3.5e-5 of their range between tolerances 1e-7 and 1e-8
-  are over max(1e-6, 100 tol) = 1e-5 (2026.10.23.4); the reference check allows max(1e-4, 100 tol). Loosen
-  `converge` to match, if a real study trips on it.
 - **A21 on 1.27.2:** whether the compiled model still cannot read an empty `-overrideFile` (omct omits the flag
   anyway; harmless).
-- **`jobs()` lists `run_*` requests only,** not `bench_*` ones.
 - **The router's start estimate on spark2** said "95 min" for a 1-CPU job with 2 CPUs free on spark-0808, and the job
   (715) started at once. Report to the llm-translators chat if it persists.
 - **The lost-node diagnosis did not fire** for spark2's job 711 (it says "cancelled while queued"): the job ran and
@@ -389,7 +385,7 @@ compared the same way (numerical errors only). `invariants` catch modelling erro
 tolerance/100: if the gap closes it was integration error (DASSL's global error reached ~1e-4 of range on 6-hour
 runs) and the tighter run is the result, with a warning; if not, it stays unreliable as a model difference.
 
-**`converge`:** a rerun at tolerance/10; a change over max(1e-6, 100 × tolerance) of an output's range (more on
+**`converge`:** a rerun at tolerance/10; a change over max(1e-4, 100 × tolerance) of an output's range (more on
 large offsets) → unreliable; outputs constant by design (their variation shrinks with the tolerance) are
 `not_judged`; `abs_tol` judges named outputs by their absolute change.
 
@@ -458,6 +454,10 @@ load, and the quasi-static versions of the machine cases. Chains by name: `chain
 Details: docs/history.md (everything to 2026-10-31) and the README's version table.
 
 ## Recent changes
+
+**2026.11.19.2 (2026-11-19)**: two open items. (1) `runner.converge_limit(tol)` = max(1e-4, 100 tol), the reference
+check's limit (was max(1e-6, 100 tol), stricter than the integration accuracy: 2026.10.23.4's 3.5e-5). (2) `jobs()`
+lists bench_* requests too (`_requests` takes both prefixes), marked `kind: benchmarks` with the bench_status call.
 
 **2026.11.19.1 (2026-11-19)**: from the machine tests. (1) A sweep's SLURM limit counted every point with the full
 600 s timeout (120 points of 0.1 s on 1 CPU: 1210 min; a sweep queued behind it was told 1305 min, spark1 jobs

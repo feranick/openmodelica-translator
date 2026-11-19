@@ -1,5 +1,5 @@
 """api.py — what the CLI and the MCP server call. JSON in, JSON out.
-Version: 2026.11.18.3
+Version: 2026.11.19.2
 
     tool_status()                  versions; omc, MSL, the C compiler, the build cache; the executor and its caps
     study_format()                 the study format, with status
@@ -397,11 +397,14 @@ def run(studies: dict, solver: str | None = None, wait: float | None = None, req
     return status(str(folder), max(0.0, wait - (time.time() - t0)))     # submitting counts against the wait
 
 
-def _requests(limit: int, prefix: str = "run"):
+def _requests(limit: int, prefixes: tuple = ("run", "bench")):
+    """The newest request folders: run_* (run_studies) and bench_* (run_benchmarks; before 2026.11.19.2 jobs() left
+    them out, so a benchmark started in another conversation could not be found)."""
     root = out_root()
     if not root.is_dir():
         return []
-    reqs = [p for p in root.iterdir() if p.is_dir() and p.name.startswith(prefix + "_") and (p / "request.json").is_file()]
+    reqs = [p for p in root.iterdir() if p.is_dir() and p.name.startswith(tuple(f"{x}_" for x in prefixes))
+            and (p / "request.json").is_file()]
     return sorted(reqs, key=lambda p: p.stat().st_mtime, reverse=True)[:limit]
 
 
@@ -426,8 +429,11 @@ def jobs(limit: int = 20, active: bool = False) -> dict:
         live = bool(res["pending"])
         if active and not live:
             continue
-        out.append({"request": str(req), "started": json.loads((req / "request.json").read_text()).get("started"),
-                    "active": live, "studies": studies})
+        row = {"request": str(req), "started": json.loads((req / "request.json").read_text()).get("started"),
+               "active": live, "studies": studies}
+        if req.name.startswith("bench_"):
+            row.update(kind="benchmarks", collect=f"bench_status(bench='{req}')")
+        out.append(row)
         if len(out) >= limit:
             break
     from . import executor as X

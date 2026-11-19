@@ -1,6 +1,6 @@
 """test_backend.py — the omc driver, the runner and the result reading: on outputs recorded on mochi
 (tests/fixtures), with a fake omc (tests/fake_omc.py), and with the real OpenModelica when it is installed.
-Version: 2026.10.26.1
+Version: 2026.11.19.2
 """
 import json
 import math
@@ -446,3 +446,14 @@ def test_fake_custom_model_sweep_on_a_cache_hit_runs_the_cross_check(fake, monke
     assert not any("reference implementation" in w for w in r["warnings"])
     p0 = json.loads((fake / "b" / "p" / "points" / "p0000" / "p0000.json").read_text())
     assert p0["checks"]["cross_solver"]["solver"] == "ida" and p0["checks"]["cross_solver"]["covered"]
+
+
+def test_converge_limit_matches_the_reference_check():
+    """2026.11.19.2: the converge limit is max(1e-4, 100 x tolerance), as the reference check's: a physical output
+    that changes by 3.5e-5 of its range between tolerances 1e-7 and 1e-8 passes; 2e-4 does not."""
+    from openmodelica_translator.runner import converge_limit, judge_converge
+    assert converge_limit(1e-6) == 1e-4 and converge_limit(1e-7) == 1e-4 and converge_limit(1e-5) == 1e-3
+    t = np.linspace(0, 1, 201)
+    y = np.sin(6 * t)
+    assert judge_converge(y, y + 3.5e-5 * np.ptp(y), converge_limit(1e-7), 1e-7)["ok"]
+    assert not judge_converge(y, y + 2e-4 * np.ptp(y), converge_limit(1e-7), 1e-7)["ok"]

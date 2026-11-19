@@ -1,6 +1,6 @@
 """mcp_server.py — MCP server: lets LLM-based tools simulate systems (circuits, drives, heat paths, controllers)
 with OpenModelica and the Modelica Standard Library.
-Version: 2026.11.18.1
+Version: 2026.11.19.2
 
 Tools (all JSON):
   study_format      the study format: component kinds, ports, parameters, analyses, conventions. Read it first.
@@ -211,8 +211,9 @@ def bench_status(bench: str, wait_s: float = 45) -> dict:
 @server.tool()
 @GUARD.tool(ToolError)
 def jobs(limit: int = 20, active: bool = False) -> dict:
-    """Recent requests on this machine (from any conversation) with each study's state; active=True: only
-    requests with studies still running."""
+    """Recent requests on this machine (from any conversation), run_studies' and run_benchmarks' (kind
+    'benchmarks': collect with bench_status), with each study's state; active=True: only requests with studies
+    still running."""
     return api.jobs(int(limit), bool(active))
 
 

@@ -1,5 +1,5 @@
 """runner.py — one study end to end: validate, translate, build (or reuse), run, read, check, write the result.
-Version: 2026.10.26.1
+Version: 2026.11.19.2
 
 run_study(name, study, folder, solver, timeout, cancel) -> the result dict, also written atomically to
 <folder>/<name>.json. solver: "omc" (OpenModelica) or "ref" (the reference implementation only: linear
@@ -520,6 +520,13 @@ def converge_abs_tol(study, units) -> dict:
             for o, v in (c.get("abs_tol") or {}).items()}
 
 
+def converge_limit(tol: float) -> float:
+    """The converge check's limit relative to an output's range: max(1e-4, 100 x tolerance), the reference check's
+    (2026.11.19.2; it was max(1e-6, 100 x tolerance), so physical outputs that changed by 3.5e-5 of their range between
+    tolerances 1e-7 and 1e-8 made a study unreliable, while the reference check accepts 1e-4)."""
+    return max(1e-4, 100 * tol)
+
+
 NOISE_SHRINK = 0.3      # an output whose range at tolerance/10 is at most this fraction of its range at tolerance ...
 NOISE_CHANGE = 2.0      # ... and whose change is at most this many times that range is solver noise around a constant
 
@@ -562,7 +569,7 @@ def _converge(out, b, folder, overrides, tr, r, vals, t0, t1, n, tol, method, fi
         return
     r2 = Result(sim["result"])
     m1, m2 = not_events(r.time), not_events(r2.time)
-    lim = max(1e-6, 100 * tol)
+    lim = converge_limit(tol)
     per = {}
     for oname, (terms, _) in tr.outputs.items():
         y2 = combine(r2, terms)

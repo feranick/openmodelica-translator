@@ -1,6 +1,6 @@
 """test_api.py — the API (worker pool, request folders, status from files, cancel, jobs, benchmarks, pictures)
 and the MCP server's tool list. Runs with the reference solver: no OpenModelica needed.
-Version: 2026.11.09.3
+Version: 2026.11.19.2
 """
 import asyncio
 import json
@@ -301,3 +301,14 @@ def test_request_name_names_the_folder_and_is_idempotent(tmp_path, monkeypatch):
     (tmp_path / "run_half").mkdir()                       # a folder without request.json: being submitted
     r = api.run({"rc": study(RC)}, "ref", wait=5, request_name="run_half")
     assert "error" in r and r["request"] == str(tmp_path / "run_half")
+
+
+def test_jobs_lists_benchmark_requests(tmp_path, monkeypatch):
+    """jobs() shows run_benchmarks' requests too (kind 'benchmarks', how to collect them), not only run_studies'."""
+    monkeypatch.setenv("OMCT_OUT", str(tmp_path))
+    b = api.bench(["rc_step"], "ref", wait_s=None)
+    r = api.run({"rc": study(RC)}, "ref", wait=None)
+    rows = {x["request"]: x for x in api.jobs(10)["requests"]}
+    assert b["bench"] in rows and r["request"] in rows
+    assert rows[b["bench"]]["kind"] == "benchmarks" and "bench_status" in rows[b["bench"]]["collect"]
+    assert rows[b["bench"]]["studies"]["rc_step"]["ok"] and "kind" not in rows[r["request"]]
