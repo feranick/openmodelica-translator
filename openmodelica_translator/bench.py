@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with closed-form answers: is the toolchain right?
-Version: 2026.11.19.21
+Version: 2026.11.19.22
 
 Each case is a study plus checks [(result path, expected, tolerance, why)]; tolerances are relative unless
 written {"abs": x}. Chains (chain_feat_modal, chain_b3dt_mass, chain_b3dt_inertia) run the other translator first and only when named; they are skipped
@@ -771,7 +771,9 @@ def _fl_heated_pipe():
     return st, [("outputs.T.final", T, {"abs": 2e-3}, f"{n} mixed volumes in series, constant alpha"),
                 ("outputs.Q.final", m * LIQ["cp"] * (T - Tin), 1e-3, "the wall's heat = m cp (T_out - T_in)"),
                 ("checks.mass.ok", 1, {"abs": 0.5}, "mass balance"),
-                ("checks.fluid_energy.ok", 1, {"abs": 0.5}, "energy balance (the wall's heat)")]
+                ("checks.fluid_energy.ok", 1, {"abs": 0.5}, "energy balance (the wall's heat)"),
+                ("checks.reference.covered", 1, {"abs": 0.5}, "the reference covers dynamic pipes (FL11)"),
+                ("checks.reference.ok", 1, {"abs": 0.5}, "OpenModelica = the reference")]
 
 
 def _fl_air_fill():
@@ -1100,7 +1102,8 @@ def _fl_pump_into_tank():
 def _fl_heated_loop():
     """A heated closed loop of water (FL10: volumes on closed constant-density loops were refused before): a tank,
     a pump with a volume and a check valve, a heated dynamic pipe (wall 350 K, alpha 500) after a valve; the
-    balances judge it (the wall's heat and the pump's work end up in the stored energy)."""
+    balances and the reference judge it (FL11: the reference has dynamic pipes; OpenModelica at tolerance 1e-8 was
+    1.3e-9 off it on carbonio, run_fl11_probe1)."""
     st = {"components": {"tank": {"kind": "fl_tank", "height": 5, "crossArea": 1.0, "level_start": 1,
                                   "T_start": 293.15, "medium": LIQ},
                          "pump": {"kind": "fl_pump", "curve": [[0, 20], [0.005, 15], [0.01, 0]], "N_nominal": "1450 rpm",
@@ -1112,10 +1115,54 @@ def _fl_heated_loop():
           "connect": [["tank.port", "pump.port_a"], ["pump.port_b", "v.port_a"], ["v.port_b", "pipe.port_a"],
                       ["pipe.port_b", "tank.port"], ["pipe.heat", "wall.port"]],
           "outputs": {"m": "pump.m_flow", "T": "tank.T", "Q": "pipe.heat.Q_flow"},
-          "analysis": {"kind": "transient", "stop_time": 600, "intervals": 120}}
+          "analysis": {"kind": "transient", "stop_time": 600, "intervals": 120, "tolerance": 1e-8}}
     return st, [("checks.fluid_energy.ok", 1, {"abs": 0.5}, "energy: the wall's heat and the pump's work stored"),
                 ("checks.mass.ok", 1, {"abs": 0.5}, "mass balance"),
-                ("checks.cross_solver.ok", 1, {"abs": 0.5}, "the other integrator agrees")]
+                ("checks.reference.covered", 1, {"abs": 0.5}, "the reference covers it (FL11)"),
+                ("checks.reference.max_error_rel", 0.0, {"abs": 1e-4}, "OpenModelica = the reference")]
+
+
+def _fl_pipe_loop_reference():
+    """FL11: a closed loop with a rising dynamic pipe right after the pump (modelStructure av_b), local heat
+    transfer (Gnielinski / Hausen in MSL's LocalPipeFlowHeatTransfer) from a 340 K wall, a valve back to the tank;
+    judged against the reference (carbonio run_fl11_probe1: tank T 1.9e-9, Q 2.4e-8 off at tolerance 1e-8)."""
+    st = {"components": {"tank": {"kind": "fl_tank", "height": 5, "crossArea": 1.0, "level_start": 1,
+                                  "T_start": 293.15, "medium": LIQ},
+                         "pump": {"kind": "fl_pump", "curve": [[0, 20], [0.005, 15], [0.01, 0]], "N_nominal": "1450 rpm"},
+                         "pipe": {"kind": "fl_dynamic_pipe", "length": 10.0, "diameter": 0.04, "nNodes": 3,
+                                  "height_ab": 1.0, "heat_transfer": "local"},
+                         "v": {"kind": "fl_valve", "Kv": 20, "opening": 0.6, "dp_nominal": 1e5, "m_flow_nominal": 5},
+                         "wall": {"kind": "fixed_temperature", "T": 340.0}},
+          "connect": [["tank.port", "pump.port_a"], ["pump.port_b", "pipe.port_a"], ["pipe.port_b", "v.port_a"],
+                      ["v.port_b", "tank.port"], ["pipe.heat", "wall.port"]],
+          "outputs": {"m": "pump.m_flow", "T": "tank.T", "Q": "pipe.heat.Q_flow", "pb": "pipe.p_b"},
+          "analysis": {"kind": "transient", "stop_time": 300, "intervals": 30, "tolerance": 1e-8}}
+    return st, [("checks.reference.covered", 1, {"abs": 0.5}, "the reference covers it"),
+                ("checks.reference.max_error_rel", 0.0, {"abs": 1e-4}, "OpenModelica = the reference"),
+                ("checks.fluid_energy.ok", 1, {"abs": 0.5}, "energy balance")]
+
+
+def _fl_volume_reference():
+    """FL11: a closed volume with two ports (a source in, a laminar dynamic pipe out) and a heat port through a
+    conductor to 350 K; temperatures before and after the pipe judged against the reference (carbonio
+    run_fl11_probe2: 1.8e-9)."""
+    st = {"components": {"src": {"kind": "fl_mass_flow", "m_flow": 0.05, "T": 300.0, "medium": LIQ},
+                         "vol": {"kind": "fl_volume", "V": 0.01, "T_start": 330.0},
+                         "Ts": {"kind": "fl_temperature"},
+                         "pipe": {"kind": "fl_dynamic_pipe", "length": 5.0, "diameter": 0.02, "nNodes": 2,
+                                  "friction": "nominal_laminar", "dp_nominal": 2e4, "m_flow_nominal": 0.1,
+                                  "T_start": 305.0},
+                         "Ts2": {"kind": "fl_temperature"}, "out": {"kind": "fl_boundary", "T": 280.0},
+                         "g": {"kind": "thermal_conductor", "G": 50.0}, "amb": {"kind": "fixed_temperature", "T": 350.0}},
+          "connect": [["src.port", "vol.port"], ["vol.port", "Ts.port_a"], ["Ts.port_b", "pipe.port_a"],
+                      ["pipe.port_b", "Ts2.port_a"], ["Ts2.port_b", "out.port"], ["vol.heatPort", "g.port_a"],
+                      ["g.port_b", "amb.port"]],
+          "outputs": {"Tv": "vol.T", "Ts": "Ts.T", "T2": "Ts2.T", "Q": "g.Q_flow", "p": "vol.p"},
+          "analysis": {"kind": "transient", "stop_time": 50, "intervals": 5, "tolerance": 1e-8}}
+    return st, [("outputs.p.final", 101325.0 + 2e4 / 0.1 * 0.05, 1e-9, "p = p_out + dp_nominal m / m_nominal"),
+                ("checks.reference.covered", 1, {"abs": 0.5}, "the reference covers it"),
+                ("checks.reference.max_error_rel", 0.0, {"abs": 1e-4}, "OpenModelica = the reference"),
+                ("checks.fluid_energy.ok", 1, {"abs": 0.5}, "energy balance")]
 
 
 FLUID_CASES = {"fl_drain_torricelli": _fl_drain, "fl_pipe_laminar": _fl_laminar, "fl_pump_system_curve": _fl_pump_system,
@@ -1126,10 +1173,13 @@ FLUID_CASES = {"fl_drain_torricelli": _fl_drain, "fl_pipe_laminar": _fl_laminar,
                "fl_tank_port_drain": _fl_tank_port_drain, "fl_loop_reference": _fl_loop_reference,
                "fl_heated_tank": _fl_heated_tank, "fl_pump_heating": _fl_pump_heating,
                "fl_thermal_reference": _fl_thermal_reference, "fl_pump_into_tank": _fl_pump_into_tank,
-               "fl_heated_loop": _fl_heated_loop}
-# not in the Fluid reference (fluidref.covered): a dynamic pipe, a gas; judged against the reference itself
+               "fl_heated_loop": _fl_heated_loop, "fl_pipe_loop_reference": _fl_pipe_loop_reference,
+               "fl_volume_reference": _fl_volume_reference}
+# judged on OpenModelica only: a gas (not in the Fluid reference), checks of OpenModelica's run against the
+# reference (checks.reference) or of its balances (checks.fluid_energy: OpenModelica's paths)
 FLUID_OMC_ONLY = {"fl_heated_pipe", "fl_air_fill", "fl_network_reference", "fl_loop_reference", "fl_heated_tank",
-                  "fl_thermal_reference", "fl_pump_into_tank", "fl_heated_loop"}
+                  "fl_thermal_reference", "fl_pump_into_tank", "fl_heated_loop", "fl_pipe_loop_reference",
+                  "fl_volume_reference"}
 
 
 def omc_only() -> set:

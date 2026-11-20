@@ -1,5 +1,5 @@
 """format.py — the study format (study_format) and the static checks (validate, validate_study).
-Version: 2026.11.19.20
+Version: 2026.11.19.22
 
 validate_study(study) -> {ok, errors, warnings}: nothing runs (no omc). It resolves the network (network.build),
 checks outputs, analysis, derived quantities, sweep, expect, run (against the OMCT_MAX_* caps) and images, then
@@ -182,9 +182,10 @@ FLUID_TOPIC = {
         "scaled to the circuit's density (and viscosity with mu). Given values win; unreliable results are refused; "
         "result.inputs.<comp>.cfdt records the points and the fit.",
         "Outputs: comp.var (vars below), comp.port_a.p / .m_flow (into the component), sensors' signal outputs. "
-        "Checks: reference (constant-density liquids: boundaries, sources, pipes, fittings, valves, pumps, tanks, "
-        "temperatures with thermal parts on tank heat ports; not dynamic pipes, gases, inputs), mass, fluid_energy (stored internal "
-        "energy against boundary enthalpy, heat and work); studies the reference does not "
+        "Checks: reference (constant-density liquids: boundaries, sources, pipes, dynamic pipes (heat_transfer "
+        "constant or local), volumes, fittings, valves, pumps, tanks, temperatures with thermal parts on the heat "
+        "ports; not gases, T-dependent liquids, inputs), mass, fluid_energy (stored internal "
+        "energy against boundary enthalpy, heat and work); studies whose flows or temperatures the reference does not "
         "cover: cross_solver (the other integrator).",
     ],
 }
@@ -213,13 +214,19 @@ def cross_checked(st) -> bool:
 
 
 def fluid_covered(st) -> bool:
-    """A valid Modelica.Fluid study the reference implementation covers (constant-density liquids, fluidref)."""
-    from .fluidref import covered
+    """A valid Modelica.Fluid study the reference implementation covers, temperatures too (constant-density
+    liquids, fluidref; FL11: a study whose temperatures it does not compute keeps the cross-solver run)."""
+    from .fluidref import FluidRef, FluidRefError, covered
     try:
         net = build(st)
     except Exception:           # an invalid study: validation reports it
         return False
-    return not net.errors and covered(net)[0]
+    if net.errors or not covered(net)[0]:
+        return False
+    try:
+        return FluidRef(net).thermal
+    except FluidRefError:
+        return False
 
 
 def fluid_kinds() -> list[str]:

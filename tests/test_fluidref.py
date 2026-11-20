@@ -1,5 +1,5 @@
 """test_fluidref.py — the reference for Modelica.Fluid liquids (V5 FL4): MSL's functions, coverage, the network.
-Version: 2026.11.19.19
+Version: 2026.11.19.22
 """
 import copy
 import math
@@ -88,7 +88,8 @@ def test_translate_uses_the_fluid_reference_when_covered():
 @pytest.mark.parametrize("change,why", [
     ({"tank": {"kind": "fl_tank", "height": 3, "crossArea": 0.5, "level_start": 2, "medium": "glycol47"}},
      "constant-density"),
-    ({"out": {"kind": "fl_volume", "V": 1.0}}, "not in the Fluid reference"),
+    ({"o": {"kind": "fl_dynamic_pipe", "length": 10.0, "diameter": 0.03, "friction": "turbulent"}},
+     "nominal_laminar only"),
 ])
 def test_not_covered_says_why(change, why):
     st = copy.deepcopy(DRAIN)
@@ -306,3 +307,129 @@ def test_temperature_inputs_switch_temperatures_off():
     if ok:
         r = F.FluidRef(build(st))
         assert not r.thermal and "T_in" in r.thermal_why
+
+
+# ---- dynamic pipes and closed volumes (FL11) --------------------------------------------------------------------
+def _heated_pipe(**pipe):
+    st = {"components": {"src": {"kind": "fl_mass_flow", "m_flow": 0.2, "T": 300.0, "medium": LIQ},
+                         "pipe": {"kind": "fl_dynamic_pipe", "length": 10.0, "diameter": 0.05, "nNodes": 5,
+                                  "heat_transfer": "constant", "alpha": 500.0, **pipe},
+                         "wall": {"kind": "fixed_temperature", "T": 350.0},
+                         "Ts": {"kind": "fl_temperature"}, "out": {"kind": "fl_boundary", "T": 300.0}},
+          "connect": [["src.port", "pipe.port_a"], ["pipe.port_b", "Ts.port_a"], ["Ts.port_b", "out.port"],
+                      ["pipe.heat", "wall.port"]],
+          "outputs": {"T": "Ts.T", "Q": "pipe.heat.Q_flow"},
+          "analysis": {"kind": "transient", "stop_time": 1200, "intervals": 12}}
+    return st
+
+
+def test_dynamic_pipe_heated_volumes_in_series():
+    st = _heated_pipe()
+    assert validate_study(st)["ok"] and F.covered(build(st))[0]
+    o = F.FluidRef(build(st)).simulate(np.linspace(0, 1200, 13))
+    Ak, T = math.pi * 0.05 * 10.0 / 5, 300.0
+    for _ in range(5):
+        T = (0.2 * 4000 * T + 500 * Ak * 350) / (0.2 * 4000 + 500 * Ak)
+    assert o["Ts.T"][-1] == pytest.approx(T, rel=1e-9)
+    assert o["omct_pipe_coll.port_b.Q_flow"][-1] == pytest.approx(0.2 * 4000 * (T - 300), rel=1e-7)
+    assert o["pipe.Us[1]"][0] == pytest.approx(1000 * math.pi * 0.05 ** 2 / 4 * 2 * 4000 * (293.15 - 273.15))
+
+
+def test_dynamic_pipe_segments_by_model_structure():
+    st = _heated_pipe(nNodes=4, height_ab=2.0)
+    r = F.FluidRef(build(st))
+    seg = [f for f in r.flows if f["k"] == "dp_seg"]
+    assert [f["L"] for f in seg] == pytest.approx([3.75, 2.5, 3.75])       # av_vb: {1.5, 1, 1.5} L/n
+    assert [f["dh"] for f in seg] == pytest.approx([0.75, 0.5, 0.75])
+    assert r.dpipes[0]["vn"][0] == r.dpipes[0]["na"] and r.dpipes[0]["vn"][-1] == r.dpipes[0]["nb"]
+    net = build(st)
+    net.elems["pipe"]["params"]["_structure"] = "av_b"                      # after a pump on a loop
+    r = F.FluidRef(net)
+    seg = [f for f in r.flows if f["k"] == "dp_seg"]
+    assert [f["L"] for f in seg] == pytest.approx([2.5] * 4) and seg[-1]["b"] == r.dpipes[0]["nb"]
+
+
+def test_dynamic_pipe_work_is_the_static_head():
+    """Steady momentum: DynamicPipe's Wb_flows reduce to -m g dh per volume (carbonio run_fl11_probe2 agreed)."""
+    st = {"components": {"a": {"kind": "fl_boundary", "p": 3e5, "T": 290.0, "medium": LIQ},
+                         "pipe": {"kind": "fl_dynamic_pipe", "length": 20.0, "diameter": 0.03, "nNodes": 4,
+                                  "height_ab": 5.0, "nParallel": 2, "T_start": 330.0},
+                         "b": {"kind": "fl_boundary", "p": 1.5e5}},
+          "connect": [["a.port", "pipe.port_a"], ["pipe.port_b", "b.port"]], "outputs": {"m": "pipe.m_flow"},
+          "analysis": {"kind": "transient", "stop_time": 3}}
+    o = F.FluidRef(build(st)).simulate(np.array([0.0, 3.0]))
+    m = o["pipe.port_a.m_flow"][-1]
+    assert m == pytest.approx(5.327575765748562, rel=1e-12)                # OpenModelica, run_fl11_probe1
+    for i in range(1, 5):
+        assert o[f"pipe.Wb_flows[{i}]"][-1] == pytest.approx(-m * 9.80665 * 1.25, rel=1e-9)
+    assert o["pipe.mediums[2].p"][-1] < o["pipe.mediums[1].p"][-1]
+
+
+@pytest.mark.parametrize("name,expect", [
+    ("p3", {"pump.port_a.m_flow": 3.8420157125666847, "tank.medium.T": 314.543370595903,
+            "omct_pipe_coll.port_b.Q_flow": 209040.6105346213}),
+    ("p5", {"pipe.port_a.m_flow": -0.25874396124324234, "omct_pipe_coll.port_b.Q_flow": 29153.604365297506}),
+])
+def test_local_heat_transfer_matches_openmodelica(name, expect):
+    """carbonio run_fl11_probe1 (tolerance 1e-8): av_b after a pump on a loop (p3), reversed flow (p5)."""
+    if name == "p3":
+        st = {"components": {
+            "tank": {"kind": "fl_tank", "height": 5, "crossArea": 1.0, "level_start": 1, "T_start": 293.15,
+                     "medium": LIQ},
+            "pump": {"kind": "fl_pump", "curve": [[0, 20], [0.005, 15], [0.01, 0]], "N_nominal": "1450 rpm"},
+            "pipe": {"kind": "fl_dynamic_pipe", "length": 10.0, "diameter": 0.04, "nNodes": 3, "height_ab": 1.0,
+                     "heat_transfer": "local"},
+            "v": {"kind": "fl_valve", "Kv": 20, "opening": 0.6, "dp_nominal": 1e5, "m_flow_nominal": 5},
+            "wall": {"kind": "fixed_temperature", "T": 340.0}},
+            "connect": [["tank.port", "pump.port_a"], ["pump.port_b", "pipe.port_a"], ["pipe.port_b", "v.port_a"],
+                        ["v.port_b", "tank.port"], ["pipe.heat", "wall.port"]],
+            "outputs": {"m": "pump.m_flow"}, "analysis": {"kind": "transient", "stop_time": 300}}
+        t1 = 300.0
+    else:
+        st = {"components": {
+            "a": {"kind": "fl_boundary", "p": 1.0e5, "T": 290.0, "medium": LIQ},
+            "pipe": {"kind": "fl_dynamic_pipe", "length": 4.0, "diameter": 0.02, "nNodes": 3,
+                     "heat_transfer": "local", "T_start": 300.0},
+            "b": {"kind": "fl_boundary", "p": 1.02e5, "T": 310.0}, "w": {"kind": "fixed_temperature", "T": 360.0}},
+            "connect": [["a.port", "pipe.port_a"], ["pipe.port_b", "b.port"], ["pipe.heat", "w.port"]],
+            "outputs": {"m": "pipe.m_flow"}, "analysis": {"kind": "transient", "stop_time": 30}}
+        t1 = 30.0
+    net = build(st)
+    if name == "p3":
+        assert net.elems["pipe"]["params"]["_structure"] == "av_b"
+    o = F.FluidRef(net).simulate(np.linspace(0, t1, 11))
+    for path, v in expect.items():
+        assert o[path][-1] == pytest.approx(v, rel=1e-7)
+
+
+def test_closed_volume_ports_and_heat_port():
+    """carbonio run_fl11_probe2: a two-port volume fed by a source, a heat port through a conductor."""
+    st = {"components": {"src": {"kind": "fl_mass_flow", "m_flow": 0.05, "T": 300.0, "medium": LIQ},
+                         "vol": {"kind": "fl_volume", "V": 0.01, "T_start": 330.0},
+                         "pipe": {"kind": "fl_dynamic_pipe", "length": 5.0, "diameter": 0.02, "nNodes": 2,
+                                  "friction": "nominal_laminar", "dp_nominal": 2e4, "m_flow_nominal": 0.1,
+                                  "T_start": 305.0},
+                         "out": {"kind": "fl_boundary", "T": 280.0},
+                         "g": {"kind": "thermal_conductor", "G": 50.0}, "amb": {"kind": "fixed_temperature", "T": 350.0}},
+          "connect": [["src.port", "vol.port"], ["vol.port", "pipe.port_a"], ["pipe.port_b", "out.port"],
+                      ["vol.heatPort", "g.port_a"], ["g.port_b", "amb.port"]],
+          "outputs": {"T": "vol.T"}, "analysis": {"kind": "transient", "stop_time": 50}}
+    assert validate_study(st)["ok"]
+    o = F.FluidRef(build(st)).simulate(np.linspace(0, 50, 6))
+    assert o["vol.medium.T"][-1] == pytest.approx(324.6323125789169, rel=1e-9)
+    assert o["pipe.mediums[2].T"][-1] == pytest.approx(323.17840504955774, rel=1e-8)
+    assert o["vol.medium.p"][-1] == pytest.approx(101325 + 1e4)
+    assert o["vol.ports[1].m_flow"][-1] == pytest.approx(0.05) and o["vol.ports[2].m_flow"][-1] == pytest.approx(-0.05)
+
+
+def test_dynamic_pipe_limits():
+    st = _heated_pipe(nNodes=1)
+    assert any("nNodes: at least 2" in e for e in validate_study(st)["errors"])
+    st = _heated_pipe(heat_transfer="ideal")          # volumes at the wall's T: hydraulics only, cross-solver kept
+    r = F.FluidRef(build(st))
+    assert not r.thermal and "ideal heat transfer" in r.thermal_why
+    from openmodelica_translator.format import cross_checked
+    assert cross_checked(st) and not cross_checked(_heated_pipe())
+    st = _heated_pipe()
+    st["components"]["system"] = {"kind": "fl_system", "dynamics": "steady_state_initial"}
+    assert "fixed_initial" in F.FluidRef(build(st)).thermal_why

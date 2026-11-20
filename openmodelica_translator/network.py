@@ -1,6 +1,6 @@
 """network.py — a study's components, values and connections, resolved: the common ground of validation, the
 Modelica generator and the reference implementation.
-Version: 2026.11.19.20
+Version: 2026.11.19.22
 
 build(study) -> Net, with net.errors (each says the fix) and net.warnings. It
   - resolves kinds (or "msl" class paths) and parameter values to SI (units.to_si), with defaults;
@@ -935,6 +935,14 @@ def _fluid_sets(net, members):
     for e in fl:                                       # parts on no circuit (fl_system) keep the default
         if e not in seen and "medium" in C.KINDS[net.elems[e]["kind"]]["params"]:
             net.elems[e]["params"]["medium"] = net.elems[e]["params"].get("medium") or "water"
+    for e in fl:
+        d = net.elems[e]
+        if d["kind"] == "fl_dynamic_pipe" and int(d["params"].get("nNodes") or 2) < 2 \
+                and (d["params"].get("_structure") or "av_vb") == "av_vb":
+            # MSL's default modelStructure av_vb has nNodes - 1 flow segments (carbonio 2026-11-19,
+            # run_fl11_probe1: 'Type mismatch in equation pipe.pathLengths[1:pipe.n - 1] = ...')
+            net.errors.append(f"components.{d['comp']}.nNodes: at least 2 (with one volume MSL's DynamicPipe has no "
+                              f"flow segment: OpenModelica does not build it)")
 
 
 def _closed_loops(net, elems, label):
