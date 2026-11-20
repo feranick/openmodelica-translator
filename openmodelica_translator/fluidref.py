@@ -1,5 +1,5 @@
 """fluidref.py — the reference implementation for Modelica.Fluid liquid networks (V5 FL4).
-Version: 2026.11.19.22
+Version: 2026.11.19.23
 
 An independent solver of the same equations MSL 4.0.0 writes for constant-density liquids, ported from the MSL
 sources (tag v4.0.0) rather than reused: what OpenModelica must reproduce. Covered (covered(net)):
@@ -943,9 +943,10 @@ class FluidRef:
             out.append(local_alpha(Re, Pr, D, dp["li"], (i - 0.5) if v >= 0 else (n - i + 0.5), lam))
         return out
 
-    def _energy(self, levels, Ut, Up, Ux, Tc, m, P):
+    def _energy(self, levels, Ut, Up, Ux, Tc, m, P, ports=False):
         """(dU tanks, dU pump volumes, dU closed and pipe volumes, dT capacitors, details) at one instant. Mixing
-        at each connection point of the network (the study's, not the joined hydraulic nodes)."""
+        at each connection point of the network (the study's, not the joined hydraulic nodes); ports: also the
+        ports' h_outflow (output points only)."""
         nt = len(self.tanks)
         mt = np.array([tk["rho"] * tk["A"] * max(levels[i], EPS) for i, tk in enumerate(self.tanks)])
         Tt = np.array([T0_MEDIUM + Ut[i] / (mt[i] * tk["cv"]) for i, tk in enumerate(self.tanks)])
@@ -958,51 +959,52 @@ class FluidRef:
         for i, f in enumerate(self.flows):
             if f["k"] == "fl_pump":
                 W[i] = self._pump_power(f, m[i], P[f["a"]], P[f["b"]])
-        # discharges into each connection point: (weight, constant h) or (weight, upstream node, added h)
+        # discharges into each connection point: (weight, constant h) or (weight, upstream node, added h), and the
+        # port that discharges (inStream at a port excludes its own outflow)
         dis = {}
 
-        def add(n, w, h=None, up=None, extra=0.0):
+        def add(n, w, h=None, up=None, extra=0.0, own=None):
             if w > 0:
-                dis.setdefault(n, []).append((w, h, up, extra))
+                dis.setdefault(n, []).append((w, h, up, extra, own))
         ff = self._fixed_flows(m)
         for e, j, n0 in self.fixed_ports:
             mp = ff[(e, j)]
             if e in self.h_bnd:
-                add(n0, -mp, h=self.h_bnd[e])
+                add(n0, -mp, h=self.h_bnd[e], own=(e, j))
             else:
                 ti = next(i for i, tk in enumerate(self.tanks) if tk["e"] == e)
-                add(n0, -mp, h=ht[ti])
+                add(n0, -mp, h=ht[ti], own=(e, j))
         q_nosrc = None
         for n, ms, e, orig in self.sources:
             if len(orig) == 1:
-                add(orig[0], ms, h=self.h_bnd[e])
+                add(orig[0], ms, h=self.h_bnd[e], own=(e, 1))
             else:
                 q_nosrc = self._q_orig(m, False) if q_nosrc is None else q_nosrc
-                for n0 in orig:
-                    add(n0, -q_nosrc.get(n0, 0.0), h=self.h_bnd[e])
+                for j, n0 in enumerate(orig, 1):
+                    add(n0, -q_nosrc.get(n0, 0.0), h=self.h_bnd[e], own=(e, j))
         vq = self._vol_flows(m)
         for (xi, j), mp in vq.items():
-            add(self.xvols[xi]["ports"][j - 1], -mp, h=hx[xi])
+            add(self.xvols[xi]["ports"][j - 1], -mp, h=hx[xi], own=(self.xvols[xi]["e"], j))
         for i, f in enumerate(self.flows):
             mi = m[i]
             if f["k"] == "tank_port":
-                add(f["a0"], -mi, h=ht[f["ti"]])
+                add(f["a0"], -mi, h=ht[f["ti"]], own=(f["e"], f["j"]))
                 continue
             if f["k"] == "dp_seg":
                 continue
             dst, src = (f["b0"], f["a0"]) if mi > 0 else (f["a0"], f["b0"])
             if "vol" in f:
-                add(dst, abs(mi), h=hp[f["vol"]])
+                add(dst, abs(mi), h=hp[f["vol"]], own=f["e"])
             else:
-                add(dst, abs(mi), up=src, extra=(W[i] / abs(mi) if i in W and abs(mi) > 0 else 0.0))
+                add(dst, abs(mi), up=src, extra=(W[i] / abs(mi) if i in W and abs(mi) > 0 else 0.0), own=f["e"])
         pfl = []
         for dp in self.dpipes:                   # a pipe's ports discharge its end volumes' h
             fl = self._pipe_flow(dp, m, P)
             pfl.append(fl)
             if fl["mf"][0] < 0:
-                add(dp["a0"], -fl["mf"][0], h=hx[dp["x0"]])
+                add(dp["a0"], -fl["mf"][0], h=hx[dp["x0"]], own=dp["e"])
             if fl["mf"][-1] > 0:
-                add(dp["b0"], fl["mf"][-1], h=hx[dp["x0"] + dp["n"] - 1])
+                add(dp["b0"], fl["mf"][-1], h=hx[dp["x0"] + dp["n"] - 1], own=dp["e"])
         keys = list(dict.fromkeys(list(self.nodes) + list(self.nodes_root) +
                                   [f[x] for f in self.flows for x in ("a0", "b0")]))
         ix = {n: i for i, n in enumerate(keys)}
@@ -1015,13 +1017,14 @@ class FluidRef:
                 A[r, r], b[r] = 1.0, self.h_default
                 continue
             A[r, r] = wsum
-            for w, h, up, extra in items:
+            for w, h, up, extra, _ in items:
                 if up is None:
                     b[r] += w * h
                 else:
                     A[r, ix[up]] -= w
                     b[r] += w * extra
         hmix = dict(zip(keys, np.linalg.solve(A, b)))
+        hout = self._h_outflow(dis, hmix, m, W, ht, hp, hx) if ports else {}
         # heat ports
         Tfix = {}
         for n, how in self.tfix.items():
@@ -1080,9 +1083,84 @@ class FluidRef:
             pdet.append({"H": H, "Hb": Hb, "Wb": Wb, "Qb": Qb, "alphas": alphas[pi_]})
         dTc = np.array([Qin.get(c["n"], 0.0) / c["C"] for c in self.caps])
         return dUt, dUp, dUx, dTc, {"hmix": hmix, "Tt": Tt, "Tp": Tp, "Tx": Tx, "hx": hx, "Tnet": Tnet, "Qin": Qin,
-                                    "Qt": Qt, "Qx": Qx, "W": W, "pipes": pdet}
+                                    "Qt": Qt, "Qx": Qx, "W": W, "pipes": pdet, "hout": hout}
 
-    # ---- over time --------------------------------------------------------------------------------------------------
+    def _h_outflow(self, dis, hmix, m, W, ht, hp, hx) -> dict:
+        """{Modelica path of a port's h_outflow: value} as MSL defines them (FL12, for the energy check of a
+        reference run): a storage's ports carry its medium.h; a static part's port_a carries inStream at port_b
+        and back (PartialTwoPortTransport); a pump without a volume carries medium.h = inStream(inlet) + W/|m|
+        (its steady energy balance); pressure sensors Medium.h_default. inStream at a port (Modelica's stream
+        connectors): the other ports' outflows at its connection point mixed by their flows; without any outflow
+        there, the other port's h_outflow (two ports) or their mean."""
+        net = self.net
+        vals = {}
+        for n, items in dis.items():
+            vals[n] = [(own, w, h if up is None else hmix[up] + extra) for w, h, up, extra, own in items]
+        H, rules, at = {}, [], {}            # rules: (path, own, kind, data) of the ports that depend on inStream
+
+        def port(path, node, own, value=None, rule=None):
+            at.setdefault(node, []).append((own, path))
+            if rule is None:
+                H[path] = value
+            else:
+                rules.append((path, own, rule))
+        for e, j, n0 in self.fixed_ports:
+            v = self.h_bnd[e] if e in self.h_bnd else ht[next(i for i, tk in enumerate(self.tanks) if tk["e"] == e)]
+            port(f"{e}.ports[{j}].h_outflow", n0, (e, j), v)
+        for _, _, e, orig in self.sources:
+            for j, n0 in enumerate(orig, 1):
+                port(f"{e}.ports[{j}].h_outflow", n0, (e, j), self.h_bnd[e])
+        for xi, xv in enumerate(self.xvols):
+            if xv["kind"] == "vol":
+                for j, n0 in enumerate(xv["ports"], 1):
+                    port(f"{xv['e']}.ports[{j}].h_outflow", n0, (xv["e"], j), hx[xi])
+        for i, f in enumerate(self.flows):
+            e, k = f["e"], f["k"]
+            if k == "tank_port":
+                port(f"{e}.ports[{f['j']}].h_outflow", f["a0"], (e, f["j"]), ht[f["ti"]])
+            elif k == "dp_seg":
+                continue
+            elif "vol" in f:
+                port(f"{e}.port_a.h_outflow", f["a0"], e, hp[f["vol"]])
+                port(f"{e}.port_b.h_outflow", f["b0"], e, hp[f["vol"]])
+            elif k == "fl_pump":
+                port(f"{e}.port_a.h_outflow", f["a0"], e, rule=("pump", f, i))
+                port(f"{e}.port_b.h_outflow", f["b0"], e, rule=("pump", f, i))
+            else:
+                port(f"{e}.port_a.h_outflow", f["a0"], e, rule=("pass", f["b0"]))
+                port(f"{e}.port_b.h_outflow", f["b0"], e, rule=("pass", f["a0"]))
+        for dp in self.dpipes:
+            port(f"{dp['e']}.port_a.h_outflow", dp["a0"], dp["e"], hx[dp["x0"]])
+            port(f"{dp['e']}.port_b.h_outflow", dp["b0"], dp["e"], hx[dp["x0"] + dp["n"] - 1])
+        for e, d in net.elems.items():       # PartialAbsoluteSensor, PartialRelativeSensor: h_default (20 degC)
+            if d["kind"] in ("fl_pressure", "fl_relative_pressure"):
+                hd = _cp(d["params"])[0] * (293.15 - T0_MEDIUM)
+                for pn in (("port",) if d["kind"] == "fl_pressure" else ("port_a", "port_b")):
+                    port(f"{e}.{pn}.h_outflow", net.node_of[f"{e}.{pn}"], e, hd)
+
+        def instream(n, own):
+            its = [(w, hv) for o, w, hv in vals.get(n, ()) if o != own]
+            ws = sum(w for w, _ in its)
+            if ws > 0:
+                return sum(w * hv for w, hv in its) / ws
+            others = [H.get(pth) for o, pth in at.get(n, ()) if o != own]
+            others = [v for v in others if v is not None]
+            return sum(others) / len(others) if others else hmix.get(n, self.h_default)
+        for _ in range(len(rules) + 1):       # a chain of parts without flow passes its ends' h along
+            changed = False
+            for path, own, rule in rules:
+                if rule[0] == "pass":
+                    v = instream(rule[1], own)
+                else:
+                    f, i = rule[1], rule[2]
+                    mi = m[i]
+                    v = (instream(f["a0"], own) + W[i] / mi if mi > 0 else
+                         instream(f["b0"], own) + W[i] / -mi if mi < 0 else instream(f["a0"], own))
+                if H.get(path) is None or abs(H[path] - v) > 1e-9 * max(1.0, abs(v)):
+                    H[path], changed = v, True
+            if not changed:
+                break
+        return H
     def simulate(self, t_eval, t0=None) -> dict:
         from scipy.integrate import solve_ivp
         t = np.asarray(t_eval, float)
@@ -1129,7 +1207,7 @@ class FluidRef:
             lv, Ut, Up, Ux, Tc = split(X[:, j])
             m, P = self._solve(lv)
             cols.append((m, P))
-            ecols.append(self._energy(lv, Ut, Up, Ux, Tc, m, P) if th else None)
+            ecols.append(self._energy(lv, Ut, Up, Ux, Tc, m, P, ports=True) if th else None)
         out = self._paths(t, H, cols)
         if th:
             out.update(self._thermal_paths(t, X, nt, nv, cols, ecols))
@@ -1142,13 +1220,36 @@ class FluidRef:
 
         def ser(fn):
             return np.array([fn(k) for k in range(t.size)], float)
+        if t.size:
+            for path in ecols[0][D]["hout"]:
+                out[path] = ser(lambda k, path=path: ecols[k][D]["hout"][path])
         for ti, tk in enumerate(self.tanks):
             e = tk["e"]
             out[f"{e}.medium.T"] = ser(lambda k, ti=ti: ecols[k][D]["Tt"][ti])
             out[f"{e}.U"] = X[nt + ti]
+            # OpenTank: Wb_flow = 0 (singleState media), Qb_flow = the heat port's, ports_E_flow: m v^2/2 at ports
+            # with port_diameter (portsData_height 0), else 0
+            out[f"{e}.Qb_flow"] = ser(lambda k, ti=ti: ecols[k][D]["Qt"][ti])
+            out[f"{e}.Wb_flow"] = np.zeros(t.size)
             if tk.get("hn") is not None:
                 out[f"{e}.heatPort.T"] = out[f"{e}.medium.T"]
-                out[f"{e}.heatPort.Q_flow"] = ser(lambda k, ti=ti: ecols[k][D]["Qt"][ti])
+                out[f"{e}.heatPort.Q_flow"] = out[f"{e}.Qb_flow"]
+            loss = dict(tk["loss"])
+            for j in range(1, len(tk["ports"]) + 1):
+                if j in loss:
+                    f = self.flows[loss[j]]
+                    Ap = math.pi / 4 * f["D"] ** 2
+                    mm = np.array([c[0][loss[j]] for c in cols], float)
+                    out[f"{e}.ports_E_flow[{j}]"] = mm * 0.5 * (mm / (tk["rho"] * Ap)) ** 2
+                else:
+                    out[f"{e}.ports_E_flow[{j}]"] = np.zeros(t.size)
+        pv_of = {pv["i"]: jv for jv, pv in enumerate(self.pvols)}
+        for i, f in enumerate(self.flows):          # pumps (PartialPump: Wb_flow = W_total, no heat transfer)
+            if f["k"] == "fl_pump":
+                e = f["e"]
+                out[f"{e}.U"] = X[2 * nt + pv_of[i]] if i in pv_of else np.zeros(t.size)
+                out[f"{e}.Qb_flow"] = np.zeros(t.size)
+                out[f"{e}.Wb_flow"] = ser(lambda k, i=i: ecols[k][D]["W"][i])
         for jv, pv in enumerate(self.pvols):
             e = self.flows[pv["i"]]["e"]
             out[f"{e}.medium.T"] = ser(lambda k, jv=jv: ecols[k][D]["Tp"][jv])
@@ -1161,6 +1262,8 @@ class FluidRef:
             out[f"{e}.U"] = X[o + xi]
             out[f"{e}.Qb_flow"] = ser(lambda k, xi=xi: ecols[k][D]["Qx"][xi])
             out[f"{e}.Wb_flow"] = np.zeros(t.size)
+            for j in range(1, len(xv["ports"]) + 1):           # no portsData: no kinetic energy at the ports
+                out[f"{e}.ports_E_flow[{j}]"] = np.zeros(t.size)
             if xv["hn"] is not None:
                 out[f"{e}.heatPort.T"] = out[f"{e}.medium.T"]
                 out[f"{e}.heatPort.Q_flow"] = out[f"{e}.Qb_flow"]
@@ -1323,7 +1426,9 @@ class FluidRef:
                 n = self.find(f"{e}.port")
                 out[f"{e}.p"] = ser(lambda m, P, n=n: P[n])
                 out[f"{e}.port.p"] = out[f"{e}.p"]
+                out[f"{e}.port.m_flow"] = np.zeros(t.size)
             if d["kind"] == "fl_relative_pressure":
                 na, nb = self.find(f"{e}.port_a"), self.find(f"{e}.port_b")
                 out[f"{e}.p_rel"] = ser(lambda m, P, na=na, nb=nb: P[na] - P[nb])
+                out[f"{e}.port_a.m_flow"] = out[f"{e}.port_b.m_flow"] = np.zeros(t.size)
         return out

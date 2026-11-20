@@ -1,5 +1,5 @@
 """runner.py — one study end to end: validate, translate, build (or reuse), run, read, check, write the result.
-Version: 2026.11.19.18
+Version: 2026.11.19.23
 
 run_study(name, study, folder, solver, timeout, cancel) -> the result dict, also written atomically to
 <folder>/<name>.json. solver: "omc" (OpenModelica) or "ref" (the reference implementation only: linear
@@ -866,6 +866,8 @@ def _run_ref(study, tr, out, units) -> dict:
         _post(out, study, tr, tt, vals.__getitem__, units, "ref", out.get("_folder"))
         if getattr(r, "fluid", False):          # the mass balance of the reference's own tank levels
             _fluid_mass(out, tr, _Series(tt, vals), tol)
+            if getattr(r, "thermal", False):    # and its energy balance (FL12: the reference's own ports' h)
+                _fluid_energy(out, tr, _Series(tt, vals), tol)
     return out
 
 

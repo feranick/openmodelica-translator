@@ -1,5 +1,5 @@
 """test_fluidref.py — the reference for Modelica.Fluid liquids (V5 FL4): MSL's functions, coverage, the network.
-Version: 2026.11.19.22
+Version: 2026.11.19.23
 """
 import copy
 import math
@@ -433,3 +433,47 @@ def test_dynamic_pipe_limits():
     st = _heated_pipe()
     st["components"]["system"] = {"kind": "fl_system", "dynamics": "steady_state_initial"}
     assert "fixed_initial" in F.FluidRef(build(st)).thermal_why
+
+
+# ---- the energy balance of a reference run (FL12) ---------------------------------------------------------------
+@pytest.mark.parametrize("name", ["fl_heated_loop", "fl_pipe_loop_reference", "fl_volume_reference", "fl_pump_heating",
+                                  "fl_thermal_reference", "fl_tank_port_drain"])
+def test_reference_runs_check_their_energy_balance(name, tmp_path):
+    from openmodelica_translator import bench
+    from openmodelica_translator.runner import run_study
+    out = run_study(name, bench.cases()[name]["study"], tmp_path, solver="ref")
+    fe = out["checks"]["fluid_energy"]
+    assert out["ok"] and fe["covered"] and fe["ok"], fe
+
+
+def test_reference_energy_check_catches_a_wrong_term(tmp_path, monkeypatch):
+    """A pump's work left out of its ports' h_outflow: the stored energy no longer matches what flows in."""
+    from openmodelica_translator import bench
+    from openmodelica_translator.runner import run_study
+    real = F.FluidRef._h_outflow
+
+    def wrong(self, dis, hmix, m, W, ht, hp, hx):
+        out = real(self, dis, hmix, m, W, ht, hp, hx)
+        return {k: (v + 2000.0 if k.endswith("ports[1].h_outflow") and k.startswith("src") else v)
+                for k, v in out.items()}
+    monkeypatch.setattr(F.FluidRef, "_h_outflow", wrong)
+    out = run_study("x", bench.cases()["fl_pump_into_tank"]["study"], tmp_path, solver="ref")
+    assert out["checks"]["fluid_energy"]["covered"] and not out["checks"]["fluid_energy"]["ok"]
+
+
+def test_h_outflow_follows_msl():
+    """Static parts pass inStream through, storages carry their medium.h, a pump without a volume adds W/m."""
+    st = {"components": {"a": {"kind": "fl_boundary", "p": 2e5, "T": 300.0, "medium": LIQ},
+                         "pump": {"kind": "fl_pump", "curve": [[0, 20], [0.01, 0]], "N_nominal": 150.0, "eta": 0.5},
+                         "v": {"kind": "fl_valve", "Kv": 10, "dp_nominal": 1e5, "m_flow_nominal": 2},
+                         "b": {"kind": "fl_boundary", "p": 2e5, "T": 350.0}},
+          "connect": [["a.port", "pump.port_a"], ["pump.port_b", "v.port_a"], ["v.port_b", "b.port"]],
+          "outputs": {"m": "pump.m_flow"}, "analysis": {"kind": "transient", "stop_time": 1}}
+    o = F.FluidRef(build(st)).simulate(np.array([0.0, 1.0]))
+    m, W = o["pump.m_flow"][-1], o["pump.W_total"][-1]
+    h_a = 4000 * (300 - 273.15)
+    assert m > 0 and o["a.ports[1].h_outflow"][-1] == pytest.approx(h_a)
+    assert o["pump.port_b.h_outflow"][-1] == pytest.approx(h_a + W / m)
+    assert o["v.port_b.h_outflow"][-1] == pytest.approx(h_a + W / m)            # inStream(port_a)
+    assert o["v.port_a.h_outflow"][-1] == pytest.approx(4000 * (350 - 273.15))  # inStream(port_b): b's h
+    assert o["pump.Wb_flow"][-1] == pytest.approx(W) and o["pump.U"][-1] == 0.0

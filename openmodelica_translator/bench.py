@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with closed-form answers: is the toolchain right?
-Version: 2026.11.19.22
+Version: 2026.11.19.23
 
 Each case is a study plus checks [(result path, expected, tolerance, why)]; tolerances are relative unless
 written {"abs": x}. Chains (chain_feat_modal, chain_b3dt_mass, chain_b3dt_inertia) run the other translator first and only when named; they are skipped
@@ -1176,8 +1176,8 @@ FLUID_CASES = {"fl_drain_torricelli": _fl_drain, "fl_pipe_laminar": _fl_laminar,
                "fl_heated_loop": _fl_heated_loop, "fl_pipe_loop_reference": _fl_pipe_loop_reference,
                "fl_volume_reference": _fl_volume_reference}
 # judged on OpenModelica only: a gas (not in the Fluid reference), checks of OpenModelica's run against the
-# reference (checks.reference) or of its balances (checks.fluid_energy: OpenModelica's paths)
-FLUID_OMC_ONLY = {"fl_heated_pipe", "fl_air_fill", "fl_network_reference", "fl_loop_reference", "fl_heated_tank",
+# reference (checks.reference); reference runs check their own energy balance since FL12 (fl_heated_tank runs there)
+FLUID_OMC_ONLY = {"fl_heated_pipe", "fl_air_fill", "fl_network_reference", "fl_loop_reference",
                   "fl_thermal_reference", "fl_pump_into_tank", "fl_heated_loop", "fl_pipe_loop_reference",
                   "fl_volume_reference"}
 
