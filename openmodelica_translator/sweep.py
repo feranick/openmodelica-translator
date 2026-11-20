@@ -1,5 +1,5 @@
 """sweep.py — one study, many value sets: one build, one run per point, a table.
-Version: 2026.11.18.3
+Version: 2026.11.19.24
 
 run_sweep(name, study, folder, solver, timeout, cancel, run_point) -> the study's result with
     sweep: {points, ok_points, reliable_points, params, columns, table: [{point, params, values, ok, reliable,
@@ -39,16 +39,19 @@ def point_study(study: dict, values: dict) -> dict:
 
 
 INDEPENDENT = ("reference", "cross_solver", "invariants", "converge")
+# balances: in a row only where they apply (covered), their error_rel as max_error_rel (FL13: a Fluid sweep's mass
+# and energy balances ran on every point but only the point files said so)
+BALANCES = ("energy", "mass", "fluid_energy")
 
 
 def _point_checks(r: dict) -> dict:
-    """A point's independent checks in a line: {check: {ok, max_error_rel | covered: false, retried}}, so a sweep
-    shows that they ran (2026-10-26: the custom models' cross_solver ran on every point but only the point files
-    said so)."""
+    """A point's independent checks and balances in a line: {check: {ok, max_error_rel | covered: false,
+    retried}}, so a sweep shows that they ran (2026-10-26: the custom models' cross_solver ran on every point but
+    only the point files said so)."""
     out = {}
-    for k in INDEPENDENT:
+    for k in INDEPENDENT + BALANCES:
         c = (r.get("checks") or {}).get(k)
-        if not c:
+        if not c or (k in BALANCES and c.get("covered") is False):
             continue
         d = {"ok": bool(c.get("ok", True))}
         if c.get("covered") is False:
@@ -56,6 +59,8 @@ def _point_checks(r: dict) -> dict:
         for f in ("max_error_rel", "max_change_rel"):
             if f in c:
                 d[f] = c[f]
+        if k in BALANCES and "error_rel" in c:
+            d["max_error_rel"] = c["error_rel"]
         if "retry" in c:
             d["retried_at_tolerance"] = c["retry"].get("tolerance")
         out[k] = d

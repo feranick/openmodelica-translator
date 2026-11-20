@@ -1,6 +1,6 @@
 """test_api.py — the API (worker pool, request folders, status from files, cancel, jobs, benchmarks, pictures)
 and the MCP server's tool list. Runs with the reference solver: no OpenModelica needed.
-Version: 2026.11.19.5
+Version: 2026.11.19.24
 """
 import asyncio
 import json
@@ -280,6 +280,13 @@ def test_sweep_rows_show_the_independent_checks():
     s = _checks_summary(rows)
     assert s["cross_solver"] == {"points": 2, "failed": 0, "not_covered": 1, "retried": 0, "max_error_rel": 7e-5}
     assert s["reference"]["retried"] == 1
+    # balances: shown where they apply, their error_rel as max_error_rel (FL13)
+    r4 = {"checks": {"mass": {"ok": True, "covered": True, "error_rel": 3e-9},
+                     "fluid_energy": {"ok": False, "covered": True, "error_rel": 2e-3},
+                     "energy": {"ok": True, "covered": False, "why": "no energy terms"}}}
+    row = _point_checks(r4)
+    assert row == {"mass": {"ok": True, "max_error_rel": 3e-9}, "fluid_energy": {"ok": False, "max_error_rel": 2e-3}}
+    assert _checks_summary([{"checks": row}])["fluid_energy"]["failed"] == 1
 
 
 def test_request_name_names_the_folder_and_is_idempotent(tmp_path, monkeypatch):

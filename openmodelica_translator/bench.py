@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with closed-form answers: is the toolchain right?
-Version: 2026.11.19.23
+Version: 2026.11.19.24
 
 Each case is a study plus checks [(result path, expected, tolerance, why)]; tolerances are relative unless
 written {"abs": x}. Chains (chain_feat_modal, chain_b3dt_mass, chain_b3dt_inertia) run the other translator first and only when named; they are skipped
@@ -940,6 +940,8 @@ def _fl_sweep_opening():
     checks = [(f"sweep.table.{i}.values.outputs.m.final", y * m1, 1e-6, f"m = {y:g} x Av sqrt(rho dp)")
               for i, y in enumerate((0.25, 0.5, 1.0))]
     checks.append(("sweep.builds", 0.5, {"abs": 0.5}, "every point runs on one build (0 with the reference solver)"))
+    checks.append(("sweep.checks.mass.failed", 0, {"abs": 0.5}, "every point's mass balance (FL13)"))
+    checks.append(("sweep.checks.fluid_energy.failed", 0, {"abs": 0.5}, "every point's energy balance (FL13)"))
     return st, checks
 
 
