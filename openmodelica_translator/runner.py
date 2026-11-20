@@ -1,5 +1,5 @@
 """runner.py — one study end to end: validate, translate, build (or reuse), run, read, check, write the result.
-Version: 2026.11.19.16
+Version: 2026.11.19.17
 
 run_study(name, study, folder, solver, timeout, cancel) -> the result dict, also written atomically to
 <folder>/<name>.json. solver: "omc" (OpenModelica) or "ref" (the reference implementation only: linear
@@ -421,7 +421,7 @@ def _run(name, study, folder, solver, timeout, cancel) -> dict:
     t0, t1, n, tol, method = _times(an)
     lin = an["kind"] == "linearize"
     pl = E.plan(tr.net)
-    filt = None if lin else M.variable_filter(tr, extra=tuple((pl or {}).get("paths", ())) + tuple(fluid_mass_paths(tr)))
+    filt = None if lin else M.variable_filter(tr, extra=tuple((pl or {}).get("paths", ())) + tuple(fluid_mass_paths(tr)) + tuple(fluid_energy_paths(tr)))
     sim = simrun.simulate(b["dir"], folder, run_overrides, start=t0, stop=t1 if not lin else max(t1, t0),
                           intervals=n, tolerance=tol, method=method, variable_filter=filt,
                           timeout=timeout, linearize_at=t1 if lin else None, cancel=cancel)
@@ -468,6 +468,7 @@ def _run(name, study, folder, solver, timeout, cancel) -> dict:
                 _cross_solver(out, b, folder, run_overrides, tr, r, vals, t0, t1, n, tol, method, filt, timeout, cancel)
             if has_fluid(study):
                 _fluid_mass(out, tr, r, tol)
+                _fluid_energy(out, tr, r, tol)
             if study.get("invariants"):
                 _invariants(out, study, r.time, vals, units)
             if study.get("converge"):
@@ -516,6 +517,104 @@ def fluid_mass_terms(tr):
 
 
 MASS_FLOOR = 1e-6
+FL_LUMPED = ("fl_tank", "fl_volume", "fl_pump", "fl_pump_shaft")        # PartialLumpedVolume: U, Qb_flow, Wb_flow
+
+
+def fluid_energy_terms(tr):
+    """The Modelica.Fluid energy balance (FL8): d/dt sum(U) = sum(H into the network at boundaries and sources)
+    + sum(Qb + Wb of every storage) (MSL: der(U) = Hb_flow + Qb_flow + Wb_flow; static parts are isenthalpic).
+    Returns ({boundary port: (its m_flow, h_outflow, [(m_flow, h_outflow) of the other ports at its node])},
+    [paths of Qb, Wb], [paths of U]) or None."""
+    from . import catalog as C
+    net = tr.net
+    if net is None:
+        return None
+    at_node = {}
+    for ep, nid in net.node_of.items():
+        if net.port_type(ep) == "mfluid":
+            at_node.setdefault(nid, []).append(ep)
+    bnd, src, store = {}, [], []
+    for e, d in sorted(net.elems.items()):
+        k = d["kind"]
+        if C.KINDS[k].get("domain") != "mfluid":
+            continue
+        if k in ("fl_boundary", "fl_mass_flow"):
+            for j in range(1, d.get("multi_n", {}).get("port", 0) + 1):
+                ep = f"{e}.port[{j}]"
+                mp = net.mpath(ep)
+                others = [(net.mpath(x) + ".m_flow", net.mpath(x) + ".h_outflow")
+                          for x in sorted(at_node.get(net.node_of[ep], [])) if x != ep]
+                bnd[mp] = (mp + ".m_flow", mp + ".h_outflow", others)
+        elif k in FL_LUMPED:
+            src += [f"{e}.Qb_flow", f"{e}.Wb_flow"]
+            store.append(f"{e}.U")
+        elif k == "fl_dynamic_pipe":
+            n = int(d["params"]["nNodes"])
+            src += [f"{e}.Qb_flows[{i}]" for i in range(1, n + 1)] + [f"{e}.Wb_flows[{i}]" for i in range(1, n + 1)]
+            store += [f"{e}.Us[{i}]" for i in range(1, n + 1)]
+    return (bnd, src, store) if bnd or store else None
+
+
+def fluid_energy_paths(tr) -> list:
+    t = fluid_energy_terms(tr)
+    if t is None:
+        return []
+    bnd, src, store = t
+    out = []
+    for m, h, others in bnd.values():
+        out += [m, h] + [p for mh in others for p in mh]
+    return sorted(set(out + src + store))
+
+
+def boundary_enthalpy_in(m_b, h_b, others):
+    """Enthalpy flow into the network through a boundary port (m_b into the boundary): -m_b h_b when it delivers,
+    -m_b inStream(h_b) when it receives: the other ports' outflowing enthalpy mixed by their outflows (Modelica's
+    stream connectors; with one other port, exactly its h_outflow)."""
+    m_b, h_b = np.asarray(m_b, float), np.asarray(h_b, float)
+    if len(others) == 1:
+        h_in = np.asarray(others[0][1], float)
+    else:
+        w = sum(np.maximum(-np.asarray(m, float), 0.0) for m, _ in others)
+        num = sum(np.maximum(-np.asarray(m, float), 0.0) * np.asarray(h, float) for m, h in others)
+        mean = sum(np.asarray(h, float) for _, h in others) / max(len(others), 1)
+        h_in = np.where(w > 0, num / np.where(w > 0, w, 1.0), mean)
+    return -m_b * np.where(m_b < 0, h_b, h_in)
+
+
+def _fluid_energy(out, tr, r, tol=1e-6):
+    """Modelica.Fluid energy balance (FL8, probed on carbonio run_fl8_probe3): the change of the stored internal
+    energy (tanks, volumes, pump volumes, dynamic pipes) against the enthalpy the boundaries and sources put in
+    plus the heat and work every storage takes (Qb_flow, Wb_flow: heat ports, pump power), trapezoid with its
+    Richardson error, relative to the energy throughput; allowed as the mass balance."""
+    t = fluid_energy_terms(tr)
+    if t is None:
+        out["checks"]["fluid_energy"] = {"ok": True, "covered": False, "why": "no Modelica.Fluid boundaries or storages"}
+        return
+    bnd, src, store = t
+    try:
+        tt = np.asarray(r.time, float)
+        parts, absparts = [], []
+        for m, h, others in bnd.values():
+            if not others:
+                continue
+            H = boundary_enthalpy_in(r.series(m), r.series(h), [(r.series(a), r.series(b)) for a, b in others])
+            parts.append(H)
+        for p in src:
+            parts.append(np.asarray(r.series(p), float))
+        U = sum(np.asarray(r.series(p), float) for p in store) if store else np.zeros_like(tt)
+        dU = sum(abs(float(np.asarray(r.series(p), float)[-1] - np.asarray(r.series(p), float)[0])) for p in store)
+    except KeyError as exc:
+        out["checks"]["fluid_energy"] = {"ok": True, "covered": False, "why": f"{exc} not recorded"}
+        return
+    q = sum(parts) if parts else np.zeros_like(tt)
+    inflow, est = _trapezoid_richardson(tt, q)
+    through = _trapezoid_richardson(tt, sum(np.abs(x) for x in parts))[0] if parts else 0.0
+    change = float(U[-1] - U[0])
+    scale = max(through, dU, abs(change), float(np.max(np.abs(U))) * 1e-9 if np.size(U) else 0.0, 1e-300)
+    err = abs(change - inflow) / scale
+    lim = max(MASS_FLOOR, 10 * tol, 10 * est / scale)
+    out["checks"]["fluid_energy"] = {"ok": err <= lim, "covered": True, "error_rel": err, "tol": lim,
+                                     "stored_change_J": change, "inflow_J": inflow, "throughput_J": through}
 
 
 def _trapezoid_richardson(t, y):

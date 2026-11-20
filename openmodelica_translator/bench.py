@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with closed-form answers: is the toolchain right?
-Version: 2026.11.19.16
+Version: 2026.11.19.17
 
 Each case is a study plus checks [(result path, expected, tolerance, why)]; tolerances are relative unless
 written {"abs": x}. Chains (chain_feat_modal, chain_b3dt_mass, chain_b3dt_inertia) run the other translator first and only when named; they are skipped
@@ -770,7 +770,8 @@ def _fl_heated_pipe():
           "analysis": {"kind": "transient", "stop_time": 1200, "intervals": 120}}
     return st, [("outputs.T.final", T, {"abs": 2e-3}, f"{n} mixed volumes in series, constant alpha"),
                 ("outputs.Q.final", m * LIQ["cp"] * (T - Tin), 1e-3, "the wall's heat = m cp (T_out - T_in)"),
-                ("checks.mass.ok", 1, {"abs": 0.5}, "mass balance")]
+                ("checks.mass.ok", 1, {"abs": 0.5}, "mass balance"),
+                ("checks.fluid_energy.ok", 1, {"abs": 0.5}, "energy balance (the wall's heat)")]
 
 
 def _fl_air_fill():
@@ -1017,14 +1018,29 @@ def _fl_loop_reference():
                 ("checks.mass.error_rel", 0.0, {"abs": 1e-5}, "mass balance")]
 
 
+def _fl_heated_tank():
+    """The Fluid energy balance (FL8): a closed tank of a constant-property liquid (u = cv (T - T0), cv = cp)
+    heated at Q: T = T_start + Q t / (rho A h cp); the balance (heat in = internal energy) to rounding."""
+    A, h0, Q, T0, T = 0.5, 1.0, 5000.0, 290.0, 600.0
+    st = {"components": {"tank": {"kind": "fl_tank", "height": 3, "crossArea": A, "level_start": h0, "T_start": T0,
+                                  "medium": LIQ},
+                         "src": {"kind": "fl_mass_flow", "m_flow": 0.0},
+                         "heater": {"kind": "fixed_heat_flow", "Q_flow": Q}},
+          "connect": [["src.port", "tank.port"], ["heater.port", "tank.heatPort"]],
+          "outputs": {"T": "tank.T"}, "analysis": {"kind": "transient", "stop_time": T, "intervals": 60}}
+    return st, [("outputs.T.final", T0 + Q * T / (LIQ["rho"] * A * h0 * LIQ["cp"]), 1e-6, "T rises at Q / (m cp)"),
+                ("checks.fluid_energy.error_rel", 0.0, {"abs": 1e-6}, "the heat in = the internal energy's rise")]
+
+
 FLUID_CASES = {"fl_drain_torricelli": _fl_drain, "fl_pipe_laminar": _fl_laminar, "fl_pump_system_curve": _fl_pump_system,
                "fl_valve_kv": _fl_valve, "fl_heated_pipe": _fl_heated_pipe, "fl_air_fill": _fl_air_fill,
                "fl_pipe_turbulent": _fl_turbulent, "fl_two_tanks": _fl_two_tanks, "fl_network_reference": _fl_network,
                "fl_cfdt_pump": _fl_cfdt_pump, "fl_cfdt_resistance": _fl_cfdt_resistance,
                "fl_sweep_opening": _fl_sweep_opening, "fl_fit_kv": _fl_fit_kv, "fl_check_valve": _fl_check_valve,
-               "fl_tank_port_drain": _fl_tank_port_drain, "fl_loop_reference": _fl_loop_reference}
+               "fl_tank_port_drain": _fl_tank_port_drain, "fl_loop_reference": _fl_loop_reference,
+               "fl_heated_tank": _fl_heated_tank}
 # not in the Fluid reference (fluidref.covered): a dynamic pipe, a gas; judged against the reference itself
-FLUID_OMC_ONLY = {"fl_heated_pipe", "fl_air_fill", "fl_network_reference", "fl_loop_reference"}
+FLUID_OMC_ONLY = {"fl_heated_pipe", "fl_air_fill", "fl_network_reference", "fl_loop_reference", "fl_heated_tank"}
 
 
 def omc_only() -> set:

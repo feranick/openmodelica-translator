@@ -210,3 +210,51 @@ def test_pump_volume_on_a_closed_liquid_loop_is_refused():
     assert "a pump with a volume (V > 0, which checkValve needs)" in errors(st)
     st = loop(pump=dict(PUMP, V=0.001))
     assert "a pump with a volume (V > 0)" in errors(st)
+
+
+def test_fluid_energy_balance():
+    """FL8: d/dt sum(U) = H in at the boundaries + sum(Qb + Wb) (carbonio run_fl8_probe3: the same terms close to
+    2e-7 in OpenModelica's own integration)."""
+    import numpy as np
+
+    from openmodelica_translator.runner import _fluid_energy, boundary_enthalpy_in, fluid_energy_paths, \
+        fluid_energy_terms
+    st = {"components": {"a": {"kind": "fl_boundary", "p": 2e5, "T": 300.0},
+                         "o": {"kind": "fl_orifice", "diameter": 0.03, "zeta": 1.0},
+                         "tank": {"kind": "fl_tank", "height": 5, "crossArea": 0.5, "level_start": 1},
+                         "heater": {"kind": "fixed_heat_flow", "Q_flow": 1000.0}},
+          "connect": [["a.port", "o.port_a"], ["o.port_b", "tank.port"], ["tank.heatPort", "heater.port"]],
+          "outputs": {"l": "tank.level"}, "analysis": {"kind": "transient", "stop_time": 100}}
+    assert validate_study(st)["ok"], validate_study(st)["errors"]
+    tr = translate(st)
+    bnd, src, store = fluid_energy_terms(tr)
+    assert list(bnd) == ["a.ports[1]"] and bnd["a.ports[1]"][2] == [("o.port_a.m_flow", "o.port_a.h_outflow")]
+    assert src == ["tank.Qb_flow", "tank.Wb_flow"] and store == ["tank.U"]
+    assert "o.port_a.h_outflow" in fluid_energy_paths(tr)
+    t = np.linspace(0, 100, 101)
+    m = 2.0 * np.exp(-t / 50)                       # out of the boundary into the tank: a.ports[1].m_flow = -m
+    h = 1.2e5
+    Q = np.full_like(t, 1000.0)
+    U = 4e7 + h * 100 * (1 - np.exp(-t / 50)) + 1000 * t
+
+    class R:
+        time = t
+
+        def __init__(self, f=1.0):
+            self.f = f
+
+        def series(self, p):
+            return {"a.ports[1].m_flow": -m, "a.ports[1].h_outflow": np.full_like(t, h),
+                    "o.port_a.m_flow": m, "o.port_a.h_outflow": np.full_like(t, 9e4),
+                    "tank.Qb_flow": Q * self.f, "tank.Wb_flow": 0 * t, "tank.U": U}[p]
+    out = {"checks": {}}
+    _fluid_energy(out, tr, R())
+    assert out["checks"]["fluid_energy"]["ok"], out["checks"]["fluid_energy"]
+    out = {"checks": {}}
+    _fluid_energy(out, tr, R(1.5))                  # half the heat missing from the balance
+    assert not out["checks"]["fluid_energy"]["ok"]
+    # receiving: inStream from the other ports, mixed by their outflows
+    H = boundary_enthalpy_in(np.array([2.0]), np.array([1.0]), [(np.array([-1.0]), np.array([10.0])),
+                                                                (np.array([-3.0]), np.array([30.0])),
+                                                                (np.array([2.0]), np.array([99.0]))])
+    assert H[0] == pytest.approx(-2.0 * 25.0)

@@ -1,5 +1,5 @@
 """ref.py — an independent implementation of the study's equations, without OpenModelica.
-Version: 2026.11.19.10
+Version: 2026.11.19.17
 
 Built from the study (network.Net), never from the generated Modelica text, so a translation mistake shows up as
 a mismatch. Each catalog kind writes its equations (the MSL 4.0.0 ones, read from the library's sources) into a
@@ -445,13 +445,17 @@ def _ports_paths(c: _Ctx):
 
 
 def _stamp_mfluid(c: _Ctx):
-    """Modelica.Fluid parts are not in the reference (V5: FL4 brings liquids). A stand-in keeps the rest of the
-    system well posed for the choice of initial values: their heat ports and shafts carry no flow, their sensor
+    """Modelica.Fluid parts are not in this reference (fluidref.py has the liquids). A stand-in keeps the rest of the
+    system well posed for the choice of initial values: their heat ports conduct to 293.15 K, shafts carry no flow, their sensor
     outputs read 0, their signal inputs are consumers; the reference check is then not covered."""
     for p, t in c.k["ports"].items():
         if t == "mfluid" or p in c.k.get("multi", {}) or (p in c.k["cond_ports"] and not c.enabled(p)):
             continue
-        if t in ("heat", "flange_r", "flange_t", "pin"):
+        if t == "heat":
+            # a conductance 1 W/K to 293.15 K: a heat port alone on a heat source stays solvable (FL8: a heater on a
+            # tank's heatPort), and with a fixed temperature it takes a finite flow; outputs are not compared anyway
+            c.eq({c.flow(p): 1.0, c.pot(p): -1.0}, None, [(293.15, Const(1.0))])
+        elif t in ("flange_r", "flange_t", "pin"):
             c.eq({c.flow(p): 1.0})
         elif t == "out":
             c.eq({c.sig(p): 1.0})

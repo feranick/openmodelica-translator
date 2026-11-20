@@ -1,6 +1,6 @@
 """network.py — a study's components, values and connections, resolved: the common ground of validation, the
 Modelica generator and the reference implementation.
-Version: 2026.11.19.16
+Version: 2026.11.19.17
 
 build(study) -> Net, with net.errors (each says the fix) and net.warnings. It
   - resolves kinds (or "msl" class paths) and parameter values to SI (units.to_si), with defaults;
@@ -754,7 +754,9 @@ def _topology(study, net):
                                                 "pmsm_damper_core", "qs_im_core", "qs_pmsm_core", "qs_pmsm_damper_core"}:
             net.errors.append(f"the rotational system of {label} has neither an inertia nor a rot_fixed: its angle is "
                               f"undetermined; add a rot_fixed (or an inertia)")
-        if dom == "thermal" and not kinds & {"fixed_temperature", "prescribed_temperature", "heat_capacitor", "pipe"}:
+        # a Modelica.Fluid storage's heat port (tank, volume, dynamic pipe) sets the temperature too (FL8)
+        if dom == "thermal" and not kinds & {"fixed_temperature", "prescribed_temperature", "heat_capacitor", "pipe",
+                                             "fl_tank", "fl_volume", "fl_dynamic_pipe"}:
             net.errors.append(f"the thermal network of {label} has no heat capacitor, no fixed or prescribed "
                               f"temperature and no coolant pipe: its temperatures are undetermined")
         if dom == "fluid":
