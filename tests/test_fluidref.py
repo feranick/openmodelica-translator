@@ -1,5 +1,5 @@
 """test_fluidref.py — the reference for Modelica.Fluid liquids (V5 FL4): MSL's functions, coverage, the network.
-Version: 2026.11.19.25
+Version: 2026.11.19.26
 """
 import copy
 import json
@@ -88,7 +88,7 @@ def test_translate_uses_the_fluid_reference_when_covered():
 
 
 @pytest.mark.parametrize("change,why", [
-    ({"tank": {"kind": "fl_boundary", "p": 2e5, "medium": "air"}}, "liquids only"),
+    ({"o": {"kind": "fl_pipe", "length": 10.0, "diameter": 0.03, "friction": "turbulent"}}, "nominal_laminar only"),
     ({"o": {"kind": "fl_dynamic_pipe", "length": 10.0, "diameter": 0.03, "friction": "turbulent"}},
      "nominal_laminar only"),
 ])
@@ -193,7 +193,7 @@ def test_covered_studies_skip_the_cross_solver_run():
     assert cross_checked({**DRAIN, "cross_check": True})
     assert not cross_checked({**DRAIN, "cross_check": False})
     st = copy.deepcopy(DRAIN)
-    st["components"]["tank"] = {"kind": "fl_boundary", "p": 2e5, "medium": "air"}     # a gas: not covered
+    st["components"]["o"] = {"kind": "fl_pipe", "length": 10.0, "diameter": 0.03, "friction": "turbulent"}  # not covered
     assert cross_checked(st)
 
 
@@ -498,7 +498,7 @@ def test_table_based_media_follow_msl():
     U = 0.01 * g.d(330.0) * g.u(330.0)
     assert F.T_of_U(g, U, V=0.01) == pytest.approx(330.0, abs=1e-9)
     with pytest.raises(F.FluidRefError):
-        F.medium_of({"medium": "air"})
+        F.medium_of({"medium": "unknown_gas"})
 
 
 FL14 = json.loads((Path(__file__).parent / "fixtures" / "fl14_tablebased.json").read_text())
@@ -554,3 +554,44 @@ def test_mass_check_allows_the_integrators_error_on_stored_mass():
     assert out["checks"]["mass"]["ok"]
     _fluid_mass(out, tr, R(0.1), 1e-6)               # 1e-4 of it: not
     assert not out["checks"]["mass"]["ok"]
+
+
+# ---- gases (FL15) -----------------------------------------------------------------------------------------------
+def test_ideal_gas_media_follow_msl():
+    a, sa = F.medium_of({"medium": "air"}), F.medium_of({"medium": "simple_air"})
+    assert a.gas and a.d(300.0, 1e5) == pytest.approx(1e5 / (287.0512249529787 * 300.0))
+    assert a.cp(300.0) == pytest.approx(1004.8, abs=0.5) and a.mu(300.0) == pytest.approx(1.857e-5, rel=1e-3)
+    for T in (250.0, 300.0, 900.0, 1100.0):           # both NASA ranges
+        assert a.T_h(a.h(T)) == pytest.approx(T, abs=1e-9)
+        assert (a.h(T + 1e-3) - a.h(T - 1e-3)) / 2e-3 == pytest.approx(a.cp(T), rel=1e-7)
+        assert a.u(T) == pytest.approx(a.h(T) - a.R * T)
+    assert sa.h(298.15) == 0.0 and sa.R == pytest.approx(8.31446261815324 / 0.0289651159)
+
+
+FL15 = json.loads((Path(__file__).parent / "fixtures" / "fl15_gases.json").read_text())
+
+
+@pytest.mark.parametrize("name", sorted(FL15))
+def test_gases_match_openmodelica(name):
+    """carbonio run_fl15_probe1/2 (tolerance 1e-8): simple_air through a static pipe into a volume, air through a
+    heated dynamic pipe between boundaries, a heated volume fed by a source, reversed flow through a rising static
+    pipe, orifice, resistance and sensors, a choked OpPoint valve and a check valve."""
+    c = FL15[name]
+    st, an = c["study"], c["study"]["analysis"]
+    net = build(st)
+    o = F.FluidRef(net).simulate(np.linspace(0, an["stop_time"], an.get("intervals", 10) + 1))
+    for out, v in c["om"].items():
+        terms, _ = net.var_expr(st["outputs"][out])
+        y = sum(cf * o[p] for cf, p in terms)
+        assert y[-1] == pytest.approx(v, rel=3e-7), out
+
+
+def test_gas_volumes_on_one_point_are_refused():
+    st = {"components": {"src": {"kind": "fl_mass_flow", "m_flow": 0.05, "T": 300.0, "medium": "air"},
+                         "v1": {"kind": "fl_volume", "V": 0.05},
+                         "pipe": {"kind": "fl_dynamic_pipe", "length": 5, "diameter": 0.04, "nNodes": 2},
+                         "b": {"kind": "fl_boundary"}},
+          "connect": [["src.port", "v1.port"], ["v1.port", "pipe.port_a"], ["pipe.port_b", "b.port"]],
+          "outputs": {"m": "pipe.m_flow"}, "analysis": {"kind": "transient", "stop_time": 1}}
+    with pytest.raises(F.FluidRefError, match="two gas volumes"):
+        F.FluidRef(build(st))

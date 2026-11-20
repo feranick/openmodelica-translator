@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with closed-form answers: is the toolchain right?
-Version: 2026.11.19.25
+Version: 2026.11.19.26
 
 Each case is a study plus checks [(result path, expected, tolerance, why)]; tolerances are relative unless
 written {"abs": x}. Chains (chain_feat_modal, chain_b3dt_mass, chain_b3dt_inertia) run the other translator first and only when named; they are skipped
@@ -1224,6 +1224,65 @@ def _fl_static_head():
                 ("checks.reference.max_error_rel", 0.0, {"abs": 1e-4}, "OpenModelica = the reference")]
 
 
+def _fl_gas_valve_volume():
+    """FL15: air (DryAirNasa) from 3 bar through a gas valve (ValveCompressible) into a 50 l volume that empties
+    through an orifice: the volume's pressure and temperature (it heats by compression, then cools) against the
+    reference (carbonio run_fl15_probe1: p 4.6e-8, T 1e-8 at tolerance 1e-8)."""
+    st = {"components": {"a": {"kind": "fl_boundary", "p": 3e5, "T": 300.0, "medium": "air"},
+                         "v": {"kind": "fl_valve_gas", "Kv": 1.0, "p_nominal": 3e5, "dp_nominal": 1e5,
+                               "m_flow_nominal": 0.1},
+                         "vol": {"kind": "fl_volume", "V": 0.05, "p_start": 1e5, "T_start": 300.0},
+                         "o": {"kind": "fl_orifice", "diameter": 0.005, "zeta": 1.0},
+                         "b": {"kind": "fl_boundary", "p": 1e5, "T": 300.0}},
+          "connect": [["a.port", "v.port_a"], ["v.port_b", "vol.port"], ["vol.port", "o.port_a"], ["o.port_b", "b.port"]],
+          "outputs": {"p": "vol.p", "T": "vol.T", "mv": "v.m_flow", "mo": "o.m_flow"},
+          "analysis": {"kind": "transient", "stop_time": 20, "intervals": 10, "tolerance": 1e-8}}
+    return st, [("checks.reference.covered", 1, {"abs": 0.5}, "the reference covers gases (FL15)"),
+                ("checks.reference.max_error_rel", 0.0, {"abs": 1e-4}, "OpenModelica = the reference"),
+                ("checks.fluid_energy.ok", 1, {"abs": 0.5}, "energy balance")]
+
+
+def _fl_gas_choked():
+    """FL15: a 6 bar supply through an equal-percentage gas valve sized at its operating point (choked: x above
+    Fxt), a 200 l volume cooled through a conductor, a gas check valve to 1 bar (carbonio run_fl15_probe2: 1e-10)."""
+    st = {"components": {"a": {"kind": "fl_boundary", "p": 6e5, "T": 330.0, "medium": "air"},
+                         "v": {"kind": "fl_valve_gas", "p_nominal": 6e5, "dp_nominal": 4e5, "m_flow_nominal": 0.2,
+                               "opening": 0.7, "characteristic": "equal_percentage"},
+                         "vol": {"kind": "fl_volume", "V": 0.2, "p_start": 1.2e5, "T_start": 300.0},
+                         "cv": {"kind": "fl_valve_gas", "Kv": 2.0, "p_nominal": 3e5, "dp_nominal": 1e5,
+                                "m_flow_nominal": 0.1, "checkValve": True},
+                         "b": {"kind": "fl_boundary", "p": 1e5, "T": 300.0},
+                         "g": {"kind": "thermal_conductor", "G": 20.0}, "amb": {"kind": "fixed_temperature", "T": 290.0}},
+          "connect": [["a.port", "v.port_a"], ["v.port_b", "vol.port"], ["vol.port", "cv.port_a"], ["cv.port_b", "b.port"],
+                      ["vol.heatPort", "g.port_a"], ["g.port_b", "amb.port"]],
+          "outputs": {"p": "vol.p", "T": "vol.T", "mv": "v.m_flow", "mc": "cv.m_flow"},
+          "analysis": {"kind": "transient", "stop_time": 30, "intervals": 10, "tolerance": 1e-8}}
+    return st, [("checks.reference.covered", 1, {"abs": 0.5}, "the reference covers it"),
+                ("checks.reference.max_error_rel", 0.0, {"abs": 1e-4}, "OpenModelica = the reference"),
+                ("checks.mass.ok", 1, {"abs": 0.5}, "mass balance")]
+
+
+def _fl_gas_pipe():
+    """FL15: a mass-flow source fills a 100 l air volume that feeds a gas valve and a rising, cooled 4-node dynamic
+    pipe into the atmosphere (the pipe's last volume at the boundary's pressure; carbonio run_fl15_probe2: Q 4.5e-7,
+    the others 7e-8)."""
+    st = {"components": {"src": {"kind": "fl_mass_flow", "m_flow": 0.08, "T": 320.0, "medium": "air"},
+                         "vol": {"kind": "fl_volume", "V": 0.1, "p_start": 2e5, "T_start": 300.0},
+                         "v": {"kind": "fl_valve_gas", "Kv": 3.0, "p_nominal": 2e5, "dp_nominal": 5e4,
+                               "m_flow_nominal": 0.1},
+                         "pipe": {"kind": "fl_dynamic_pipe", "length": 30.0, "diameter": 0.05, "nNodes": 4,
+                                  "heat_transfer": "constant", "alpha": 30.0, "T_start": 300.0, "p_a_start": 1.5e5,
+                                  "p_b_start": 1e5, "height_ab": 5.0},
+                         "w": {"kind": "fixed_temperature", "T": 300.0}, "b": {"kind": "fl_boundary", "p": 1e5, "T": 300.0}},
+          "connect": [["src.port", "vol.port"], ["vol.port", "v.port_a"], ["v.port_b", "pipe.port_a"],
+                      ["pipe.port_b", "b.port"], ["pipe.heat", "w.port"]],
+          "outputs": {"p": "vol.p", "T": "vol.T", "m": "v.m_flow", "pa": "pipe.p_a", "Q": "pipe.heat.Q_flow"},
+          "analysis": {"kind": "transient", "stop_time": 40, "intervals": 10, "tolerance": 1e-8}}
+    return st, [("checks.reference.covered", 1, {"abs": 0.5}, "the reference covers it"),
+                ("checks.reference.max_error_rel", 0.0, {"abs": 1e-4}, "OpenModelica = the reference"),
+                ("checks.fluid_energy.ok", 1, {"abs": 0.5}, "energy balance")]
+
+
 FLUID_CASES = {"fl_drain_torricelli": _fl_drain, "fl_pipe_laminar": _fl_laminar, "fl_pump_system_curve": _fl_pump_system,
                "fl_valve_kv": _fl_valve, "fl_heated_pipe": _fl_heated_pipe, "fl_air_fill": _fl_air_fill,
                "fl_pipe_turbulent": _fl_turbulent, "fl_two_tanks": _fl_two_tanks, "fl_network_reference": _fl_network,
@@ -1234,12 +1293,14 @@ FLUID_CASES = {"fl_drain_torricelli": _fl_drain, "fl_pipe_laminar": _fl_laminar,
                "fl_thermal_reference": _fl_thermal_reference, "fl_pump_into_tank": _fl_pump_into_tank,
                "fl_heated_loop": _fl_heated_loop, "fl_pipe_loop_reference": _fl_pipe_loop_reference,
                "fl_volume_reference": _fl_volume_reference, "fl_glycol_loop": _fl_glycol_loop,
-               "fl_essotherm_pipe": _fl_essotherm_pipe, "fl_static_head": _fl_static_head}
-# judged on OpenModelica only: a gas (not in the Fluid reference), checks of OpenModelica's run against the
-# reference (checks.reference); reference runs check their own energy balance since FL12 (fl_heated_tank runs there)
-FLUID_OMC_ONLY = {"fl_heated_pipe", "fl_air_fill", "fl_network_reference", "fl_loop_reference",
+               "fl_essotherm_pipe": _fl_essotherm_pipe, "fl_static_head": _fl_static_head,
+               "fl_gas_valve_volume": _fl_gas_valve_volume, "fl_gas_choked": _fl_gas_choked, "fl_gas_pipe": _fl_gas_pipe}
+# judged on OpenModelica only: checks of OpenModelica's run against the reference (checks.reference); reference
+# runs check their own energy balance since FL12 (fl_heated_tank runs there), gases since FL15 (fl_air_fill)
+FLUID_OMC_ONLY = {"fl_heated_pipe", "fl_network_reference", "fl_loop_reference",
                   "fl_thermal_reference", "fl_pump_into_tank", "fl_heated_loop", "fl_pipe_loop_reference",
-                  "fl_volume_reference", "fl_glycol_loop", "fl_essotherm_pipe", "fl_static_head"}
+                  "fl_volume_reference", "fl_glycol_loop", "fl_essotherm_pipe", "fl_static_head", "fl_gas_valve_volume",
+                  "fl_gas_choked", "fl_gas_pipe"}
 
 
 def omc_only() -> set:

@@ -1,5 +1,5 @@
 """test_mfluid.py — Modelica.Fluid kinds (V5 FL2): validation, the closed-loop rule, the generated Modelica.
-Version: 2026.11.19.25
+Version: 2026.11.19.26
 
 Runs of the generated models are checked on the machines (planning.md V5); here: what omct writes and refuses.
 """
@@ -177,9 +177,10 @@ def test_cross_solver_and_mass_balance_for_fluid_studies():
     from openmodelica_translator.format import cross_checked, has_fluid
     from openmodelica_translator.runner import _fluid_mass, fluid_mass_terms
     glycol = loop(tank={**LOOP["components"]["tank"], "medium": "glycol47"})      # in the reference (FL14)
-    air = {"components": {"a": {"kind": "fl_boundary", "p": 2e5, "medium": "air"}, "o": {"kind": "fl_orifice",
-           "diameter": 0.01, "zeta": 1.0}, "b": {"kind": "fl_boundary"}}, "connect": [["a.port", "o.port_a"],
-           ["o.port_b", "b.port"]], "outputs": {"m": "o.m_flow"}, "analysis": {"kind": "transient", "stop_time": 1}}
+    air = {"components": {"a": {"kind": "fl_boundary", "p": 2e5, "medium": "air"}, "o": {"kind": "fl_pipe",
+           "length": 10.0, "diameter": 0.03, "friction": "turbulent"}, "b": {"kind": "fl_boundary"}},
+           "connect": [["a.port", "o.port_a"], ["o.port_b", "b.port"]], "outputs": {"m": "o.m_flow"},
+           "analysis": {"kind": "transient", "stop_time": 1}}     # turbulent friction: not in the reference
     assert has_fluid(LOOP) and cross_checked(air) and not cross_checked(LOOP) and not cross_checked(glycol)
     assert not cross_checked({**LOOP, "cross_check": False})
     assert validate_study({**LOOP, "cross_check": False})["ok"]

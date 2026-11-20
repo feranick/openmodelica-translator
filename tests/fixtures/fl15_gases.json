@@ -1,0 +1,374 @@
+{
+ "a2_simple_pipe": {
+  "study": {
+   "components": {
+    "a": {
+     "kind": "fl_boundary",
+     "p": 150000.0,
+     "T": 320.0,
+     "medium": "simple_air"
+    },
+    "pipe": {
+     "kind": "fl_pipe",
+     "length": 10,
+     "diameter": 0.02
+    },
+    "vol": {
+     "kind": "fl_volume",
+     "V": 0.02,
+     "p_start": 120000.0,
+     "T_start": 300.0
+    },
+    "r": {
+     "kind": "fl_resistance",
+     "a": 10000000.0,
+     "b": 1000.0
+    },
+    "b": {
+     "kind": "fl_boundary",
+     "p": 100000.0,
+     "T": 300.0
+    }
+   },
+   "connect": [
+    [
+     "a.port",
+     "pipe.port_a"
+    ],
+    [
+     "pipe.port_b",
+     "vol.port"
+    ],
+    [
+     "vol.port",
+     "r.port_a"
+    ],
+    [
+     "r.port_b",
+     "b.port"
+    ]
+   ],
+   "outputs": {
+    "p": "vol.p",
+    "T": "vol.T",
+    "m": "pipe.m_flow",
+    "mr": "r.m_flow"
+   },
+   "analysis": {
+    "kind": "transient",
+    "stop_time": 10,
+    "intervals": 10,
+    "tolerance": 1e-08
+   }
+  },
+  "om": {
+   "p": 108496.09482414453,
+   "T": 319.9999854465897,
+   "m": 0.034369238481456094,
+   "mr": 0.03436924004454899
+  }
+ },
+ "a3_dynpipe": {
+  "study": {
+   "components": {
+    "a": {
+     "kind": "fl_boundary",
+     "p": 130000.0,
+     "T": 300.0,
+     "medium": "air"
+    },
+    "pipe": {
+     "kind": "fl_dynamic_pipe",
+     "length": 20,
+     "diameter": 0.05,
+     "nNodes": 3,
+     "heat_transfer": "constant",
+     "alpha": 50.0,
+     "T_start": 300.0,
+     "p_a_start": 130000.0,
+     "p_b_start": 100000.0
+    },
+    "w": {
+     "kind": "fixed_temperature",
+     "T": 400.0
+    },
+    "b": {
+     "kind": "fl_boundary",
+     "p": 100000.0,
+     "T": 300.0
+    }
+   },
+   "connect": [
+    [
+     "a.port",
+     "pipe.port_a"
+    ],
+    [
+     "pipe.port_b",
+     "b.port"
+    ],
+    [
+     "pipe.heat",
+     "w.port"
+    ]
+   ],
+   "outputs": {
+    "m": "pipe.m_flow",
+    "Q": "pipe.heat.Q_flow"
+   },
+   "analysis": {
+    "kind": "transient",
+    "stop_time": 10,
+    "intervals": 10,
+    "tolerance": 1e-08
+   }
+  },
+  "om": {
+   "m": 0.20198775252603104,
+   "Q": 10105.669722786299
+  }
+ },
+ "a4_heated_volume": {
+  "study": {
+   "components": {
+    "src": {
+     "kind": "fl_mass_flow",
+     "m_flow": 0.01,
+     "T": 300.0,
+     "medium": "air"
+    },
+    "vol": {
+     "kind": "fl_volume",
+     "V": 0.1,
+     "p_start": 100000.0,
+     "T_start": 300.0
+    },
+    "v": {
+     "kind": "fl_valve_gas",
+     "Kv": 0.5,
+     "p_nominal": 200000.0,
+     "dp_nominal": 100000.0,
+     "m_flow_nominal": 0.05
+    },
+    "b": {
+     "kind": "fl_boundary",
+     "p": 100000.0
+    },
+    "q": {
+     "kind": "fixed_heat_flow",
+     "Q_flow": 500.0
+    }
+   },
+   "connect": [
+    [
+     "src.port",
+     "vol.port"
+    ],
+    [
+     "vol.port",
+     "v.port_a"
+    ],
+    [
+     "v.port_b",
+     "b.port"
+    ],
+    [
+     "q.port",
+     "vol.heatPort"
+    ]
+   ],
+   "outputs": {
+    "p": "vol.p",
+    "T": "vol.T",
+    "m": "v.m_flow"
+   },
+   "analysis": {
+    "kind": "transient",
+    "stop_time": 30,
+    "intervals": 10,
+    "tolerance": 1e-08
+   }
+  },
+  "om": {
+   "p": 318642.835325002,
+   "T": 391.95181709180196,
+   "m": 0.006202283749770779
+  }
+ },
+ "b1_reverse": {
+  "study": {
+   "components": {
+    "a": {
+     "kind": "fl_boundary",
+     "p": 100000.0,
+     "T": 280.0,
+     "medium": "air"
+    },
+    "pipe": {
+     "kind": "fl_pipe",
+     "length": 8,
+     "diameter": 0.03,
+     "height_ab": 3.0
+    },
+    "o": {
+     "kind": "fl_orifice",
+     "diameter": 0.02,
+     "zeta": 2.0
+    },
+    "r": {
+     "kind": "fl_resistance",
+     "a": 1000000.0,
+     "b": 200.0
+    },
+    "Ts": {
+     "kind": "fl_temperature"
+    },
+    "Vs": {
+     "kind": "fl_volume_flow_sensor"
+    },
+    "b": {
+     "kind": "fl_boundary",
+     "p": 108000.0,
+     "T": 340.0
+    }
+   },
+   "connect": [
+    [
+     "a.port",
+     "pipe.port_a"
+    ],
+    [
+     "pipe.port_b",
+     "o.port_a"
+    ],
+    [
+     "o.port_b",
+     "r.port_a"
+    ],
+    [
+     "r.port_b",
+     "Ts.port_a"
+    ],
+    [
+     "Ts.port_b",
+     "Vs.port_a"
+    ],
+    [
+     "Vs.port_b",
+     "b.port"
+    ]
+   ],
+   "outputs": {
+    "m": "pipe.m_flow",
+    "pa": "o.p_a",
+    "T": "Ts.T",
+    "V": "Vs.V_flow",
+    "Vo": "o.V_flow"
+   },
+   "analysis": {
+    "kind": "transient",
+    "stop_time": 1,
+    "intervals": 2,
+    "tolerance": 1e-08
+   }
+  },
+  "om": {
+   "m": -0.02237728794093004,
+   "pa": 102984.53281880872,
+   "T": 339.99999999999994,
+   "V": -0.02022190269401505,
+   "Vo": -0.020299523887355064
+  }
+ },
+ "b2_choked_opppoint": {
+  "study": {
+   "components": {
+    "a": {
+     "kind": "fl_boundary",
+     "p": 600000.0,
+     "T": 330.0,
+     "medium": "air"
+    },
+    "v": {
+     "kind": "fl_valve_gas",
+     "p_nominal": 600000.0,
+     "dp_nominal": 400000.0,
+     "m_flow_nominal": 0.2,
+     "opening": 0.7,
+     "characteristic": "equal_percentage"
+    },
+    "vol": {
+     "kind": "fl_volume",
+     "V": 0.2,
+     "p_start": 120000.0,
+     "T_start": 300.0
+    },
+    "cv": {
+     "kind": "fl_valve_gas",
+     "Kv": 2.0,
+     "p_nominal": 300000.0,
+     "dp_nominal": 100000.0,
+     "m_flow_nominal": 0.1,
+     "checkValve": true
+    },
+    "b": {
+     "kind": "fl_boundary",
+     "p": 100000.0,
+     "T": 300.0
+    },
+    "g": {
+     "kind": "thermal_conductor",
+     "G": 20.0
+    },
+    "amb": {
+     "kind": "fixed_temperature",
+     "T": 290.0
+    }
+   },
+   "connect": [
+    [
+     "a.port",
+     "v.port_a"
+    ],
+    [
+     "v.port_b",
+     "vol.port"
+    ],
+    [
+     "vol.port",
+     "cv.port_a"
+    ],
+    [
+     "cv.port_b",
+     "b.port"
+    ],
+    [
+     "vol.heatPort",
+     "g.port_a"
+    ],
+    [
+     "g.port_b",
+     "amb.port"
+    ]
+   ],
+   "outputs": {
+    "p": "vol.p",
+    "T": "vol.T",
+    "mv": "v.m_flow",
+    "mc": "cv.m_flow"
+   },
+   "analysis": {
+    "kind": "transient",
+    "stop_time": 30,
+    "intervals": 10,
+    "tolerance": 1e-08
+   }
+  },
+  "om": {
+   "p": 588963.4688210563,
+   "T": 334.4526707173102,
+   "mv": 0.05306578940704026,
+   "mc": 0.0496414923952813
+  }
+ }
+}
