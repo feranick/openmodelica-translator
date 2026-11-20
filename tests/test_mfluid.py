@@ -59,7 +59,7 @@ def test_medium_given_once_spreads():
     assert not net.errors
     assert {repr(d["params"]["medium"]) for d in net.elems.values()} == {repr({"cp": 3800.0, "eta": 0.004, "rho": 1050.0})}
     t = translate(st).text
-    assert "ConstantPropertyLiquidWater(cp_const=3800.0, eta_const=0.004, d_const=1050.0)" in t
+    assert "ConstantPropertyLiquidWater(cp_const=3800.0, eta_const=0.004, d_const=1050.0, cv_const=3800.0)" in t
 
 
 @pytest.mark.parametrize("change, msg", [
@@ -229,7 +229,7 @@ def test_fluid_energy_balance():
     tr = translate(st)
     bnd, src, store = fluid_energy_terms(tr)
     assert list(bnd) == ["a.ports[1]"] and bnd["a.ports[1]"][2] == [("o.port_a.m_flow", "o.port_a.h_outflow")]
-    assert src == ["tank.Qb_flow", "tank.Wb_flow"] and store == ["tank.U"]
+    assert src == ["tank.Qb_flow", "tank.Wb_flow", "tank.ports_E_flow[1]"] and store == ["tank.U"]
     assert "o.port_a.h_outflow" in fluid_energy_paths(tr)
     t = np.linspace(0, 100, 101)
     m = 2.0 * np.exp(-t / 50)                       # out of the boundary into the tank: a.ports[1].m_flow = -m
@@ -246,7 +246,8 @@ def test_fluid_energy_balance():
         def series(self, p):
             return {"a.ports[1].m_flow": -m, "a.ports[1].h_outflow": np.full_like(t, h),
                     "o.port_a.m_flow": m, "o.port_a.h_outflow": np.full_like(t, 9e4),
-                    "tank.Qb_flow": Q * self.f, "tank.Wb_flow": 0 * t, "tank.U": U}[p]
+                    "tank.Qb_flow": Q * self.f, "tank.Wb_flow": 0 * t, "tank.ports_E_flow[1]": 0 * t,
+                    "tank.U": U}[p]
     out = {"checks": {}}
     _fluid_energy(out, tr, R())
     assert out["checks"]["fluid_energy"]["ok"], out["checks"]["fluid_energy"]

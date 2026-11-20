@@ -1,5 +1,5 @@
 """runner.py — one study end to end: validate, translate, build (or reuse), run, read, check, write the result.
-Version: 2026.11.19.17
+Version: 2026.11.19.18
 
 run_study(name, study, folder, solver, timeout, cancel) -> the result dict, also written atomically to
 <folder>/<name>.json. solver: "omc" (OpenModelica) or "ref" (the reference implementation only: linear
@@ -517,6 +517,7 @@ def fluid_mass_terms(tr):
 
 
 MASS_FLOOR = 1e-6
+ENERGY_FLOOR = 1e-5
 FL_LUMPED = ("fl_tank", "fl_volume", "fl_pump", "fl_pump_shaft")        # PartialLumpedVolume: U, Qb_flow, Wb_flow
 
 
@@ -548,6 +549,11 @@ def fluid_energy_terms(tr):
         elif k in FL_LUMPED:
             src += [f"{e}.Qb_flow", f"{e}.Wb_flow"]
             store.append(f"{e}.U")
+            if k in ("fl_tank", "fl_volume"):
+                # PartialLumpedVessel: Hb_flow = sum(ports_H_flow) + sum(ports_E_flow), the kinetic (and port height)
+                # energy at its ports, which the static parts do not carry (carbonio bench_20261119_203924:
+                # 1.4e-3 off in fl_loop_reference without it, ~ m v^2/2 at the 50 mm ports)
+                src += [f"{e}.ports_E_flow[{j}]" for j in range(1, d.get("multi_n", {}).get("port", 0) + 1)]
         elif k == "fl_dynamic_pipe":
             n = int(d["params"]["nNodes"])
             src += [f"{e}.Qb_flows[{i}]" for i in range(1, n + 1)] + [f"{e}.Wb_flows[{i}]" for i in range(1, n + 1)]
@@ -612,7 +618,9 @@ def _fluid_energy(out, tr, r, tol=1e-6):
     change = float(U[-1] - U[0])
     scale = max(through, dU, abs(change), float(np.max(np.abs(U))) * 1e-9 if np.size(U) else 0.0, 1e-300)
     err = abs(change - inflow) / scale
-    lim = max(MASS_FLOOR, 10 * tol, 10 * est / scale)
+    # U is a state of its own (mass follows the levels algebraically): the integrator's global error, ~100 x its
+    # tolerance (fl_drain_torricelli: 1.35e-6 at tolerance 1e-8)
+    lim = max(ENERGY_FLOOR, 100 * tol, 10 * est / scale)
     out["checks"]["fluid_energy"] = {"ok": err <= lim, "covered": True, "error_rel": err, "tol": lim,
                                      "stored_change_J": change, "inflow_J": inflow, "throughput_J": through}
 

@@ -1,5 +1,5 @@
 """catalog.py — the curated MSL 4.0.0 components: kinds, ports, parameters (SI), variables, initial values.
-Version: 2026.11.19.16
+Version: 2026.11.19.18
 
 Every name below was checked against the MSL 4.0.0 sources (tag v4.0.0): class paths, port names, parameter
 names and defaults. A kind is either elementary (one MSL class) or composite (parts that are elementary kinds,
@@ -917,6 +917,8 @@ def fmedium(v) -> dict:
         return {"name": v, "msl": pkg, "class": cls}
     d = dict(v)
     args = ", ".join(f"{FMEDIUM_KEYS[k]}={float(d[k])!r}" for k in sorted(d))
+    if "cp" in d:     # cv_const would stay water's 4184 (carbonio 2026-11-19, fl_heated_tank): incompressible, cv = cp
+        args += f", cv_const={float(d['cp'])!r}"
     return {"name": "custom", "msl": f"Modelica.Media.Water.ConstantPropertyLiquidWater({args})",
             "class": "liquid_const"}
 
