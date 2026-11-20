@@ -1,5 +1,5 @@
 """format.py — the study format (study_format) and the static checks (validate, validate_study).
-Version: 2026.11.19.12
+Version: 2026.11.19.13
 
 validate_study(study) -> {ok, errors, warnings}: nothing runs (no omc). It resolves the network (network.build),
 checks outputs, analysis, derived quantities, sweep, expect, run (against the OMCT_MAX_* caps) and images, then
@@ -30,7 +30,8 @@ STUDY_KEYS = {
            "t_unit, sigma, weight} | {csv, t, y (columns), ...}}, steady: [{set: {path: value}, values: {output: "
            "value}, sigma}], starts (1), max_evaluations (400)}: parameter estimation -> fit.params.<p>.{value, stderr, "
            "ci95}, correlation, identifiable, quality; run.timeout_s: the whole fit",
-    "cross_check": "modelica, fl_* (true): rerun with the other integrator -> checks.cross_solver; false skips",
+    "cross_check": "modelica, fl_* not in the reference (true): rerun with the other integrator -> checks.cross_solver; "
+                   "false skips",
     "invariants": "[{signal, kind: zero (abs) | constant (abs | rel), name?}] -> checks.invariants",
     "converge": "true | {abs_tol: {output: value}}: rerun at tolerance/10; a change over max(1e-4, 100 x tolerance) "
                 "of an output's range -> unreliable; abs_tol: judged by absolute change; constant outputs -> not_judged",
@@ -177,7 +178,8 @@ FLUID_TOPIC = {
         "(friction + rho g height_ab).",
         "Outputs: comp.var (vars below), comp.port_a.p / .m_flow (into the component), sensors' signal outputs. "
         "Checks: reference (constant-density liquids: boundaries, sources, pipes, fittings, valves, pumps, tanks; "
-        "not temperatures, inputs that change the flows, dynamic pipes, gases), cross_solver, mass.",
+        "not temperatures, inputs that change the flows, dynamic pipes, gases), mass; studies the reference does not "
+        "cover: cross_solver (the other integrator).",
     ],
 }
 
@@ -191,9 +193,27 @@ def has_fluid(st) -> bool:
 
 
 def cross_checked(st) -> bool:
-    """Whether a study gets the cross-solver run (the other integrator): custom models and Modelica.Fluid studies,
-    unless cross_check is false."""
-    return ("modelica" in st or has_fluid(st)) and st.get("cross_check", True) is not False
+    """Whether a study gets the cross-solver run (the other integrator): custom models, and Modelica.Fluid studies
+    the reference does not cover (fluidref.covered; Nicola 2026-11-19: the reference is the stronger check, so
+    covered ones skip the second run unless cross_check is true); never with cross_check false."""
+    cc = st.get("cross_check")
+    if cc is False:
+        return False
+    if "modelica" in st:
+        return True
+    if not has_fluid(st):
+        return False
+    return cc is True or not fluid_covered(st)
+
+
+def fluid_covered(st) -> bool:
+    """A valid Modelica.Fluid study the reference implementation covers (constant-density liquids, fluidref)."""
+    from .fluidref import covered
+    try:
+        net = build(st)
+    except Exception:           # an invalid study: validation reports it
+        return False
+    return not net.errors and covered(net)[0]
 
 
 def fluid_kinds() -> list[str]:

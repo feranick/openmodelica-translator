@@ -1,5 +1,5 @@
 """test_fluidref.py — the reference for Modelica.Fluid liquids (V5 FL4): MSL's functions, coverage, the network.
-Version: 2026.11.19.12
+Version: 2026.11.19.13
 """
 import copy
 import math
@@ -176,3 +176,13 @@ def test_steady_without_tanks_for_fits():
           "analysis": {"kind": "transient", "stop_time": 1}}
     s = translate(st).ref.steady(1.0)
     assert s["v.port_a.m_flow"] == pytest.approx(27.7e-6 * 10 * math.sqrt(1000 * 1e4), rel=1e-9)
+
+
+def test_covered_studies_skip_the_cross_solver_run():
+    from openmodelica_translator.format import cross_checked
+    assert not cross_checked(DRAIN)
+    assert cross_checked({**DRAIN, "cross_check": True})
+    assert not cross_checked({**DRAIN, "cross_check": False})
+    st = copy.deepcopy(DRAIN)
+    st["components"]["tank"]["port_diameter"] = 0.03          # port losses: not covered
+    assert cross_checked(st)

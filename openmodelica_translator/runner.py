@@ -1,5 +1,5 @@
 """runner.py — one study end to end: validate, translate, build (or reuse), run, read, check, write the result.
-Version: 2026.11.19.12
+Version: 2026.11.19.13
 
 run_study(name, study, folder, solver, timeout, cancel) -> the result dict, also written atomically to
 <folder>/<name>.json. solver: "omc" (OpenModelica) or "ref" (the reference implementation only: linear
@@ -464,7 +464,7 @@ def _run(name, study, folder, solver, timeout, cancel) -> dict:
             from .format import cross_checked, has_fluid
             if "modelica" not in study:
                 _reference(out, study, tr, r.time, vals, tol)
-            if cross_checked(study):        # custom models and Modelica.Fluid (not in the reference)
+            if cross_checked(study):        # custom models, Modelica.Fluid the reference does not cover
                 _cross_solver(out, b, folder, run_overrides, tr, r, vals, t0, t1, n, tol, method, filt, timeout, cancel)
             if has_fluid(study):
                 _fluid_mass(out, tr, r, tol)
