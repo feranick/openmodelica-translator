@@ -1,5 +1,5 @@
 """fluidref.py — the reference implementation for Modelica.Fluid liquid networks (V5 FL4).
-Version: 2026.11.19.16
+Version: 2026.11.19.19
 
 An independent solver of the same equations MSL 4.0.0 writes for constant-density liquids, ported from the MSL
 sources (tag v4.0.0) rather than reused: what OpenModelica must reproduce. Covered (covered(net)):
@@ -9,14 +9,17 @@ sources (tag v4.0.0) rather than reused: what OpenModelica must reproduce. Cover
               fl_resistance (a > 0), fl_orifice, fl_valve (check valve too), fl_valve_linear, fl_pump (constant
               speed, check valve too, a volume too), fl_tank (port losses too; system dynamics fixed_initial),
               fl_pressure, fl_temperature, fl_mass_flow_sensor, fl_volume_flow_sensor, fl_relative_pressure, fl_system
-  not         anything outside Modelica.Fluid, dynamic pipes and volumes, gases, inputs that change the flows (p_in,
-              m_flow_in, opening, w_in; T_in and heat ports are fine), temperatures
+  thermal     temperatures (FL9): mixing at connection points, tanks and pump volumes, a pump's W, and a linear
+              thermal network on tank heat ports (fixed_temperature, fixed_heat_flow, thermal_conductor,
+              thermal_resistor, heat_capacitor, temperature_sensor); T_in inputs switch temperatures off
+  not         anything else outside Modelica.Fluid, dynamic pipes and volumes, gases, inputs that change the flows
+              (p_in, m_flow_in, opening, w_in)
 
 Hydraulics are algebraic (momentum steady, MSL's default): at each instant, node pressures and component flows from
 a Newton solve of the component relations and the node mass balances; boundaries and tank ports fix pressures
 (p_ambient + rho g level: OpenTank without portsData); the tank levels are the states (A rho dlevel/dt = inflow,
-level_start fixed), integrated with Radau (rtol 1e-10). Temperatures are not computed (constant density: they do
-not change the flows); outputs that need them are left out of the comparison.
+level_start fixed), integrated with Radau (rtol 1e-10) together with the energy states (tanks, pump volumes,
+capacitors): temperatures do not change the flows (constant density and viscosity), the flows drive them.
 
 MSL relations ported (Modelica.Fluid 4.0.0, tag v4.0.0; planning.md V5 FL4):
   pipe       WallFriction.Detailed.massFlowRate_dp_staticHead: Detailed.Internal.m_flow_of_dp_fric outside dp_small
@@ -54,6 +57,10 @@ COVERED = {"fl_system", "fl_boundary", "fl_mass_flow", "fl_pipe", "fl_resistance
 TWO_PORT = {"fl_pipe", "fl_resistance", "fl_orifice", "fl_valve", "fl_valve_linear", "fl_pump", "fl_temperature",
             "fl_mass_flow_sensor", "fl_volume_flow_sensor"}
 ZERO_DP = {"fl_temperature", "fl_mass_flow_sensor", "fl_volume_flow_sensor"}
+# thermal parts the reference solves with the fluid's temperatures (FL9): a linear network on the storages' heat ports
+THERMAL = {"fixed_temperature", "fixed_heat_flow", "thermal_conductor", "thermal_resistor", "heat_capacitor",
+           "temperature_sensor"}
+T0_MEDIUM = 273.15          # PartialSimpleMedium T0 (ConstantPropertyLiquidWater): h = cp (T - T0), u = cv (T - T0)
 
 
 class FluidRefError(ValueError):
@@ -311,8 +318,11 @@ def covered(net) -> tuple[bool, str]:
     sysp = next((d["params"] for d in net.elems.values() if d["kind"] == "fl_system"), {})
     for e, d in sorted(net.elems.items()):
         k, p, c = d["kind"], d["params"], d["comp"]
+        if k in THERMAL:
+            continue
         if C.KINDS[k].get("domain") != "mfluid":
-            return False, f"{c} ({k}) is not Modelica.Fluid (studies mixing Fluid with other domains: not covered)"
+            return False, (f"{c} ({k}) is not Modelica.Fluid or a thermal part the reference has ("
+                           f"{', '.join(sorted(THERMAL))})")
         if k not in COVERED:
             return False, f"{c} ({k}) is not in the Fluid reference (dynamic pipes, volumes, gas valves, shaft pumps)"
         if k == "fl_system":
@@ -333,6 +343,14 @@ def covered(net) -> tuple[bool, str]:
     if sysp and not sysp.get("allowFlowReversal", True):
         return False, "allowFlowReversal false"
     return True, ""
+
+
+def _cp(p):
+    """(cp, cv): ConstantPropertyLiquidWater 4184, 4184; a custom liquid's cp for both (omct sets cv_const = cp)."""
+    m = p.get("medium") or "water"
+    if isinstance(m, dict):
+        return float(m["cp"]), float(m["cp"])
+    return 4184.0, 4184.0
 
 
 def _medium(p):
@@ -432,6 +450,7 @@ class FluidRef:
         if dead:
             raise FluidRefError("a connection point with only sensors on it (no pressure)")
         self._x = None
+        self._thermal_setup(sysp)
 
     def _fix(self, n, how):
         if n in self.fixed and self.fixed[n] != how:
@@ -598,43 +617,332 @@ class FluidRef:
         return np.array([sum(ff[(tk["e"], j)] for j in range(1, len(tk["ports"]) + 1) if (tk["e"], j) in ff) +
                          sum(m[i] for _, i in tk["loss"]) for tk in self.tanks])
 
+    # ---- temperatures (FL9) -----------------------------------------------------------------------------------------
+    def _thermal_setup(self, sysp):
+        """Energy states and the thermal network. The hydraulics do not depend on temperature (constant density and
+        viscosity), so temperatures follow the flows: ideal mixing at each connection point (Modelica's stream
+        connectors: the inflows' enthalpy weighted by their mass flows), isenthalpic static parts, a pump without a
+        volume adding W / m_flow, tanks and pump volumes with der(U) = Hb_flow + Qb_flow + Wb_flow (U = m cv (T - T0),
+        h = cp (T - T0), T0 273.15; a vessel's Hb_flow includes m v^2/2 at ports with port_diameter), and a linear
+        thermal network on the tanks' heat ports (OpenTank's IdealHeatTransfer: the port is at the fluid's T)."""
+        net = self.net
+        self.thermal, self.thermal_why = True, ""
+        self.T_amb = float(sysp.get("T_ambient", 293.15))
+        for e, d in net.elems.items():
+            if d["kind"] in ("fl_boundary", "fl_mass_flow") and "T_in" in (d.get("enabled") or ()):
+                self.thermal, self.thermal_why = False, f"{d['comp']}: input T_in (temperatures not in the reference)"
+        for tk in self.tanks:
+            p = net.elems[tk["e"]]["params"]
+            tk["cp"], tk["cv"] = _cp(p)
+            tk["T_start"] = float(p["T_start"]) if p.get("T_start") is not None else self.T_amb
+        self.pvols = []
+        for i, f in enumerate(self.flows):
+            f["cp"] = _cp(f["p"])[0] if f["k"] != "tank_port" else self.tanks[f["ti"]]["cp"]
+            if f["k"] == "fl_pump" and float(f["p"].get("V") or 0) > 0:
+                f["vol"] = len(self.pvols)
+                cp, cv = _cp(f["p"])
+                self.pvols.append({"i": i, "m": f["rho"] * float(f["p"]["V"]), "cp": cp, "cv": cv,
+                                   "T_start": float(f["p"]["T_start"]) if f["p"].get("T_start") is not None
+                                   else self.T_amb})
+        self.h_bnd = {}
+        for e, d in net.elems.items():
+            if d["kind"] in ("fl_boundary", "fl_mass_flow"):
+                cp, _ = _cp(d["params"])
+                self.h_bnd[e] = cp * (float(d["params"]["T"]) - T0_MEDIUM)
+        self.h_default = 4184.0 * (self.T_amb - T0_MEDIUM)
+        # the thermal network: nodes of heat ports; fixed by fixed_temperature, a capacitor or a tank's heat port
+        par = {}
+
+        def find(n):
+            while par.get(n, n) != n:
+                n = par[n]
+            return n
+        tnode = {}
+        for ep, nid in net.node_of.items():
+            if net.port_type(ep) == "heat":
+                tnode[ep] = nid
+        self.tnode = {ep: find(n) for ep, n in tnode.items()}
+        self.cond, self.hflows, self.tfix, self.caps, self.tsens = [], [], {}, [], []
+        self.tel = {}
+
+        def fix(n, how, who):
+            if n in self.tfix and self.tfix[n] != how:
+                raise FluidRefError(f"{who}: two parts fix one temperature (a fixed temperature, a capacitor or a "
+                                    f"tank's heat port on one thermal node)")
+            self.tfix[n] = how
+        for e, d in sorted(net.elems.items()):
+            k, p = d["kind"], d["params"]
+            if k not in THERMAL:
+                continue
+            if k == "thermal_conductor":
+                G = float(p["G"]) if p.get("G") is not None else float(p["k"]) * float(p["A"]) / float(p["L"])
+                self.cond.append((self.tnode[f"{e}.port_a"], self.tnode[f"{e}.port_b"], G, e))
+            elif k == "thermal_resistor":
+                self.cond.append((self.tnode[f"{e}.port_a"], self.tnode[f"{e}.port_b"], 1.0 / float(p["R"]), e))
+            elif k == "fixed_heat_flow":
+                self.hflows.append((self.tnode[f"{e}.port"], float(p["Q_flow"]), float(p["alpha"]), float(p["T_ref"]), e))
+            elif k == "fixed_temperature":
+                fix(self.tnode[f"{e}.port"], ("T", float(p["T"])), d["comp"])
+            elif k == "heat_capacitor":
+                C_ = float(p["C"]) if p.get("C") is not None else float(p["m"]) * float(p["cp"])
+                ci = len(self.caps)
+                self.caps.append({"e": e, "C": C_, "T0": float(d["inits"]["T0"][0]), "n": self.tnode[f"{e}.port"]})
+                fix(self.tnode[f"{e}.port"], ("cap", ci), d["comp"])
+            elif k == "temperature_sensor":
+                self.tsens.append((e, self.tnode[f"{e}.port"]))
+        for ti, tk in enumerate(self.tanks):
+            ep = f"{tk['e']}.heatPort"
+            tk["hn"] = self.tnode.get(ep) if "heatPort" in (net.elems[tk["e"]].get("enabled") or ()) else None
+            if tk["hn"] is not None:
+                fix(tk["hn"], ("tank", ti), net.elems[tk["e"]]["comp"])
+        allt = set(self.tnode.values())
+        self.tfree = sorted((n for n in allt if n not in self.tfix), key=str)
+        if (self.cond or self.hflows or self.caps or self.tsens) and not self.thermal:
+            self.thermal_why += " (the thermal parts are then not computed either)"
+
+    def _thermal_net(self, Tfix):
+        """Free node temperatures from the conductances and heat flows (linear), and the heat into each fixing part
+        {node: Q into the part fixing it}."""
+        fi = {n: i for i, n in enumerate(self.tfree)}
+        nf = len(fi)
+        A, b = np.zeros((nf, nf)), np.zeros(nf)
+
+        def T_of(n, x=None):
+            return Tfix[n] if n in Tfix else x[fi[n]]
+        for na, nb, G, _ in self.cond:
+            for n, m_ in ((na, nb), (nb, na)):
+                if n in fi:
+                    A[fi[n], fi[n]] += G
+                    if m_ in fi:
+                        A[fi[n], fi[m_]] -= G
+                    else:
+                        b[fi[n]] += G * Tfix[m_]
+        for n, Q, al, Tr, _ in self.hflows:
+            if n in fi:                       # injected Q (1 + al (T - Tr)) into the node
+                A[fi[n], fi[n]] -= Q * al
+                b[fi[n]] += Q * (1 - al * Tr)
+        x = np.linalg.solve(A, b) if nf else np.zeros(0)
+        T = dict(Tfix)
+        T.update({n: x[i] for n, i in fi.items()})
+        Qin = {n: 0.0 for n in Tfix}
+        for na, nb, G, _ in self.cond:
+            q = G * (T[na] - T[nb])              # from a to b
+            if na in Qin:
+                Qin[na] -= q
+            if nb in Qin:
+                Qin[nb] += q
+        for n, Q, al, Tr, _ in self.hflows:
+            if n in Qin:
+                Qin[n] += Q * (1 + al * (T[n] - Tr))
+        return T, Qin
+
+    def _pump_power(self, f, m, pa, pb):
+        p, rho = f["p"], f["rho"]
+        n0 = float(p["N_nominal"])
+        n = float(p["N"]) if p.get("N") is not None else n0
+        npar = float(p["nParallel"])
+        if p.get("power") is not None:
+            from .chains import quad_points
+            pw, _ = quad_points(p["power"])
+            c = np.linalg.solve(np.vander([r[0] for r in pw], 3, increasing=True), [r[1] for r in pw])
+            rho_n = float(p["rho_power"]) if p.get("rho_power") is not None else rho
+            vs = m / rho / npar * n0 / n
+            return npar * (n / n0) ** 3 * (rho / rho_n) * (c[0] + c[1] * vs + c[2] * vs * vs)
+        return (pb - pa) * (m / rho) / float(p["eta"])
+
+    def _energy(self, levels, Ut, Up, Tc, m, P):
+        """(dU tanks, dU pump volumes, dT capacitors, details) at one instant."""
+        nt = len(self.tanks)
+        mt = np.array([tk["rho"] * tk["A"] * max(levels[i], EPS) for i, tk in enumerate(self.tanks)])
+        Tt = np.array([T0_MEDIUM + Ut[i] / (mt[i] * tk["cv"]) for i, tk in enumerate(self.tanks)])
+        ht = np.array([tk["cp"] * (Tt[i] - T0_MEDIUM) for i, tk in enumerate(self.tanks)])
+        Tp = np.array([T0_MEDIUM + Up[j] / (pv["m"] * pv["cv"]) for j, pv in enumerate(self.pvols)])
+        hp = np.array([pv["cp"] * (Tp[j] - T0_MEDIUM) for j, pv in enumerate(self.pvols)])
+        W = {}
+        for i, f in enumerate(self.flows):
+            if f["k"] == "fl_pump":
+                W[i] = self._pump_power(f, m[i], P[f["a"]], P[f["b"]])
+        # discharges into each connection point: (weight, constant h) or (weight, upstream node, added h)
+        dis = {}
+
+        def add(n, w, h=None, up=None, extra=0.0):
+            if w > 0:
+                dis.setdefault(n, []).append((w, h, up, extra))
+        ff = self._fixed_flows(m)
+        for e, j, n0 in self.fixed_ports:
+            mp = ff[(e, j)]
+            if e in self.h_bnd:
+                add(self.nodes_root[n0], -mp, h=self.h_bnd[e])
+            else:
+                ti = next(i for i, tk in enumerate(self.tanks) if tk["e"] == e)
+                add(self.nodes_root[n0], -mp, h=ht[ti])
+        for n, ms, e, orig in self.sources:
+            add(n, ms, h=self.h_bnd[e])
+        for i, f in enumerate(self.flows):
+            mi = m[i]
+            if f["k"] == "tank_port":
+                add(f["a"], -mi, h=ht[f["ti"]])
+                continue
+            dst, src = (f["b"], f["a"]) if mi > 0 else (f["a"], f["b"])
+            if "vol" in f:
+                add(dst, abs(mi), h=hp[f["vol"]])
+            else:
+                add(dst, abs(mi), up=src, extra=(W[i] / abs(mi) if i in W and abs(mi) > 0 else 0.0))
+        keys = list(self.nodes)
+        ix = {n: i for i, n in enumerate(keys)}
+        A, b = np.zeros((len(keys), len(keys))), np.zeros(len(keys))
+        for n in keys:
+            r = ix[n]
+            items = dis.get(n, [])
+            wsum = sum(w for w, *_ in items)
+            if wsum <= 0:
+                A[r, r], b[r] = 1.0, self.h_default
+                continue
+            A[r, r] = wsum
+            for w, h, up, extra in items:
+                if up is None:
+                    b[r] += w * h
+                else:
+                    A[r, ix[up]] -= w
+                    b[r] += w * extra
+        hmix = dict(zip(keys, np.linalg.solve(A, b)))
+        # heat ports
+        Tfix = {}
+        for n, how in self.tfix.items():
+            Tfix[n] = how[1] if how[0] == "T" else (Tc[how[1]] if how[0] == "cap" else Tt[how[1]])
+        Tnet, Qin = self._thermal_net(Tfix) if self.tnode else ({}, {})
+        dUt = np.zeros(nt)
+        Qt = np.zeros(nt)
+        for ti, tk in enumerate(self.tanks):
+            H = 0.0
+            for j in range(1, len(tk["ports"]) + 1):
+                if (tk["e"], j) in ff:
+                    mp = ff[(tk["e"], j)]
+                    n0 = self.nodes_root[tk["ports"][j - 1]]
+                    H += mp * (hmix[n0] if mp > 0 else ht[ti])
+            for j, i in tk["loss"]:
+                f = self.flows[i]
+                mi = m[i]
+                Ap = math.pi / 4 * f["D"] ** 2
+                H += mi * (hmix[f["a"]] if mi > 0 else ht[ti]) + mi * 0.5 * (mi / (tk["rho"] * Ap)) ** 2
+            Qt[ti] = Qin.get(tk["hn"], 0.0) if tk.get("hn") is not None else 0.0
+            dUt[ti] = H + Qt[ti]
+        dUp = np.zeros(len(self.pvols))
+        for jv, pv in enumerate(self.pvols):
+            i = pv["i"]
+            f = self.flows[i]
+            mi = m[i]
+            up = f["a"] if mi > 0 else f["b"]
+            dUp[jv] = abs(mi) * (hmix[up] - hp[jv]) + W[i]
+        dTc = np.array([Qin.get(c["n"], 0.0) / c["C"] for c in self.caps])
+        return dUt, dUp, dTc, {"hmix": hmix, "Tt": Tt, "Tp": Tp, "Tnet": Tnet, "Qin": Qin, "Qt": Qt, "W": W}
+
     # ---- over time --------------------------------------------------------------------------------------------------
     def simulate(self, t_eval, t0=None) -> dict:
         from scipy.integrate import solve_ivp
         t = np.asarray(t_eval, float)
         self._x = None
-        if self.tanks:
-            h0 = np.array([tk["h0"] for tk in self.tanks])
-            rho_a = np.array([tk["rho"] * tk["A"] for tk in self.tanks])
+        nt, nv, nc = len(self.tanks), len(self.pvols), len(self.caps)
+        th = self.thermal
+        h0 = np.array([tk["h0"] for tk in self.tanks])
+        rho_a = np.array([tk["rho"] * tk["A"] for tk in self.tanks])
+        U0 = np.array([tk["rho"] * tk["A"] * tk["h0"] * tk["cv"] * (tk["T_start"] - T0_MEDIUM) for tk in self.tanks])
+        V0 = np.array([pv["m"] * pv["cv"] * (pv["T_start"] - T0_MEDIUM) for pv in self.pvols])
+        C0 = np.array([c["T0"] for c in self.caps])
+        x0 = np.concatenate([h0] + ([U0, V0, C0] if th else []))
 
-            def rhs(_, h):
-                m, P = self._solve(h)
-                return self._tank_inflows(m, P) / rho_a
-            ts = float(t[0] if t0 is None else t0)
-            if t[-1] > ts:
-                sol = solve_ivp(rhs, (ts, float(t[-1])), h0, t_eval=t[t >= ts], method="Radau", rtol=1e-10,
-                                atol=1e-12 * max(1.0, float(np.max(h0))))
-                if not sol.success:
-                    raise FluidRefError(f"the tank levels did not integrate: {sol.message}")
-                H = np.empty((len(self.tanks), t.size))
-                H[:, t >= ts] = sol.y
-                H[:, t < ts] = h0[:, None]
-            else:
-                H = np.repeat(h0[:, None], t.size, axis=1)
-            if np.any(H < 0):
-                raise FluidRefError("a tank ran empty (below its ports: MSL's inflow-only mode, not in the reference)")
-        else:
-            H = np.zeros((0, t.size))
+        def split(x):
+            return x[:nt], x[nt:2 * nt], x[2 * nt:2 * nt + nv], x[2 * nt + nv:]
+
+        def rhs(_, x):
+            lv, Ut, Up, Tc = split(x)
+            m, P = self._solve(lv)
+            dl = self._tank_inflows(m, P) / rho_a if nt else np.zeros(0)
+            if not th:
+                return dl
+            dUt, dUp, dTc, _ = self._energy(lv, Ut, Up, Tc, m, P)
+            return np.concatenate([dl, dUt, dUp, dTc])
+        ts = float(t[0] if t0 is None else t0)
+        X = np.repeat(x0[:, None], t.size, axis=1)
+        if x0.size and t[-1] > ts:
+            sc = np.concatenate([np.full(nt, max(1.0, float(np.max(h0)) if nt else 1.0) * 1e-12)] +
+                                ([np.maximum(np.abs(U0), 1.0) * 1e-12, np.maximum(np.abs(V0), 1.0) * 1e-12,
+                                  np.full(nc, 1e-9)] if th else []))
+            sol = solve_ivp(rhs, (ts, float(t[-1])), x0, t_eval=t[t >= ts], method="Radau", rtol=1e-10, atol=sc)
+            if not sol.success:
+                raise FluidRefError(f"the tank levels and temperatures did not integrate: {sol.message}")
+            X[:, t >= ts] = sol.y
+        H = X[:nt]
+        if np.any(H < 0):
+            raise FluidRefError("a tank ran empty (below its ports: MSL's inflow-only mode, not in the reference)")
         self._x = None
-        cols = [self._solve(H[:, j]) for j in range(t.size)]
-        return self._paths(t, H, cols)
+        cols, ecols = [], []
+        for j in range(t.size):
+            lv, Ut, Up, Tc = split(X[:, j])
+            m, P = self._solve(lv)
+            cols.append((m, P))
+            ecols.append(self._energy(lv, Ut, Up, Tc, m, P) if th else None)
+        out = self._paths(t, H, cols)
+        if th:
+            out.update(self._thermal_paths(t, X, nt, nv, cols, ecols))
+        return out
+
+    def _thermal_paths(self, t, X, nt, nv, cols, ecols) -> dict:
+        out, net = {}, self.net
+
+        def ser(fn):
+            return np.array([fn(k) for k in range(t.size)], float)
+        for ti, tk in enumerate(self.tanks):
+            e = tk["e"]
+            out[f"{e}.medium.T"] = ser(lambda k, ti=ti: ecols[k][3]["Tt"][ti])
+            out[f"{e}.U"] = X[nt + ti]
+            if tk.get("hn") is not None:
+                out[f"{e}.heatPort.T"] = out[f"{e}.medium.T"]
+                out[f"{e}.heatPort.Q_flow"] = ser(lambda k, ti=ti: ecols[k][3]["Qt"][ti])
+        for jv, pv in enumerate(self.pvols):
+            e = self.flows[pv["i"]]["e"]
+            out[f"{e}.medium.T"] = ser(lambda k, jv=jv: ecols[k][3]["Tp"][jv])
+        for i, f in enumerate(self.flows):
+            if f["k"] == "fl_temperature":
+                cp = f["cp"]
+
+                def Ts(k, f=f, i=i, cp=cp):
+                    hm = ecols[k][3]["hmix"]
+                    Ta, Tb = T0_MEDIUM + hm[f["a"]] / cp, T0_MEDIUM + hm[f["b"]] / cp
+                    return reg_step(cols[k][0][i], Ta, Tb, self.m_small)
+                out[f"{f['e']}.T"] = ser(Ts)
+        # thermal parts
+        def Tn(n):
+            return ser(lambda k: ecols[k][3]["Tnet"][n])
+        for ci, c in enumerate(self.caps):
+            e = c["e"]
+            out[f"{e}.T"] = X[2 * nt + nv + ci]
+            out[f"{e}.der_T"] = ser(lambda k, c=c: ecols[k][3]["Qin"].get(c["n"], 0.0) / c["C"])
+            out[f"{e}.port.T"] = out[f"{e}.T"]
+            out[f"{e}.port.Q_flow"] = out[f"{e}.der_T"] * c["C"]
+        for na, nb, G, e in self.cond:
+            Ta, Tb = Tn(na), Tn(nb)
+            out.update({f"{e}.port_a.T": Ta, f"{e}.port_b.T": Tb, f"{e}.dT": Ta - Tb, f"{e}.Q_flow": G * (Ta - Tb),
+                        f"{e}.port_a.Q_flow": G * (Ta - Tb), f"{e}.port_b.Q_flow": -G * (Ta - Tb)})
+        for n, Q, al, Tr, e in self.hflows:
+            T_ = Tn(n)
+            out.update({f"{e}.port.T": T_, f"{e}.port.Q_flow": -Q * (1 + al * (T_ - Tr))})
+        for e, d in net.elems.items():
+            if d["kind"] == "fixed_temperature":
+                n = self.tnode[f"{e}.port"]
+                out[f"{e}.port.T"] = Tn(n)
+                out[f"{e}.port.Q_flow"] = ser(lambda k, n=n: ecols[k][3]["Qin"].get(n, 0.0))
+        for e, n in self.tsens:
+            out[f"{e}.T"] = Tn(n)
+            out[f"{e}.port.T"] = out[f"{e}.T"]
+        return out
 
     def steady(self, t1=None) -> dict:
         """Without tanks the hydraulics are algebraic: the state at any time. With tanks: RefError (no steady
         state is implied; the caller runs to the end instead)."""
         from .ref import RefError
-        if self.tanks:
-            raise RefError("tank levels: no algebraic steady state")
+        if self.tanks or (self.thermal and (self.pvols or self.caps)):
+            raise RefError("tank levels or temperatures: no algebraic steady state")
         v = self.simulate(np.array([0.0]))
         return {k: float(x[0]) for k, x in v.items()}
 

@@ -1,5 +1,5 @@
 """test_fluidref.py — the reference for Modelica.Fluid liquids (V5 FL4): MSL's functions, coverage, the network.
-Version: 2026.11.19.16
+Version: 2026.11.19.19
 """
 import copy
 import math
@@ -147,7 +147,7 @@ def test_parallel_branches_and_mass_flow_source():
     assert np.allclose(v["ps.p"], v["p1.port_a.p"]) and np.allclose(v["p1.port_a.p"], v["p2.port_a.p"])
 
 
-def test_reference_check_skips_outputs_it_does_not_compute():
+def test_reference_check_compares_temperatures_and_skips_what_it_lacks():
     from openmodelica_translator.runner import _reference
     st = copy.deepcopy(DRAIN)
     st["components"]["out"]["T"] = 300.0
@@ -155,15 +155,22 @@ def test_reference_check_skips_outputs_it_does_not_compute():
     tr = translate(st)
     t = np.linspace(0, 100, 51)
     v = tr.ref.simulate(t)
+    assert np.allclose(v["tank.medium.T"], 293.15)          # draining: the tank keeps its start temperature
     vals = {"l": v["tank.level"], "m": v["o.port_a.m_flow"] * (1 + 1e-9), "T": np.full(t.size, 293.15)}
     out = {"checks": {}}
     _reference(out, st, tr, t, vals, 1e-6)
     ref = out["checks"]["reference"]
-    assert ref["covered"] and ref["ok"] and ref["not_compared"] == ["T"]
-    vals["m"] = vals["m"] * 1.01
+    assert ref["covered"] and ref["ok"] and "T" in ref["per_output"] and "not_compared" not in ref
+    vals["T"] = np.full(t.size, 300.0)
     out = {"checks": {}}
     _reference(out, st, tr, t, vals, 1e-6)
     assert not out["checks"]["reference"]["ok"]
+    sim = tr.ref.simulate                                     # a path the reference lacks: not compared
+    tr.ref.simulate = lambda tt, t0=None: {k: x for k, x in sim(tt, t0).items() if k != "tank.medium.T"}
+    vals["T"] = np.full(t.size, 293.15)
+    out = {"checks": {}}
+    _reference(out, st, tr, t, vals, 1e-6)
+    assert out["checks"]["reference"]["not_compared"] == ["T"]
 
 
 def test_steady_without_tanks_for_fits():
@@ -236,3 +243,66 @@ def test_multi_port_outputs():
     assert "say which" in " ".join(validate_study(st)["errors"])
     st["outputs"] = {"p": "tank.port[3].p"}
     assert "2 connection(s)" in " ".join(validate_study(st)["errors"])
+
+
+# ---- FL9: temperatures ------------------------------------------------------------------------------------------
+def test_heated_tank_and_capacitor_through_a_conductor():
+    """Closed tank (no flow) heated at Q and tied to a capacitor: total heat conserved, T exact for the tank alone."""
+    st = {"components": {"tank": {"kind": "fl_tank", "height": 3, "crossArea": 0.5, "level_start": 1.0,
+                                  "T_start": 290.0, "medium": LIQ},
+                         "src": {"kind": "fl_mass_flow", "m_flow": 0.0},
+                         "heater": {"kind": "fixed_heat_flow", "Q_flow": 5000.0},
+                         "g": {"kind": "thermal_conductor", "G": 100.0},
+                         "cap": {"kind": "heat_capacitor", "C": 2e5, "T0": 350.0}},
+          "connect": [["src.port", "tank.port"], ["heater.port", "tank.heatPort"], ["tank.heatPort", "g.port_a"],
+                      ["g.port_b", "cap.port"]],
+          "outputs": {"T": "tank.T"}, "analysis": {"kind": "transient", "stop_time": 600}}
+    assert validate_study(st)["ok"], validate_study(st)["errors"]
+    r = F.FluidRef(build(st))
+    t = np.linspace(0, 600, 61)
+    v = r.simulate(t)
+    mc = 1000 * 0.5 * 1.0 * 4000                       # the tank's heat capacity m cv
+    E = mc * (v["tank.medium.T"] - 290) + 2e5 * (v["cap.T"] - 350)
+    assert np.allclose(E, 5000 * t, rtol=1e-8, atol=1e-3)
+    assert np.allclose(v["g.Q_flow"], 100 * (v["tank.medium.T"] - v["cap.T"]))
+    assert np.allclose(v["tank.heatPort.Q_flow"], 5000 - v["g.Q_flow"])
+
+
+def test_mixing_at_a_junction_and_sensor():
+    """Two boundaries (300 K, 340 K) through equal pipes into one node, then on to a third: the sensor after the
+    node reads the mass-weighted mix (ideal mixing of stream connectors)."""
+    st = {"components": {"a": {"kind": "fl_boundary", "p": 2e5, "T": 300.0, "medium": LIQ},
+                         "b": {"kind": "fl_boundary", "p": 1.6e5, "T": 340.0},
+                         "pa": {"kind": "fl_pipe", "length": 10, "diameter": 0.02},
+                         "pb": {"kind": "fl_pipe", "length": 10, "diameter": 0.02},
+                         "Ts": {"kind": "fl_temperature"}, "pc": {"kind": "fl_pipe", "length": 10, "diameter": 0.03},
+                         "c": {"kind": "fl_boundary", "p": 1e5}},
+          "connect": [["a.port", "pa.port_a"], ["b.port", "pb.port_a"], ["pa.port_b", "Ts.port_a"],
+                      ["pb.port_b", "Ts.port_a"], ["Ts.port_b", "pc.port_a"], ["pc.port_b", "c.port"]],
+          "outputs": {"T": "Ts.T"}, "analysis": {"kind": "transient", "stop_time": 1}}
+    assert validate_study(st)["ok"], validate_study(st)["errors"]
+    v = F.FluidRef(build(st)).simulate(np.array([0.0]))
+    ma, mb = v["pa.port_a.m_flow"][0], v["pb.port_a.m_flow"][0]
+    assert ma > 0 and mb > 0
+    assert v["Ts.T"][0] == pytest.approx((300 * ma + 340 * mb) / (ma + mb), rel=1e-12)
+
+
+def test_pump_volume_heating_closed_form():
+    from openmodelica_translator import bench
+    st, checks = bench._fl_pump_heating()
+    r = F.FluidRef(build(st))
+    v = r.simulate(np.linspace(0, 20, 101))
+    assert v["Ts.T"][-1] == pytest.approx(dict((c[0], c[1]) for c in checks)["outputs.T.final"], abs=1e-8)
+
+
+def test_temperature_inputs_switch_temperatures_off():
+    st = copy.deepcopy(DRAIN)
+    st["components"]["Tin"] = {"kind": "constant", "k": 300.0}
+    st["connect"].append(["Tin.y", "out.T_in"])
+    v = validate_study(st)
+    if not v["ok"]:
+        pytest.skip("; ".join(v["errors"]))
+    ok, _ = F.covered(build(st))
+    if ok:
+        r = F.FluidRef(build(st))
+        assert not r.thermal and "T_in" in r.thermal_why

@@ -1,5 +1,5 @@
 """format.py — the study format (study_format) and the static checks (validate, validate_study).
-Version: 2026.11.19.17
+Version: 2026.11.19.19
 
 validate_study(study) -> {ok, errors, warnings}: nothing runs (no omc). It resolves the network (network.build),
 checks outputs, analysis, derived quantities, sweep, expect, run (against the OMCT_MAX_* caps) and images, then
@@ -182,8 +182,8 @@ FLUID_TOPIC = {
         "scaled to the circuit's density (and viscosity with mu). Given values win; unreliable results are refused; "
         "result.inputs.<comp>.cfdt records the points and the fit.",
         "Outputs: comp.var (vars below), comp.port_a.p / .m_flow (into the component), sensors' signal outputs. "
-        "Checks: reference (constant-density liquids: boundaries, sources, pipes, fittings, valves, pumps, tanks; "
-        "not temperatures, inputs that change the flows, dynamic pipes, gases), mass, fluid_energy (stored internal "
+        "Checks: reference (constant-density liquids: boundaries, sources, pipes, fittings, valves, pumps, tanks, "
+        "temperatures with thermal parts on tank heat ports; not dynamic pipes, gases, inputs), mass, fluid_energy (stored internal "
         "energy against boundary enthalpy, heat and work); studies the reference does not "
         "cover: cross_solver (the other integrator).",
     ],

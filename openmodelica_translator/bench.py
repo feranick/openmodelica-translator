@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with closed-form answers: is the toolchain right?
-Version: 2026.11.19.17
+Version: 2026.11.19.19
 
 Each case is a study plus checks [(result path, expected, tolerance, why)]; tolerances are relative unless
 written {"abs": x}. Chains (chain_feat_modal, chain_b3dt_mass, chain_b3dt_inertia) run the other translator first and only when named; they are skipped
@@ -1032,15 +1032,65 @@ def _fl_heated_tank():
                 ("checks.fluid_energy.error_rel", 0.0, {"abs": 1e-6}, "the heat in = the internal energy's rise")]
 
 
+def _fl_pump_heating():
+    """Temperatures in the reference (FL9): a pump with a volume (V 0.05 m3, starting at 290 K) lifts water 10 m
+    between two boundaries; its power W = rho g H V / eta warms the flow: m_v cv dT/dt = m cp (T_in - T) + W
+    (cv = cp), T = T_in + W / (m cp) + (T_start - T_in - W / (m cp)) exp(-m t / m_v); a sensor after it reads T."""
+    rho, cp, g = LIQ["rho"], LIQ["cp"], G
+    H, eta, Vp, Tin, T0, T = 10.0, 0.8, 0.05, 300.0, 290.0, 20.0
+    V = math.sqrt((20 - H) / 2e5)
+    m = rho * V
+    W = rho * g * H * V / eta
+    Tinf = Tin + W / (m * cp)
+    Tend = Tinf + (T0 - Tinf) * math.exp(-m * T / (rho * Vp))
+    st = {"components": {"src": {"kind": "fl_boundary", "p": 101325.0, "T": Tin, "medium": LIQ},
+                         "pump": {"kind": "fl_pump", "curve": [[0, 20], [0.005, 15], [0.01, 0]], "N_nominal": "1450 rpm",
+                                  "V": Vp, "T_start": T0, "eta": eta},
+                         "Ts": {"kind": "fl_temperature"}, "out": {"kind": "fl_boundary", "p": 101325.0 + rho * g * H}},
+          "connect": [["src.port", "pump.port_a"], ["pump.port_b", "Ts.port_a"], ["Ts.port_b", "out.port"]],
+          "outputs": {"T": "Ts.T", "m": "pump.m_flow"},
+          "analysis": {"kind": "transient", "stop_time": T, "intervals": 100, "tolerance": 1e-8}}
+    return st, [("outputs.m.final", m, 1e-6, "the curve at 10 m: 20 - 2e5 V^2 = 10"),
+                ("outputs.T.final", Tend, {"abs": 1e-5}, "the pump volume's temperature: W heats the flow")]
+
+
+def _fl_thermal_reference():
+    """Temperatures judged against the reference (FL9): water at 300 K pumped (W heats it) into a tank (290 K)
+    heated by 20 kW and tied by a conductor to a capacitor (350 K) with its own heater (5 kW, alpha 0.002); the
+    tank drains through an orifice; temperature sensors before and after the tank."""
+    st = {"components": {
+        "src": {"kind": "fl_boundary", "p": 101325, "T": 300.0, "medium": LIQ},
+        "pump": {"kind": "fl_pump", "curve": [[0, 20], [0.005, 15], [0.01, 0]], "N_nominal": "1450 rpm"},
+        "Ts1": {"kind": "fl_temperature"}, "pipe": {"kind": "fl_pipe", "length": 10.0, "diameter": 0.05},
+        "tank": {"kind": "fl_tank", "height": 5, "crossArea": 0.5, "level_start": 1, "T_start": 290.0},
+        "heater": {"kind": "fixed_heat_flow", "Q_flow": 20000.0}, "g": {"kind": "thermal_conductor", "G": 50.0},
+        "cap": {"kind": "heat_capacitor", "C": 1e5, "T0": 350.0},
+        "hc": {"kind": "fixed_heat_flow", "Q_flow": 5000.0, "alpha": 0.002, "T_ref": 300.0},
+        "tsc": {"kind": "temperature_sensor"}, "o": {"kind": "fl_orifice", "diameter": 0.03, "zeta": 1.0},
+        "Ts2": {"kind": "fl_temperature"}, "out": {"kind": "fl_boundary", "T": 280.0}},
+        "connect": [["src.port", "pump.port_a"], ["pump.port_b", "Ts1.port_a"], ["Ts1.port_b", "pipe.port_a"],
+                    ["pipe.port_b", "tank.port"], ["tank.port", "o.port_a"], ["o.port_b", "Ts2.port_a"],
+                    ["Ts2.port_b", "out.port"], ["tank.heatPort", "heater.port"], ["tank.heatPort", "g.port_a"],
+                    ["g.port_b", "cap.port"], ["hc.port", "cap.port"], ["tsc.port", "cap.port"]],
+        "outputs": {"T_tank": "tank.T", "T1": "Ts1.T", "T2": "Ts2.T", "Tcap": "cap.T", "Qg": "g.Q_flow", "Tsc": "tsc.T",
+                    "level": "tank.level", "Qport": "tank.heatPort.Q_flow"},
+        "analysis": {"kind": "transient", "stop_time": 600, "intervals": 120}}
+    return st, [("checks.reference.covered", 1, {"abs": 0.5}, "the Fluid reference covers it, temperatures too"),
+                ("checks.reference.max_error_rel", 0.0, {"abs": 1e-4}, "OpenModelica = the reference"),
+                ("checks.fluid_energy.ok", 1, {"abs": 0.5}, "energy balance")]
+
+
 FLUID_CASES = {"fl_drain_torricelli": _fl_drain, "fl_pipe_laminar": _fl_laminar, "fl_pump_system_curve": _fl_pump_system,
                "fl_valve_kv": _fl_valve, "fl_heated_pipe": _fl_heated_pipe, "fl_air_fill": _fl_air_fill,
                "fl_pipe_turbulent": _fl_turbulent, "fl_two_tanks": _fl_two_tanks, "fl_network_reference": _fl_network,
                "fl_cfdt_pump": _fl_cfdt_pump, "fl_cfdt_resistance": _fl_cfdt_resistance,
                "fl_sweep_opening": _fl_sweep_opening, "fl_fit_kv": _fl_fit_kv, "fl_check_valve": _fl_check_valve,
                "fl_tank_port_drain": _fl_tank_port_drain, "fl_loop_reference": _fl_loop_reference,
-               "fl_heated_tank": _fl_heated_tank}
+               "fl_heated_tank": _fl_heated_tank, "fl_pump_heating": _fl_pump_heating,
+               "fl_thermal_reference": _fl_thermal_reference}
 # not in the Fluid reference (fluidref.covered): a dynamic pipe, a gas; judged against the reference itself
-FLUID_OMC_ONLY = {"fl_heated_pipe", "fl_air_fill", "fl_network_reference", "fl_loop_reference", "fl_heated_tank"}
+FLUID_OMC_ONLY = {"fl_heated_pipe", "fl_air_fill", "fl_network_reference", "fl_loop_reference", "fl_heated_tank",
+                  "fl_thermal_reference"}
 
 
 def omc_only() -> set:
