@@ -162,6 +162,21 @@ the cross-solver run; nothing here is silently wrong. Each line says what is mis
 - A gas dynamic pipe's end volume on a boundary: OpenModelica reports the initial p as over-specified and drops it
   (the reference takes the boundary's p, agreeing to 1e-13).
 
+**F. Pumps: priming and cavitation (Nicola, 2026-11-19: "Is a self-priming centrifugal pump covered?")**
+- Priming is out of scope: a self-priming pump first evacuates air from the suction line (an air-water mixture in the
+  casing, a free surface rising in the pipe). Modelica.Fluid's pumps (PrescribedPump, Pump) carry one single-phase
+  medium, and MSL 4.0.0 has no air-water mixture through a pump and no free surface in a pipe, so neither OpenModelica
+  (through omct) nor the reference can represent it. Once primed it is an ordinary centrifugal pump running full of
+  liquid: fl_pump and the reference cover that (head curve, constant speed, power curve or efficiency, volume, check
+  valve, suction lift as a tank below the pump with a rising static pipe).
+- NPSH / cavitation is not checked (feasible): neither OpenModelica's run nor the reference compares the pump's suction
+  pressure with the liquid's vapour pressure, so a suction lift that would cavitate still runs and is reliable. A check
+  or warning could take NPSH_available = (p_inlet - p_vap(T_inlet)) / (rho g) from the pump's port_a.p and inStream T
+  (outputs we already have): p_vap for water (IF97 saturation or a fit), glycol47 and essotherm650 from the
+  tableVaporPressure in MSL's TableBased packages (poly_pVap, not ported yet); no p_vap for gases (not applicable). An
+  NPSH_required curve (a pump parameter, or from cfd-translator's cavitation results: NPSH3) would turn the warning
+  into a margin. MSL's PumpMonitoringNPSH needs a two-phase medium, so this would be omct's own check, not MSL's.
+
 ## Interconnections
 
 - **From feat:** static stiffness k = applied force / displacement (feat reports `applied_force` N and
