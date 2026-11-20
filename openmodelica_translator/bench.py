@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with closed-form answers: is the toolchain right?
-Version: 2026.11.19.11
+Version: 2026.11.19.12
 
 Each case is a study plus checks [(result path, expected, tolerance, why)]; tolerances are relative unless
 written {"abs": x}. Chains (chain_feat_modal, chain_b3dt_mass, chain_b3dt_inertia) run the other translator first and only when named; they are skipped
@@ -693,7 +693,7 @@ def _fit_msd():
                 ("fit.params.d.d.value", d, 1e-3, "zeta = d / (2 sqrt(c m))")]
 
 
-# ---- Modelica.Fluid (V5 FL3): closed forms; OpenModelica only (not in the reference yet) ---------------------------
+# ---- Modelica.Fluid (V5 FL3, FL4): closed forms; liquids also with the reference (fluidref) ----------------------
 LIQ = {"rho": 1000.0, "cp": 4000.0, "eta": 1e-3}       # a custom constant-property liquid: round numbers
 G = 9.80665
 
@@ -790,15 +790,77 @@ def _fl_air_fill():
                 ("checks.mass.error_rel", 0.0, {"abs": 1e-5}, "mass balance")]
 
 
+def _fl_turbulent():
+    """Colebrook-White is explicit in dp: lambda2 = 2 dp D^3 rho / (L mu^2), Re = -2 sqrt(lambda2)
+    log10(2.51/sqrt(lambda2) + 0.27 roughness/D), m = pi D mu Re / 4 (MSL's detailed friction above Re 4000)."""
+    d, L, rough, dp = 0.02, 10.0, 2.5e-5, 1e4
+    lam2 = 2 * dp * d ** 3 * LIQ["rho"] / (L * LIQ["eta"] ** 2)
+    Re = -2 * math.sqrt(lam2) * math.log10(2.51 / math.sqrt(lam2) + 0.27 * rough / d)
+    st = {"components": {"a": {"kind": "fl_boundary", "p": 101325.0 + dp, "medium": LIQ},
+                         "pipe": {"kind": "fl_pipe", "length": L, "diameter": d, "roughness": rough},
+                         "b": {"kind": "fl_boundary", "p": 101325.0}},
+          "connect": [["a.port", "pipe.port_a"], ["pipe.port_b", "b.port"]],
+          "outputs": {"m": "pipe.m_flow"}, "analysis": {"kind": "transient", "stop_time": 1, "intervals": 10}}
+    return st, [("outputs.m.final", math.pi * d * LIQ["eta"] * Re / 4, 1e-6, f"Colebrook-White at Re {Re:.0f}")]
+
+
+def _fl_two_tanks():
+    """Two open tanks joined by a pipe with dp = k m (nominal_laminar): h1 - h2 decays with
+    tau = k / (g (1/A1 + 1/A2))."""
+    A1, A2, h1, h2, k, T = 1.0, 0.5, 2.0, 0.5, 2e4, 3000.0
+    tau = k / (G * (1 / A1 + 1 / A2))
+    d0 = h1 - h2
+    hm = (A1 * h1 + A2 * h2) / (A1 + A2)
+    dT = d0 * math.exp(-T / tau)
+    st = {"components": {"t1": {"kind": "fl_tank", "height": 3, "crossArea": A1, "level_start": h1, "medium": LIQ},
+                         "pipe": {"kind": "fl_pipe", "length": 5, "diameter": 0.05, "friction": "nominal_laminar",
+                                  "dp_nominal": k, "m_flow_nominal": 1.0},
+                         "t2": {"kind": "fl_tank", "height": 3, "crossArea": A2, "level_start": h2}},
+          "connect": [["t1.port", "pipe.port_a"], ["pipe.port_b", "t2.port"]],
+          "outputs": {"h1": "t1.level", "h2": "t2.level", "m": "pipe.m_flow"},
+          "analysis": {"kind": "transient", "stop_time": T, "intervals": 300, "tolerance": 1e-8}}
+    return st, [("outputs.h1.final", hm + A2 / (A1 + A2) * dT, 1e-5, f"levels equalise, tau = {tau:.0f} s"),
+                ("outputs.h2.final", hm - A1 / (A1 + A2) * dT, 1e-5, "the volume is conserved"),
+                ("checks.mass.error_rel", 0.0, {"abs": 1e-5}, "mass balance")]
+
+
+def _fl_network():
+    """A pump network without a closed form, judged against the reference (FL4): a pump lifts water through
+    a pipe in the transition region in parallel with an orifice and an equal-percentage valve, then a generic
+    resistance into an open tank that fills."""
+    st = {"components": {"src": {"kind": "fl_boundary", "p": 1.2e5},
+                         "pump": {"kind": "fl_pump", "curve": [[0, 12], [0.002, 10], [0.004, 5]],
+                                  "N_nominal": "1450 rpm", "N": "1400 rpm"},
+                         "pipe": {"kind": "fl_pipe", "length": 20, "diameter": 0.003, "height_ab": 1.0},
+                         "o": {"kind": "fl_orifice", "diameter": 0.012, "zeta": 2.0},
+                         "v": {"kind": "fl_valve", "Kv": 3.0, "dp_nominal": 1e5, "m_flow_nominal": 1.0,
+                               "characteristic": "equal_percentage", "opening": 0.6},
+                         "r": {"kind": "fl_resistance", "a": 2e9, "b": 1e6},
+                         "ms": {"kind": "fl_mass_flow_sensor"}, "dp": {"kind": "fl_relative_pressure"},
+                         "tank": {"kind": "fl_tank", "height": 10, "crossArea": 0.05, "level_start": 0.2}},
+          "connect": [["src.port", "pump.port_a"], ["pump.port_b", "pipe.port_a"], ["pump.port_b", "o.port_a"],
+                      ["o.port_b", "v.port_a"], ["pipe.port_b", "r.port_a"], ["v.port_b", "r.port_a"],
+                      ["r.port_b", "ms.port_a"], ["ms.port_b", "tank.port"], ["dp.port_a", "pump.port_b"],
+                      ["dp.port_b", "r.port_a"]],
+          "outputs": {"m": "ms.m_flow", "m_pipe": "pipe.m_flow", "m_valve": "v.m_flow", "level": "tank.level",
+                      "head": "pump.head", "W": "pump.W", "dp": "dp.p_rel"},
+          "analysis": {"kind": "transient", "stop_time": 60, "intervals": 120}}
+    return st, [("checks.reference.covered", 1, {"abs": 0.5}, "the Fluid reference covers it"),
+                ("checks.reference.max_error_rel", 0.0, {"abs": 1e-4}, "OpenModelica = the reference")]
+
+
 FLUID_CASES = {"fl_drain_torricelli": _fl_drain, "fl_pipe_laminar": _fl_laminar, "fl_pump_system_curve": _fl_pump_system,
-               "fl_valve_kv": _fl_valve, "fl_heated_pipe": _fl_heated_pipe, "fl_air_fill": _fl_air_fill}
+               "fl_valve_kv": _fl_valve, "fl_heated_pipe": _fl_heated_pipe, "fl_air_fill": _fl_air_fill,
+               "fl_pipe_turbulent": _fl_turbulent, "fl_two_tanks": _fl_two_tanks, "fl_network_reference": _fl_network}
+# not in the Fluid reference (fluidref.covered): a dynamic pipe, a gas; judged against the reference itself
+FLUID_OMC_ONLY = {"fl_heated_pipe", "fl_air_fill", "fl_network_reference"}
 
 
 def omc_only() -> set:
-    """Cases the reference does not cover: Modelica.Fluid (FL4 brings liquids), and the nonlinear ones when
-    OMCT_REF_NONLINEAR=0 switches it off."""
+    """Cases the reference does not cover: Modelica.Fluid's dynamic pipes and gases (FL4 covers liquids), and the
+    nonlinear ones when OMCT_REF_NONLINEAR=0 switches it off."""
     from .ref import nonlinear_on
-    return set(FLUID_CASES) | (set() if nonlinear_on() else set(NONLINEAR_CASES))
+    return set(FLUID_OMC_ONLY) | (set() if nonlinear_on() else set(NONLINEAR_CASES))
 
 
 def cases() -> dict:

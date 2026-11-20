@@ -1,5 +1,5 @@
 """test_mfluid.py — Modelica.Fluid kinds (V5 FL2): validation, the closed-loop rule, the generated Modelica.
-Version: 2026.11.19.11
+Version: 2026.11.19.12
 
 Runs of the generated models are checked on the machines (planning.md V5); here: what omct writes and refuses.
 """

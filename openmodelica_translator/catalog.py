@@ -1,5 +1,5 @@
 """catalog.py — the curated MSL 4.0.0 components: kinds, ports, parameters (SI), variables, initial values.
-Version: 2026.11.19.10
+Version: 2026.11.19.12
 
 Every name below was checked against the MSL 4.0.0 sources (tag v4.0.0): class paths, port names, parameter
 names and defaults. A kind is either elementary (one MSL class) or composite (parts that are elementary kinds,
@@ -1016,7 +1016,9 @@ kind("fl_dynamic_pipe", MF + "Pipes.DynamicPipe", {**FAB_M, "heat": "heat"},
      doc="a pipe with nNodes volumes (mass and energy storage); heat: one port joined to every volume's wall "
          "(a ThermalCollector)")
 kind("fl_resistance", MF + "Fittings.GenericResistances.VolumeFlowRate", FAB_M,
-     {**FMED, "a": P("Pa.s2/m6", min=0, doc="dp = a V_flow^2 + b V_flow"), "b": P("Pa.s/m3", 0.0, min=0)},
+     {**FMED, "a": P("Pa.s2/m6", gt=0, doc="dp = a V_flow^2 + b V_flow; a > 0 (MSL 4.0.0 gives m_flow = rho b dp "
+                                          "for a = 0, not rho dp / b: for a linear law use fl_valve_linear)"),
+      "b": P("Pa.s/m3", 0.0, min=0)},
      {**TWO_VARS, "V_flow": "m3/s"}, var_paths=TWO_PATHS, domain="mfluid",
      doc="a generic resistance dp = a V_flow|V_flow| + b V_flow (a fitting, a filter, a heat exchanger's side)")
 kind("fl_orifice", MF + "Fittings.SimpleGenericOrifice", FAB_M,

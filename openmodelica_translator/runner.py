@@ -1,5 +1,5 @@
 """runner.py — one study end to end: validate, translate, build (or reuse), run, read, check, write the result.
-Version: 2026.11.19.11
+Version: 2026.11.19.12
 
 run_study(name, study, folder, solver, timeout, cancel) -> the result dict, also written atomically to
 <folder>/<name>.json. solver: "omc" (OpenModelica) or "ref" (the reference implementation only: linear
@@ -261,15 +261,22 @@ def _reference(out, study, tr, t, vals, tol):
         return
     lim = max(1e-4, 100 * tol)
     errs, lims, ok = {}, {}, True
-    ys = {}
+    ys, skipped = {}, []
     for oname, (terms, _) in tr.outputs.items():
+        if any(path not in rv for _, path in terms):   # the Fluid reference has no temperatures (FL4)
+            skipped.append(oname)
+            continue
         y = None
         for c, path in terms:
             y = c * rv[path] if y is None else y + c * rv[path]
         ys[oname] = np.asarray(y, float)
+    if not ys and tr.outputs:
+        out["checks"]["reference"] = {"ok": True, "covered": False,
+                                      "why": "the reference computes none of the outputs (" + ", ".join(skipped) + ")"}
+        return
     # an output that is zero up to rounding (Q of a resistive load) is judged on 1e-9 of the largest output of
     # the same unit (or of all outputs)
-    units = {o: u for o, (_, u) in tr.outputs.items()}
+    units = {o: u for o, (_, u) in tr.outputs.items() if o in ys}
     big = {}
     for o, y in ys.items():
         big[units[o]] = max(big.get(units[o], 0.0), float(np.max(np.abs(y))) if y.size else 0.0)
@@ -283,10 +290,18 @@ def _reference(out, study, tr, t, vals, tol):
     worst = max(errs.values()) if errs else 0.0
     out["checks"]["reference"] = {"ok": ok, "covered": True, "max_error_rel": worst, "tol": lim,
                                   "per_output": errs, "tol_per_output": lims}
+    if getattr(r, "fluid", False):
+        out["checks"]["reference"]["solver"] = "fluidref (Modelica.Fluid liquids)"
+    if skipped:
+        out["checks"]["reference"]["not_compared"] = skipped
 
 
 def _ref_eigen(out, tr):
     r = tr.ref
+    if getattr(r, "fluid", False):
+        out["checks"]["reference"] = {"ok": True, "covered": False,
+                                      "why": "Modelica.Fluid: the reference does not linearise"}
+        return
     if r is None or not r.exact or getattr(r, "events", None):
         out["checks"]["reference"] = {"ok": True, "covered": False,
                                       "why": "piecewise-linear elements (the linearisation depends on their mode)"
@@ -697,6 +712,9 @@ def _run_ref(study, tr, out, units) -> dict:
     an = study["analysis"]
     t0, t1, n, tol, method = _times(an)
     out["checks"]["reference_only"] = {"ok": True, "note": "solver ref: no OpenModelica run"}
+    if an["kind"] == "linearize" and getattr(r, "fluid", False):
+        out.update({"ok": False, "why": "the Modelica.Fluid reference does not linearise: use OpenModelica"})
+        return out
     if an["kind"] == "linearize" and r.events:
         out.update({"ok": False, "why": "the reference does not linearise piecewise-linear elements: use OpenModelica"})
         return out
@@ -733,5 +751,22 @@ def _run_ref(study, tr, out, units) -> dict:
     else:
         tt = np.linspace(t0, t1, n + 1)
         vals = r.simulate(tt)
+        missing = sorted({o for o, (terms, _) in tr.outputs.items() for _, p in terms if p not in vals})
+        if missing:
+            out.update({"ok": False, "why": "the Modelica.Fluid reference does not compute " + ", ".join(missing) +
+                        " (temperatures): use OpenModelica"})
+            return out
         _post(out, study, tr, tt, vals.__getitem__, units, "ref", out.get("_folder"))
+        if getattr(r, "fluid", False):          # the mass balance of the reference's own tank levels
+            _fluid_mass(out, tr, _Series(tt, vals), tol)
     return out
+
+
+class _Series:
+    """A reference run as a result file (time, series(path)) for the checks written for those."""
+
+    def __init__(self, t, vals):
+        self.time, self._v = t, vals
+
+    def series(self, path):
+        return self._v[path]

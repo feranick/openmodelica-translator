@@ -1,5 +1,5 @@
 """modelica.py — a study -> the Modelica model, the omc build script, and the values applied at run time.
-Version: 2026.11.19.10
+Version: 2026.11.19.12
 
 translate(study, name) -> Translation with
   text        model.mo: `model omct_model` with one declaration per element (sorted), every value in SI with
@@ -218,6 +218,20 @@ def _decl(net, e, selected, placeholder: bool):
     return f"  {inner}{k['msl']} {e}{m}{comment};"
 
 
+def fluid_ref(net, ref):
+    """The reference for the study: ref, or fluidref.FluidRef for a Modelica.Fluid network of constant-density
+    liquids (V5 FL4); when a Fluid network is not covered, the reason replaces ref's general note."""
+    if not any(C.KINDS[d["kind"]].get("domain") == "mfluid" for d in net.elems.values()):
+        return ref
+    from .fluidref import FluidRef, FluidRefError
+    try:
+        return FluidRef(net)
+    except FluidRefError as exc:
+        ref.not_exact = [f"Modelica.Fluid: {exc}" if n.startswith("Modelica.Fluid parts") else n
+                         for n in ref.not_exact]
+        return ref
+
+
 def translate(study: dict, name: str = "study", ref=None) -> Translation:
     """The Modelica model of a valid study (validate first). ref: a ref.Ref of the same network (built here
     when not given) for the choice of fixed initial values."""
@@ -235,7 +249,7 @@ def translate(study: dict, name: str = "study", ref=None) -> Translation:
 
     tr = Translation()
     tr.model = MODEL
-    tr.net, tr.ref, tr.selected = net, ref, selected
+    tr.net, tr.ref, tr.selected = net, fluid_ref(net, ref), selected
     tr.outputs = {}
     for oname, oref in (study.get("outputs") or {}).items():
         tr.outputs[oname] = net.var_expr(oref)

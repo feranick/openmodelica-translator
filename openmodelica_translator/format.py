@@ -1,5 +1,5 @@
 """format.py — the study format (study_format) and the static checks (validate, validate_study).
-Version: 2026.11.19.11
+Version: 2026.11.19.12
 
 validate_study(study) -> {ok, errors, warnings}: nothing runs (no omc). It resolves the network (network.build),
 checks outputs, analysis, derived quantities, sweep, expect, run (against the OMCT_MAX_* caps) and images, then
@@ -176,13 +176,15 @@ FLUID_TOPIC = {
         "m_flow_nominal, always required); opening 0-1 constant or the input. Pipe dp = port_a.p - port_b.p "
         "(friction + rho g height_ab).",
         "Outputs: comp.var (vars below), comp.port_a.p / .m_flow (into the component), sensors' signal outputs. "
-        "Checks: the reference does not cover Modelica.Fluid yet (cross-solver and balances: coming).",
+        "Checks: reference (constant-density liquids: boundaries, sources, pipes, fittings, valves, pumps, tanks; "
+        "not temperatures, inputs that change the flows, dynamic pipes, gases), cross_solver, mass.",
     ],
 }
 
 
 def has_fluid(st) -> bool:
-    """A catalog study with Modelica.Fluid parts (not in the reference: the cross-solver run checks it instead)."""
+    """A catalog study with Modelica.Fluid parts (the cross-solver run and the mass balance check it; the reference
+    covers constant-density liquids, fluidref)."""
     comps = st.get("components") if isinstance(st, dict) else None
     return isinstance(comps, dict) and any(isinstance(c, dict) and C.KINDS.get(c.get("kind"), {}).get("domain") == "mfluid"
                                            for c in comps.values())
@@ -648,6 +650,8 @@ def _reference_errors(st, net, warns) -> list[str]:
     if missing > 0:
         errs.append(f"{missing} state(s) have no initial value the translator can set: add a mass/inertia or a "
                     f"fixed point to massless junctions, or simplify the model")
+    from .modelica import fluid_ref
+    r = fluid_ref(net, r)
     if not r.exact:
         warns.append("reference implementation: not covered (nonlinear: " + "; ".join(r.not_exact[:4]) + ")")
     return errs
