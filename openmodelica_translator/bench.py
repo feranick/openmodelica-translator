@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with closed-form answers: is the toolchain right?
-Version: 2026.11.19.14
+Version: 2026.11.19.15
 
 Each case is a study plus checks [(result path, expected, tolerance, why)]; tolerances are relative unless
 written {"abs": x}. Chains (chain_feat_modal, chain_b3dt_mass, chain_b3dt_inertia) run the other translator first and only when named; they are skipped
@@ -920,10 +920,39 @@ def _fl_cfdt_resistance():
                 ("outputs.V.final", Q15, 5e-3, "cfd-translator's own flow at 0.15 m/s (carbonio: 7.9e-4)")]
 
 
+def _fl_valve_circuit(**valve):
+    return {"components": {"a": {"kind": "fl_boundary", "p": 101325.0 + 1e5, "medium": LIQ},
+                           "v": {"kind": "fl_valve", "dp_nominal": 1e5, "m_flow_nominal": 3.0, **valve},
+                           "b": {"kind": "fl_boundary", "p": 101325.0}},
+            "connect": [["a.port", "v.port_a"], ["v.port_b", "b.port"]], "outputs": {"m": "v.m_flow"},
+            "analysis": {"kind": "transient", "stop_time": 1, "intervals": 10}}
+
+
+def _fl_sweep_opening():
+    """A sweep over a lifted value (the valve's constant opening, FL6): one build; linear valve,
+    m = opening 27.7e-6 Kv sqrt(rho dp)."""
+    st = _fl_valve_circuit(Kv=10.0, opening=1.0)
+    st["sweep"] = {"params": {"v.opening": [0.25, 0.5, 1.0]}, "report": ["outputs.m.final"]}
+    m1 = 27.7e-6 * 10 * math.sqrt(LIQ["rho"] * 1e5)
+    checks = [(f"sweep.table.{i}.values.outputs.m.final", y * m1, 1e-6, f"m = {y:g} x Av sqrt(rho dp)")
+              for i, y in enumerate((0.25, 0.5, 1.0))]
+    checks.append(("sweep.builds", 0.5, {"abs": 0.5}, "every point runs on one build (0 with the reference solver)"))
+    return st, checks
+
+
+def _fl_fit_kv():
+    """A fit of a Modelica.Fluid value (FL6): Kv from a measured steady flow, Kv = m / (27.7e-6 sqrt(rho dp))."""
+    st = _fl_valve_circuit(Kv=5.0)
+    m = 27.7e-6 * 12.0 * math.sqrt(LIQ["rho"] * 1e5)
+    st["fit"] = {"params": {"v.Kv": {"initial": 5, "min": 1, "max": 50}}, "steady": [{"values": {"m": m}}]}
+    return st, [("fit.params.v.Kv.value", 12.0, 1e-6, "Kv = m / (27.7e-6 sqrt(rho dp))")]
+
+
 FLUID_CASES = {"fl_drain_torricelli": _fl_drain, "fl_pipe_laminar": _fl_laminar, "fl_pump_system_curve": _fl_pump_system,
                "fl_valve_kv": _fl_valve, "fl_heated_pipe": _fl_heated_pipe, "fl_air_fill": _fl_air_fill,
                "fl_pipe_turbulent": _fl_turbulent, "fl_two_tanks": _fl_two_tanks, "fl_network_reference": _fl_network,
-               "fl_cfdt_pump": _fl_cfdt_pump, "fl_cfdt_resistance": _fl_cfdt_resistance}
+               "fl_cfdt_pump": _fl_cfdt_pump, "fl_cfdt_resistance": _fl_cfdt_resistance,
+               "fl_sweep_opening": _fl_sweep_opening, "fl_fit_kv": _fl_fit_kv}
 # not in the Fluid reference (fluidref.covered): a dynamic pipe, a gas; judged against the reference itself
 FLUID_OMC_ONLY = {"fl_heated_pipe", "fl_air_fill", "fl_network_reference"}
 
