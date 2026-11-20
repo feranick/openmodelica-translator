@@ -55,7 +55,9 @@ lumped parameters.
 - **Coverage:** 123 public catalog kinds (142 with hidden parts) in 14 port types: analog circuits, polyphase
   plugs, transient and quasi-static induction machines and PMSMs with drives, DC motor and MSL DC machine with
   losses, translational and rotational mechanics, heat transfer, FluidHeatFlow coolant loops, blocks and
-  controllers. Analyses transient, steady, linearize; sweeps on one build.
+  controllers, Modelica.Fluid (V5: liquids, T-dependent liquids and gases, with their own reference, fluidref.py).
+  Analyses transient, steady, linearize; sweeps on one build. What the Fluid reference does not cover yet: Open
+  items, "Open improvements: Modelica.Fluid".
 - **Checked:** 37 benchmarks with closed forms pass with OpenModelica 1.27.2 (carbonio, 2026-10-31; the same with
   1.27.1 on mochi before). SLURM, queueing, reconnecting and the sweep limits checked on carbonio and
   the sparks (2026-11-19, see Open items).
@@ -88,6 +90,78 @@ lumped parameters.
     (job 711: "left the queue without starting (no job.log)"). Removed on both (2026-11-19); OMCT_SLURM_NODE=local now
     pins spark1 to spark-5da5 and spark2 to spark-0808. The router's start estimate on spark1 ("95 min" while idle)
     became "starts now" with it. The other translators' `--nodelist` on the sparks name each machine's own node.
+
+### Open improvements: Modelica.Fluid (as of 2026.11.19.26)
+
+Everything below falls back to OpenModelica's own checks (balance, initialisation, solver, mass, fluid_energy) plus
+the cross-solver run; nothing here is silently wrong. Each line says what is missing and where it is decided
+(`fluidref.covered()`, `FluidRef.__init__` / `_thermal_setup`, `network.py`, `catalog.py`, `runner.py`).
+
+**A. Not in the Fluid reference (the study gets no reference check; the cross-solver runs instead)**
+- Kinds: `fl_pump_shaft` (Machines.Pump on a flange: needs the mechanics in the same reference); any non-Fluid,
+  non-thermal kind in the same study (circuits, machines, mechanics, blocks, FluidHeatFlow) — `covered()`.
+- Thermal parts on heat ports other than fixed_temperature, fixed_heat_flow, thermal_conductor, thermal_resistor,
+  heat_capacitor, temperature_sensor (convection, radiation, prescribed temperature/heat-flow inputs, body radiation)
+  — `THERMAL`.
+- Inputs that change the flows: `p_in`, `m_flow_in`, `opening`, `w_in` (constant values only) — `HYDRAULIC_INPUTS`.
+  `T_in`: constant-density liquids keep the hydraulic comparison with temperatures off; T-dependent liquids and gases
+  are not covered at all.
+- Pipe friction `turbulent` and `nominal_turbulent` (static and dynamic pipes): only detailed and nominal_laminar.
+- Dynamic pipes: modelStructure a_vb / a_v_b (omct never writes them); `heat_transfer: ideal` with the heat port
+  connected (volumes at the wall's T: temperatures off; T-dependent media: not covered).
+- `fl_resistance` with a = 0 (MSL's VolumeFlowRate gives m = rho b dp then; omct steers to fl_valve_linear).
+- System: `allowFlowReversal: false`; `dynamics` steady_state_initial / free_initial with tanks (not covered) or with
+  volumes and pump volumes (temperatures off; T-dependent media and gases: not covered).
+- Media: only water, custom constant liquids, glycol47, essotherm650, air, simple_air (omct offers no others).
+- Gases: two gas volumes on one connection point (e.g. a dynamic pipe joined directly to fl_volume ports;
+  OpenModelica runs it, run_fl15_probe2 b3); gases in pumps (fans) or tanks.
+- Topology: a closed volume's port sharing its connection point with a boundary, a tank, a multi-port source or
+  another volume port; a connection point with only sensors; two boundaries/tanks joined directly; two parts fixing
+  one thermal node (FluidRefError, the reason in the study's warnings).
+- Analyses: `linearize` (the Fluid reference does not linearise); `steady` with tanks, volumes, pump volumes or
+  capacitors (no algebraic steady state: the reference says so and is skipped).
+- Tanks: the inflow-only mode (a level below a port: "a tank ran empty"); port heights other than 0 (omct does not
+  expose portsData_height); `port_diameter` only as one value for every port.
+
+**B. Covered, with assumptions to revisit**
+- Momentum is steady (System.momentumDynamics default); omct exposes no dynamic momentum, so the reference never
+  needs it. If it is ever exposed, pipes need Ib_flows and the staggered momentum states.
+- `system.use_eps_Re` false (dp_small, m_flow_small fixed): the Re-based regularisation is not ported.
+- Valves: no opening filter, leakageOpening only through the filter (not exposed); xtCharacteristic = one.
+- Pumps: constant speed; efficiency constant or MSL quadraticPower; no heat port; V > 0 with checkValve.
+- TableBased media are fitted with numpy.polyfit (same least squares as Polynomials.fitting; ~1e-9 differences seen);
+  their T_min/T_max asserts (and SimpleAir's 0..100 degC, DryAirNasa's 200 K) are not enforced: the reference
+  extrapolates where OpenModelica would stop.
+- T-dependent liquids and gases: each instant is a fixed point (hydraulics <-> mixing/energy) to 1e-11 K, at most 100
+  passes ("did not agree" otherwise); a follow volume's mass change is solved exactly per volume (FL15), interior
+  liquid volumes still by the fixed point.
+- inStream with no outflow at a point: the other port's h_outflow (two ports) or the mean of the others (Modelica
+  leaves this to the tool's regularisation); only the outputs at zero flow depend on it.
+
+**C. The checks**
+- The reference compares only the study's outputs (catalog vars and ports' p, m_flow); internal values
+  (mediums[i].T, Wb_flows, h_outflow) are computed but not compared, and users cannot ask for them as outputs (no
+  port .h, no raw paths). An output alias for them would widen both.
+- fluid_energy and mass integrate on the output grid (trapezoid, Richardson allowance): coarse `intervals` widen the
+  allowance (fl_pipe_loop_reference: 1 % error inside a 4.6 % limit with 30 intervals). Reading OpenModelica's own
+  steps (all rows of result.mat) or asking for more intervals would tighten it.
+- Mass check on closed loops: the allowance includes 10 tol of the stored mass (no throughput to scale by).
+- fluid_energy counts potential energy only through StaticPipe's height_ab and DynamicPipe's Wb_flows, kinetic
+  energy only at tank ports with port_diameter (as MSL does).
+- Covered studies skip the cross-solver (cross_check: true forces it).
+
+**D. Cost**
+- Reference runs with T-dependent liquids or gases take 0.1–25 s per study (Python, Radau, a root solve per pass);
+  constant-density ones well under a second. Large networks or long sweeps with `solver: ref` will be slow; a
+  vectorised or compiled residual would help.
+
+**E. Found in OpenModelica 1.27.2 + MSL 4.0.0 (handled, keep in mind)**
+- DynamicPipe nNodes 1 with av_vb does not build (network error since .22).
+- Constant-density volumes need preferredMediumStates=false (FL10); TableBased and gases run with MSL's preferred
+  states.
+- A gas dynamic pipe's end volume on a boundary: OpenModelica reports the initial p as over-specified and drops it
+  (the reference takes the boundary's p, agreeing to 1e-13).
+
 ## Interconnections
 
 - **From feat:** static stiffness k = applied force / displacement (feat reports `applied_force` N and
@@ -1051,4 +1125,6 @@ Re(sqrt(2) X e^(j gamma)) with gamma the reference angle of the connector:
 **V5 FL15, gases (in progress).** Probe on carbonio (.25, run_fl15_probe1, tolerance 1e-8), all ran and were reliable by omct's own checks (cross-solver within 1.6e-6): a1 air (DryAirNasa) from 3 bar through fl_valve_gas (ValveCompressible) into a 50 l volume, out through an orifice (p 1 -> 1.93 bar, T peaks 328.9 K then 307.5 K); a2 simple_air through a static pipe into a 20 l volume and a resistance (p 1.2 -> 1.085 bar, T -> 320 K); a3 air through a heated 3-node dynamic pipe between boundaries (OpenModelica: "initial conditions over specified" for the end volumes' p = the boundaries', handled); a4 a mass-flow source into a heated 100 l volume out through a gas valve (p 1 -> 3.19 bar, T 392 K). Design for fluidref: media SimpleAir (PartialSimpleIdealGasMedium: cp const, d = p/(R T), u = h - R T) and DryAirNasa (SingleGasNasa: NASA-7 polynomials for cp, h with its reference, the low-pressure viscosity and conductivity MSL uses); gas volumes hold mass and energy (m, U) states and set their node's pressure p = m R T / V, so they act like tanks in the hydraulic solve; a volume on a node whose pressure a boundary fixes (a dynamic pipe's end volume at a boundary) takes p from it and its mass from p and T (the T-dependent-liquid mass change); ValveCompressible (IEC 534 with Fxt, choked flow, regularised) and the density at each port's state (p and T) in every relation.
 
 **2026.11.19.26 (2026-11-19)**: V5 FL15, gases (Nicola: "deployed, go ahead"). Ported (MSL 4.0.0, sparse checkout now with Media/IdealGases and Math): Air.SimpleAir (PartialSimpleIdealGasMedium: cp 1005.45, R = Modelica.Constants.R / 0.0289651159, T0 = reference_T 298.15, h = cp (T - T0), u = h - R T, d = p/(R T), eta 1.82e-5, lambda 0.026), Air.DryAirNasa (SingleGasNasa with SingleGasesData.Air: h_T with excludeEnthalpyOfFormation and ZeroAt0K, h = R_s (...)/T - Hf + H0, cp_T, T from h by Newton; dynamicViscosity and thermalConductivity polynomials in degC with Polynomials.evaluateWithRange -150..1000 degC), Valves.ValveCompressible (p = max(port pressures), x = dp/p, xs = x within +-Fxt, Fxt = Fxt_full xtCharacteristic one, Y = 1 - |xs|/(3 Fxt), m = rc Av Y regRoot2(p xs, dp_small, d_a, d_b); checkValve: rc Av Y sqrt(d_a) regRoot(p xs) for xs >= 0; OpPoint: Av from m_flow_nominal at p_nominal, x_nominal = dp_nominal/p_nominal, rho_nominal at p_default, T_default). Gas volumes (ClosedVolume, DynamicPipe volumes; ps_start = linspace(p_a_start, p_b_start, n), p_a_start default system.p_start = p_ambient): states m and U, p = m R T / V fixes the node ("state"); on a boundary's node the volume follows p with m = V p/(R T) ("follow", OpenModelica reports the over-specified initial p there and drops it). Densities in every relation at each port's (p, inStream T): the hydraulic solve evaluates them with the iterate's pressures for gases. **A follow volume's mass change enters its own port flow** (port_a.m_flow = m_flows[2] + dm1/dt): for a gas the fixed point's gain is -h/(cp T - h) (it diverged on a3_dynpipe); dm/dt is now solved from der(U) = E + s (dm/dt - dm0), der(m) = V dd dT/dt, der(U) = der(m) u + m u' dT/dt per volume (s the port stream's enthalpy), which also speeds the liquids. **Carbonio (run_fl15_probe1, probe2; tolerance 1e-8) against the reference:** a1 valve into a volume p 4.6e-8, T 1e-8; a2 simple_air pipe into a volume 4e-9; a3 heated dynamic pipe between boundaries 7e-13; a4 heated volume 7e-8; b1 reversed flow through a rising static pipe, orifice, resistance, temperature and volume-flow sensors 3e-16; b2 choked OpPoint equal-percentage valve, check valve, conductor 1e-10; b4 volume, valve, rising cooled 4-node pipe to the atmosphere Q 4.5e-7, others 7e-8. b3 (a dynamic pipe joined directly to two volumes) runs in OpenModelica (initial p over-specified, dropped) and is refused by the reference (two gas volumes on one point). Reference runs' mass and energy balances ok on all. Not covered: two gas volumes on one point, gases in pumps or tanks. tests: fixtures/fl15_gases.json, media, refusal. Benchmarks fl_gas_valve_volume, fl_gas_choked, fl_gas_pipe; fl_air_fill leaves FLUID_OMC_ONLY (the reference runs it).
+
+**Carbonio with .26 (bench_20261119_233250_55c8ce): all 29 fl_* pass, reliable.** Gases against the reference over the whole series: fl_gas_valve_volume 7.5e-7, fl_gas_choked 5.2e-7, fl_gas_pipe 3.8e-7; fl_air_fill now judged with the reference (no cross-solver); the liquids as with .25. **V5 FL15 done.** All media omct offers are in the reference; what is left is listed under Open items, "Open improvements: Modelica.Fluid".
 
