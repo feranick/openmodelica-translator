@@ -1,8 +1,10 @@
 """test_fluidref.py — the reference for Modelica.Fluid liquids (V5 FL4): MSL's functions, coverage, the network.
-Version: 2026.11.19.23
+Version: 2026.11.19.25
 """
 import copy
+import json
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -86,8 +88,7 @@ def test_translate_uses_the_fluid_reference_when_covered():
 
 
 @pytest.mark.parametrize("change,why", [
-    ({"tank": {"kind": "fl_tank", "height": 3, "crossArea": 0.5, "level_start": 2, "medium": "glycol47"}},
-     "constant-density"),
+    ({"tank": {"kind": "fl_boundary", "p": 2e5, "medium": "air"}}, "liquids only"),
     ({"o": {"kind": "fl_dynamic_pipe", "length": 10.0, "diameter": 0.03, "friction": "turbulent"}},
      "nominal_laminar only"),
 ])
@@ -97,6 +98,8 @@ def test_not_covered_says_why(change, why):
     if "out" in change:
         st["components"]["out2"] = {"kind": "fl_boundary"}
         st["connect"].append(["out.port", "out2.port"])
+    if st["components"]["tank"]["kind"] != "fl_tank":
+        st["outputs"] = {"m": "o.m_flow"}
     v = validate_study(st)
     if not v["ok"]:
         pytest.skip("; ".join(v["errors"]))
@@ -190,7 +193,7 @@ def test_covered_studies_skip_the_cross_solver_run():
     assert cross_checked({**DRAIN, "cross_check": True})
     assert not cross_checked({**DRAIN, "cross_check": False})
     st = copy.deepcopy(DRAIN)
-    st["components"]["tank"]["medium"] = "glycol47"           # T-dependent: not covered
+    st["components"]["tank"] = {"kind": "fl_boundary", "p": 2e5, "medium": "air"}     # a gas: not covered
     assert cross_checked(st)
 
 
@@ -453,9 +456,9 @@ def test_reference_energy_check_catches_a_wrong_term(tmp_path, monkeypatch):
     real = F.FluidRef._h_outflow
 
     def wrong(self, dis, hmix, m, W, ht, hp, hx):
-        out = real(self, dis, hmix, m, W, ht, hp, hx)
+        out, ins = real(self, dis, hmix, m, W, ht, hp, hx)
         return {k: (v + 2000.0 if k.endswith("ports[1].h_outflow") and k.startswith("src") else v)
-                for k, v in out.items()}
+                for k, v in out.items()}, ins
     monkeypatch.setattr(F.FluidRef, "_h_outflow", wrong)
     out = run_study("x", bench.cases()["fl_pump_into_tank"]["study"], tmp_path, solver="ref")
     assert out["checks"]["fluid_energy"]["covered"] and not out["checks"]["fluid_energy"]["ok"]
@@ -477,3 +480,77 @@ def test_h_outflow_follows_msl():
     assert o["v.port_b.h_outflow"][-1] == pytest.approx(h_a + W / m)            # inStream(port_a)
     assert o["v.port_a.h_outflow"][-1] == pytest.approx(4000 * (350 - 273.15))  # inStream(port_b): b's h
     assert o["pump.Wb_flow"][-1] == pytest.approx(W) and o["pump.U"][-1] == 0.0
+
+
+# ---- T-dependent liquids (FL14) ---------------------------------------------------------------------------------
+def test_table_based_media_follow_msl():
+    """Modelica.Media.Incompressible.TableBased: quadratic fits, h from 0 degC, u = h - reference_p/d."""
+    g = F.medium_of({"medium": "glycol47"})
+    assert g.var and g.h(273.15) == 0.0
+    assert g.d(293.15) == pytest.approx(1044.0, rel=2e-3) and g.cp(293.15) == pytest.approx(3620.0, rel=2e-3)
+    for T in (250.0, 300.0, 360.0):
+        assert g.T_h(g.h(T)) == pytest.approx(T, abs=1e-9)
+        assert g.u(T) == pytest.approx(g.h(T) - 1.013e5 / g.d(T))
+        e = 1e-4
+        assert g.du(T) == pytest.approx((g.u(T + e) - g.u(T - e)) / (2 * e), rel=1e-6)
+    eso = F.medium_of({"medium": "essotherm650"})
+    assert eso.mu(373.15) == pytest.approx(26.64, rel=0.15)        # a quadratic in 1/T through 4 decades
+    U = 0.01 * g.d(330.0) * g.u(330.0)
+    assert F.T_of_U(g, U, V=0.01) == pytest.approx(330.0, abs=1e-9)
+    with pytest.raises(F.FluidRefError):
+        F.medium_of({"medium": "air"})
+
+
+FL14 = json.loads((Path(__file__).parent / "fixtures" / "fl14_tablebased.json").read_text())
+
+
+@pytest.mark.parametrize("name", sorted(FL14))
+def test_table_based_liquids_match_openmodelica(name):
+    """carbonio run_fl14_probe2 (tolerance 1e-8): glycol47 tank, volume, pump volume, reversed flow; essotherm650
+    static chain with a rise and a locally heated dynamic pipe."""
+    c = FL14[name]
+    st = c["study"]
+    net = build(st)
+    an = st["analysis"]
+    o = F.FluidRef(net).simulate(np.linspace(0, an["stop_time"], an.get("intervals", 10) + 1))
+    for out, v in c["om"].items():
+        terms, _ = net.var_expr(st["outputs"][out])
+        y = sum(cf * o[p] for cf, p in terms)
+        assert y[-1] == pytest.approx(v, rel=2e-7), out
+
+
+def test_static_pipe_rise_lowers_the_enthalpy():
+    """StaticPipe: port_b.h_outflow = inStream(port_a.h_outflow) - g height_ab (water: 9.8/4184 K per metre)."""
+    st = {"components": {"a": {"kind": "fl_boundary", "p": 2e5, "T": 300.0, "medium": LIQ},
+                         "pipe": {"kind": "fl_pipe", "length": 5, "diameter": 0.02, "height_ab": 3.0},
+                         "Ts": {"kind": "fl_temperature"}, "b": {"kind": "fl_boundary"}},
+          "connect": [["a.port", "pipe.port_a"], ["pipe.port_b", "Ts.port_a"], ["Ts.port_b", "b.port"]],
+          "outputs": {"T": "Ts.T"}, "analysis": {"kind": "transient", "stop_time": 1}}
+    o = F.FluidRef(build(st)).simulate(np.array([0.0, 1.0]))
+    assert o["Ts.T"][-1] == pytest.approx(300.0 - 9.80665 * 3.0 / 4000.0, abs=1e-12)
+
+
+def test_mass_check_allows_the_integrators_error_on_stored_mass():
+    """A closed loop has no throughput: 10 tol of the stored mass is the allowance (FL14)."""
+    from openmodelica_translator.runner import _fluid_mass
+    from openmodelica_translator.modelica import translate
+    st = {"components": {"tank": {"kind": "fl_tank", "height": 5, "crossArea": 1.0, "level_start": 1, "medium": LIQ},
+                         "pump": {"kind": "fl_pump", "curve": [[0, 20], [0.01, 0]], "N_nominal": "1450 rpm"},
+                         "v": {"kind": "fl_valve", "Kv": 20, "dp_nominal": 1e5, "m_flow_nominal": 5}},
+          "connect": [["tank.port", "pump.port_a"], ["pump.port_b", "v.port_a"], ["v.port_b", "tank.port"]],
+          "outputs": {"m": "pump.m_flow"}, "analysis": {"kind": "transient", "stop_time": 10}}
+    tr = translate(st)
+
+    class R:
+        time = np.linspace(0, 10, 11)
+
+        def __init__(self, drift):
+            self.drift = drift
+
+        def series(self, p):
+            return 1000.0 + self.drift * self.time / 10 if p == "tank.m" else np.zeros(11)
+    out = {"checks": {}}
+    _fluid_mass(out, tr, R(3.5e-4), 1e-6)            # 3.5e-7 of the stored mass: the integrator's
+    assert out["checks"]["mass"]["ok"]
+    _fluid_mass(out, tr, R(0.1), 1e-6)               # 1e-4 of it: not
+    assert not out["checks"]["mass"]["ok"]

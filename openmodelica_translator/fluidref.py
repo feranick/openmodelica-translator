@@ -1,10 +1,12 @@
 """fluidref.py — the reference implementation for Modelica.Fluid liquid networks (V5 FL4).
-Version: 2026.11.19.23
+Version: 2026.11.19.25
 
 An independent solver of the same equations MSL 4.0.0 writes for constant-density liquids, ported from the MSL
 sources (tag v4.0.0) rather than reused: what OpenModelica must reproduce. Covered (covered(net)):
 
-  media       water (ConstantPropertyLiquidWater) and custom liquids {rho, cp, eta, lambda}
+  media       water (ConstantPropertyLiquidWater), custom liquids {rho, cp, eta, lambda}, and (FL14) glycol47 and
+              essotherm650 (Incompressible.TableBased: density, cp, conductivity and log viscosity quadratic in T;
+              flows then depend on the temperatures, volumes' masses on their T)
   kinds       fl_boundary, fl_mass_flow, fl_pipe (friction detailed or nominal_laminar),
               fl_resistance (a > 0), fl_orifice, fl_valve (check valve too), fl_valve_linear, fl_pump (constant
               speed, check valve too, a volume too), fl_tank (port losses too; system dynamics fixed_initial),
@@ -16,16 +18,21 @@ sources (tag v4.0.0) rather than reused: what OpenModelica must reproduce. Cover
               (fixed_temperature, fixed_heat_flow, thermal_conductor, thermal_resistor, heat_capacitor,
               temperature_sensor); T_in inputs, a dynamic pipe's ideal heat transfer and system dynamics other than
               fixed_initial switch temperatures off
-  not         anything else outside Modelica.Fluid, gases and T-dependent liquids, inputs that change the flows
-              (p_in, m_flow_in, opening, w_in)
+  not         anything else outside Modelica.Fluid, gases, inputs that change the flows (p_in, m_flow_in, opening,
+              w_in); T-dependent liquids without temperatures (T_in, ideal pipe heat transfer, dynamics other than
+              fixed_initial)
 
 Hydraulics are algebraic (momentum steady, MSL's default): at each instant, node pressures and component flows from
-a Newton solve of the component relations and the node mass balances; boundaries and tank ports fix pressures
-(p_ambient + rho g level: OpenTank without portsData); the tank levels are the states (A rho dlevel/dt = inflow,
-level_start fixed), integrated with Radau (rtol 1e-10) together with the energy states (tanks, pump volumes,
-capacitors): temperatures do not change the flows (constant density and viscosity), the flows drive them.
+a Newton solve of the component relations and the node mass balances (a node holding a volume takes its mass change
+V d'(T) dT/dt); boundaries and tank ports fix pressures (p_ambient + rho g level: OpenTank without portsData); the
+states are the tanks' masses and energies, the volumes' energies and the capacitors' temperatures (level_start,
+T_start fixed), integrated with Radau (rtol 1e-10). With constant-density liquids the temperatures follow the flows;
+with T-dependent ones each instant repeats hydraulics -> mixing and energy -> the port states (densities,
+viscosities at inStream of each port, the pumps' medium, the volumes' T) and the volumes' mass changes until they
+agree to 1e-11 K (FL14).
 
 MSL relations ported (Modelica.Fluid 4.0.0, tag v4.0.0; planning.md V5 FL4):
+  static     StaticPipe: port_b.h_outflow = inStream(port_a.h_outflow) - g height_ab and back (the potential energy)
   pipe       WallFriction.Detailed.massFlowRate_dp_staticHead: Detailed.Internal.m_flow_of_dp_fric outside dp_small
              of the static head (Hagen-Poiseuille below Re1 = min((745 e^(...))^0.97, 4000), Colebrook-White above,
              a log-log cubic Hermite up to Re2 = 4000), regFun3 within (not LaminarAndQuadraticTurbulent's Internal);
@@ -252,9 +259,11 @@ def reg_fun3(x, x0, x1, y0, y1, y0d, y1d):
 
 
 # ---- WallFriction.Detailed (Modelica.Fluid.Pipes.BaseClasses.WallFriction.Detailed, MSL 4.0.0) ---------------------
-def m_flow_of_dp_fric(dp, rho, mu, L, D, A, Re1, Re2, Delta):
+def m_flow_of_dp_fric(dp, rho_a, mu_a, L, D, A, Re1, Re2, Delta, rho_b=None, mu_b=None):
     """Detailed.Internal.m_flow_of_dp_fric: (m_flow, dm_flow/ddp). Hagen-Poiseuille below Re1, Colebrook-White
-    above, a cubic Hermite spline in log-log space (lambda2 = lambda Re^2, Re) between Re1 and Re2."""
+    above, a cubic Hermite spline in log-log space (lambda2 = lambda Re^2, Re) between Re1 and Re2; the upstream
+    density and viscosity (port_a's for dp >= 0, port_b's else)."""
+    rho, mu = (rho_a, mu_a) if dp >= 0 or rho_b is None else (rho_b, mu_b)
     lam2 = abs(dp) * 2 * D ** 3 * rho / (L * mu * mu)
     aux1 = (2 * D ** 3 * rho) / (L * mu ** 2)
     Re = lam2 / 64
@@ -278,23 +287,30 @@ def m_flow_of_dp_fric(dp, rho, mu, L, D, A, Re1, Re2, Delta):
     return A / D * mu * (Re if dp >= 0 else -Re), A / D * mu * dRe
 
 
-def pipe_detailed(dp, rho, mu, L, D, rough, dp_small, g_h):
-    """Detailed.massFlowRate_dp_staticHead with rho_a = rho_b, mu_a = mu_b (constant density), Re_turbulent 4000,
-    crossArea pi D^2/4 (StaticPipe: the mean of its two equal areas)."""
+def pipe_detailed(dp, rho, mu, L, D, rough, dp_small, g_h, rho_b=None, mu_b=None):
+    """Detailed.massFlowRate_dp_staticHead (Re_turbulent 4000, crossArea pi D^2/4): the static head and the
+    friction with port_a's density and viscosity for flow a -> b and port_b's for b -> a (rho_b, mu_b: the same as
+    port_a's when not given), regFun3 between dp_b = min(heads) - dp_small and dp_a = max(heads) + dp_small through
+    zero flow at their mean."""
+    rho_b = rho if rho_b is None else rho_b
+    mu_b = mu if mu_b is None else mu_b
     Delta = rough / D
     Re1 = min((745 * math.exp(1 if Delta <= 0.0065 else 0.0065 / Delta)) ** 0.97, RE_TURBULENT)
     Re2 = RE_TURBULENT
-    dg = g_h * rho
-    dp_a, dp_b = dg + dp_small, dg - dp_small
-    args = (rho, mu, L, D, math.pi * D * D / 4, Re1, Re2, Delta)
-    if dp >= dp_a or dp <= dp_b:
-        return m_flow_of_dp_fric(dp - dg, *args)[0]
-    ma, da = m_flow_of_dp_fric(dp_a - dg, *args)
-    mb, db = m_flow_of_dp_fric(dp_b - dg, *args)
-    _, dz = reg_fun3(dg, dp_b, dp_a, mb, ma, db, da)
-    if dp > dg:
-        return reg_fun3(dp, dg, dp_a, 0.0, ma, dz, da)[0]
-    return reg_fun3(dp, dp_b, dg, mb, 0.0, db, dz)[0]
+    dga, dgb = g_h * rho, g_h * rho_b
+    dp_a, dp_b = max(dga, dgb) + dp_small, min(dga, dgb) - dp_small
+    args = (rho, mu, L, D, math.pi * D * D / 4, Re1, Re2, Delta, rho_b, mu_b)
+    if dp >= dp_a:
+        return m_flow_of_dp_fric(dp - dga, *args)[0]
+    if dp <= dp_b:
+        return m_flow_of_dp_fric(dp - dgb, *args)[0]
+    ma, da = m_flow_of_dp_fric(dp_a - dga, *args)
+    mb, db = m_flow_of_dp_fric(dp_b - dgb, *args)
+    dz0 = (dga + dgb) / 2
+    _, dz = reg_fun3(dz0, dp_b, dp_a, mb, ma, db, da)
+    if dp > dz0:
+        return reg_fun3(dp, dz0, dp_a, 0.0, ma, dz, da)[0]
+    return reg_fun3(dp, dp_b, dz0, mb, 0.0, db, dz)[0]
 
 
 # ---- pumps and valves -----------------------------------------------------------------------------------------------
@@ -343,8 +359,9 @@ def covered(net) -> tuple[bool, str]:
             return False, f"{c} ({k}) is not in the Fluid reference (gas valves, shaft pumps)"
         if k == "fl_system":
             continue
-        if C.fmedium(p.get("medium") or "water")["class"] != "liquid_const":
-            return False, f"{c}: medium {C.fmedium(p['medium'])['name']} (constant-density liquids only)"
+        mv = p.get("medium") or "water"
+        if C.fmedium(mv)["class"] != "liquid_const" and not (isinstance(mv, str) and mv in TABLES):
+            return False, f"{c}: medium {C.fmedium(mv)['name']} (liquids only: water, custom, glycol47, essotherm650)"
         inputs = sorted(HYDRAULIC_INPUTS & set(d.get("enabled") or ()))
         if inputs:
             return False, f"{c}: input {inputs[0]} connected (constant values only)"
@@ -367,18 +384,175 @@ def covered(net) -> tuple[bool, str]:
     return True, ""
 
 
-def _cp(p):
-    """(cp, cv): ConstantPropertyLiquidWater 4184, 4184; a custom liquid's cp for both (omct sets cv_const = cp)."""
-    m = p.get("medium") or "water"
-    if isinstance(m, dict):
-        return float(m["cp"]), float(m["cp"])
-    return 4184.0, 4184.0
+# ---- media ----------------------------------------------------------------------------------------------------------
+P_REF_TABLE = 1.013e5        # TableBased reference_p (u = h - reference_p / d: singleState)
+T_DEFAULT, T_REFERENCE = 293.15, 298.15    # PartialMedium T_default (rho_nominal, h_default), reference_T
 
 
-def _lambda(p):
-    """Thermal conductivity: ConstantPropertyLiquidWater lambda_const 0.598, or a custom liquid's lambda."""
+class ConstLiquid:
+    """Modelica.Media.Water.ConstantPropertyLiquidWater (or omct's custom liquid built on it): every property
+    constant, h = cp (T - T0), u = cv (T - T0)."""
+    var = False
+
+    def __init__(self, rho, cp, cv, eta, lam):
+        self.rho, self.cp_, self.cv_, self.eta, self.lam_ = rho, cp, cv, eta, lam
+        self.d_nom = self.d_ref = rho
+        self.h_default = self.h(T_DEFAULT)
+
+    def d(self, T):
+        return self.rho
+
+    def dd(self, T):
+        return 0.0
+
+    def cp(self, T):
+        return self.cp_
+
+    def h(self, T):
+        return self.cp_ * (T - T0_MEDIUM)
+
+    def T_h(self, h):
+        return T0_MEDIUM + h / self.cp_
+
+    def u(self, T):
+        return self.cv_ * (T - T0_MEDIUM)
+
+    def du(self, T):
+        return self.cv_
+
+    def mu(self, T):
+        return self.eta
+
+    def lam(self, T):
+        return self.lam_
+
+
+# Modelica.Media.Incompressible.Examples (MSL 4.0.0): tables in degC (TinK false), npol 2 for every property
+TABLES = {
+    "glycol47": {"T_min": 243.15, "T_max": 373.15,
+                 "rho": [[-30, 1066], [-20, 1062], [-10, 1058], [0, 1054], [20, 1044], [40, 1030], [60, 1015],
+                         [80, 999], [100, 984]],
+                 "cp": [[-30, 3450], [-20, 3490], [-10, 3520], [0, 3560], [20, 3620], [40, 3690], [60, 3760],
+                        [80, 3820], [100, 3890]],
+                 "lam": [[-30, 0.397], [-20, 0.396], [-10, 0.395], [0, 0.395], [20, 0.394], [40, 0.393], [60, 0.392],
+                         [80, 0.391], [100, 0.390]],
+                 "eta": [[-30, 0.160], [-20, 0.0743], [-10, 0.0317], [0, 0.0190], [20, 0.00626], [40, 0.00299],
+                         [60, 0.00162], [80, 0.00110], [100, 0.00081]]},
+    "essotherm650": {"T_min": 273.15, "T_max": 593.15,
+                     "rho": [[0, 909], [20, 897], [40, 884], [60, 871], [80, 859], [100, 846], [150, 813], [200, 781],
+                             [250, 748], [300, 715], [320, 702]],
+                     "cp": [[0, 1770], [20, 1850], [40, 1920], [60, 1990], [80, 2060], [100, 2130], [150, 2310],
+                            [200, 2490], [250, 2670], [300, 2850], [320, 2920]],
+                     "lam": [[0, 0.1302], [20, 0.1288], [40, 0.1274], [60, 0.1260], [80, 0.1246], [100, 0.1232],
+                             [150, 0.1197], [200, 0.1163], [250, 0.1128], [300, 0.1093], [320, 0.1079]],
+                     "eta": [[0, 14370], [20, 1917], [40, 424], [60, 134], [80, 54.5], [100, 26.64], [150, 7.47],
+                             [200, 3.22], [250, 1.76], [300, 1.10], [320, 0.94]]},
+}
+
+
+def _horner(c, x):
+    y = 0.0
+    for a in c:
+        y = y * x + a
+    return y
+
+
+class TableLiquid:
+    """Modelica.Media.Incompressible.TableBased (MSL 4.0.0, enthalpyOfT true, singleState true): least-squares
+    polynomials of degree 2 (Polynomials.fitting) of rho, cp, lambda over T in degC and of log(eta) over 1/T [K];
+    h = h0 + integral of cp from T0 (0 degC), u = h - reference_p / d, T from h by inverting h(T)."""
+    var = True
+
+    def __init__(self, name):
+        t = TABLES[name]
+        self.name, self.T_min, self.T_max = name, t["T_min"], t["T_max"]
+
+        def fit(rows, x=lambda v: v, y=lambda v: v):
+            a = np.array(rows, float)
+            return np.polyfit(x(a[:, 0]), y(a[:, 1]), 2)
+        self.p_rho, self.p_cp, self.p_lam = fit(t["rho"]), fit(t["cp"]), fit(t["lam"])
+        self.p_eta = fit(t["eta"], x=lambda c: 1.0 / (c + 273.15), y=np.log)
+        self.p_drho, self.p_h = np.polyder(self.p_rho), np.polyint(self.p_cp)
+        self.p_rho, self.p_cp, self.p_lam, self.p_eta, self.p_drho, self.p_h = (
+            [float(v) for v in c] for c in (self.p_rho, self.p_cp, self.p_lam, self.p_eta, self.p_drho, self.p_h))
+        self.d_nom, self.d_ref = self.d(T_DEFAULT), self.d(T_REFERENCE)
+        self.h_default = self.h(T_DEFAULT)
+
+    def d(self, T):
+        return _horner(self.p_rho, T - 273.15)
+
+    def dd(self, T):
+        return _horner(self.p_drho, T - 273.15)
+
+    def cp(self, T):
+        return _horner(self.p_cp, T - 273.15)
+
+    def h(self, T):
+        return _horner(self.p_h, T - 273.15)
+
+    def T_h(self, h):
+        T = 293.15 + (h - self.h(293.15)) / self.cp(293.15)
+        for _ in range(60):
+            dT = (self.h(T) - h) / self.cp(T)
+            T -= dT
+            if abs(dT) < 1e-13 * max(1.0, T):
+                break
+        return T
+
+    def u(self, T):
+        return self.h(T) - P_REF_TABLE / self.d(T)
+
+    def du(self, T):
+        d = self.d(T)
+        return self.cp(T) + P_REF_TABLE * self.dd(T) / (d * d)
+
+    def mu(self, T):
+        return math.exp(_horner(self.p_eta, 1.0 / T))
+
+    def lam(self, T):
+        return _horner(self.p_lam, T - 273.15)
+
+
+_MEDIA = {}
+
+
+def medium_of(p):
+    """The medium object of an element's params (water, a custom constant liquid {rho, cp, eta, lambda}, glycol47,
+    essotherm650); FluidRefError for the others (gases)."""
     m = p.get("medium") or "water"
-    return float(m.get("lambda", 0.598)) if isinstance(m, dict) else 0.598
+    key = repr(m)
+    if key not in _MEDIA:
+        if isinstance(m, dict):
+            cp = float(m.get("cp", 4184.0))
+            _MEDIA[key] = ConstLiquid(float(m.get("rho", 995.586)), cp, cp, float(m.get("eta", 1.0e-3)),
+                                      float(m.get("lambda", 0.598)))
+        elif m == "water":
+            _MEDIA[key] = ConstLiquid(995.586, 4184.0, 4184.0, 1.0e-3, 0.598)
+        elif m in TABLES:
+            _MEDIA[key] = TableLiquid(m)
+        else:
+            raise FluidRefError(f"medium {m}: not in the Fluid reference")
+    return _MEDIA[key]
+
+
+def T_of_U(med, U, V=None, m=None):
+    """Temperature of a storage from its internal energy: a fixed volume V (m = V d(T)) or a given mass m."""
+    if not med.var:
+        mm = m if m is not None else V * med.rho
+        return T0_MEDIUM + U / (mm * med.cv_)
+    T = 300.0
+    for _ in range(100):
+        if V is not None:
+            f = V * med.d(T) * med.u(T) - U
+            df = V * (med.dd(T) * med.u(T) + med.d(T) * med.du(T))
+        else:
+            f = m * med.u(T) - U
+            df = m * med.du(T)
+        dT = f / df
+        T -= dT
+        if abs(dT) < 1e-12 * max(1.0, T):
+            break
+    return T
 
 
 def splice(pos, neg, x, deltax):
@@ -405,19 +579,17 @@ def local_alpha(Re, Pr, D, Li, pos, lam):
     return splice(turb, lamn, Re - 6150, 3850) * lam / D
 
 
-def _medium(p):
-    """(rho, mu) of a constant-density liquid: ConstantPropertyLiquidWater (MSL 4.0.0: d_const 995.586,
-    eta_const 1e-3) or a custom one {rho, cp[, eta, lambda]} (its constants replace those)."""
-    m = p.get("medium") or "water"
-    if isinstance(m, dict):
-        return float(m.get("rho", 995.586)), float(m.get("eta", 1.0e-3))
-    return 995.586, 1.0e-3
 
 
 # ---- the network ----------------------------------------------------------------------------------------------------
 class FluidRef:
     """The liquid network of a covered study (covered(net)): simulate(t) -> {Modelica path: values}. Drop-in for
-    ref.Ref where the runner and the fit use it (exact, not_exact, events, breaks, simulate, steady)."""
+    ref.Ref where the runner and the fit use it (exact, not_exact, events, breaks, simulate, steady).
+
+    At each instant (FL14): the hydraulics (flows, pressures) from the component relations and the node balances,
+    where a node holding a volume takes its mass change (V d'(T) dT/dt); then the mixing at the connection points,
+    the storages' energy balances, the port temperatures the relations use (densities, viscosities) and the volumes'
+    mass changes; the two repeated until they agree (one pass for constant-density liquids)."""
 
     exact, events, fluid = True, [], True
 
@@ -431,6 +603,7 @@ class FluidRef:
         self.p_amb = float(sysp.get("p_ambient", 101325.0))
         self.dp_small = float(sysp.get("dp_small", 1.0))
         self.m_small = float(sysp.get("m_flow_small", 0.01))
+        self.T_amb = float(sysp.get("T_ambient", 293.15))
         # nodes: the network's, with a mass-flow source's ports joined (they share its medium.p: PartialSource)
         parent = {}
 
@@ -448,12 +621,15 @@ class FluidRef:
         self.find = lambda ep: find(net.node_of[ep])
         self.nodes_root = {n: find(n) for n in set(net.node_of.values())}
         self.nodes, self.fixed, self.tanks, self.sources, self.flows, self.fixed_ports = {}, {}, [], [], [], []
-        self.xvols, self.dpipes = [], []     # closed volumes and dynamic pipes' volumes (energy states); the pipes
+        self.xvols, self.dpipes, self.pvols = [], [], []     # closed volumes and pipe volumes; pump volumes
 
         def node(ep):
             n = self.find(ep)
             self.nodes.setdefault(n, len(self.nodes))
             return n
+
+        def T_start(p):
+            return float(p["T_start"]) if p.get("T_start") is not None else self.T_amb
         for e, d in sorted(net.elems.items()):
             k, p = d["kind"], d["params"]
             nports = d.get("multi_n", {}).get("port", 0)
@@ -462,12 +638,12 @@ class FluidRef:
                     self._fix(node(f"{e}.port[{j}]"), ("p", float(p["p"])))
                     self.fixed_ports.append((e, j, net.node_of[f"{e}.port[{j}]"]))
             elif k == "fl_tank":
-                rho, _ = _medium(p)
+                med = medium_of(p)
                 ti = len(self.tanks)
                 ports = [node(f"{e}.port[{j}]") for j in range(1, nports + 1)]
-                tk = {"e": e, "A": float(p["crossArea"]), "rho": rho, "nodes": ports, "loss": [],
-                      "h0": max(float(p["level_start"]), EPS), "ports": [net.node_of[f"{e}.port[{j}]"]
-                                                                         for j in range(1, nports + 1)]}
+                tk = {"e": e, "A": float(p["crossArea"]), "med": med, "nodes": ports, "loss": [],
+                      "h0": max(float(p["level_start"]), EPS), "T_start": T_start(p),
+                      "ports": [net.node_of[f"{e}.port[{j}]"] for j in range(1, nports + 1)]}
                 self.tanks.append(tk)
                 D = p.get("port_diameter")
                 for j, n_ in enumerate(ports, 1):
@@ -481,7 +657,7 @@ class FluidRef:
                     self.nodes.setdefault(st, len(self.nodes))
                     self._fix(st, ("tank", ti))
                     tk["loss"].append((j, len(self.flows)))
-                    self.flows.append({"e": e, "k": "tank_port", "p": p, "rho": rho, "mu": None, "ti": ti,
+                    self.flows.append({"e": e, "k": "tank_port", "p": p, "med": med, "ti": ti, "own": (e, j),
                                        "D": float(D), "a": n_, "b": st, "a0": net.node_of[f"{e}.port[{j}]"],
                                        "b0": st, "j": j})
             elif k == "fl_mass_flow":
@@ -489,20 +665,23 @@ class FluidRef:
                     self.sources.append((node(f"{e}.port[1]"), float(p["m_flow"]), e,
                                          [net.node_of[f"{e}.port[{j}]"] for j in range(1, nports + 1)]))
             elif k == "fl_volume":
-                rho, _ = _medium(p)
-                cp, cv = _cp(p)
                 if nports:
                     node(f"{e}.port[1]")
-                self.xvols.append({"kind": "vol", "e": e, "m": rho * float(p["V"]), "cp": cp, "cv": cv, "rho": rho,
-                                   "T_start": p.get("T_start"),
+                self.xvols.append({"kind": "vol", "e": e, "V": float(p["V"]), "med": medium_of(p),
+                                   "T_start": T_start(p), "node": self.find(f"{e}.port[1]") if nports else None,
                                    "ports": [net.node_of[f"{e}.port[{j}]"] for j in range(1, nports + 1)]})
             elif k == "fl_dynamic_pipe":
-                self._dpipe(e, d, node)
+                self._dpipe(e, d, node, T_start(p))
             elif k in TWO_PORT:
-                rho, mu = _medium(p)
-                self.flows.append({"e": e, "k": k, "p": p, "rho": rho, "mu": mu,
-                                   "a": node(f"{e}.port_a"), "b": node(f"{e}.port_b"),
-                                   "a0": net.node_of[f"{e}.port_a"], "b0": net.node_of[f"{e}.port_b"]})
+                f = {"e": e, "k": k, "p": p, "med": medium_of(p), "own": e,
+                     "a": node(f"{e}.port_a"), "b": node(f"{e}.port_b"),
+                     "a0": net.node_of[f"{e}.port_a"], "b0": net.node_of[f"{e}.port_b"]}
+                if k == "fl_pump" and float(p.get("V") or 0) > 0:
+                    # PartialPump with a volume: port_b.p = medium.p, its mass at port_b's node
+                    f["vol"] = len(self.pvols)
+                    self.pvols.append({"i": len(self.flows), "V": float(p["V"]), "med": f["med"],
+                                       "T_start": T_start(p), "node": f["b"]})
+                self.flows.append(f)
             elif k == "fl_pressure":
                 node(f"{e}.port")
             elif k == "fl_relative_pressure":
@@ -521,16 +700,21 @@ class FluidRef:
                 raise FluidRefError(f"{net.elems[xv['e']]['comp']}: a closed volume's port on a connection point "
                                     f"with a boundary, a tank, a source of several ports or another volume port (not in the "
                                     f"reference)")
+        self.var = any(x["med"].var for x in self.flows + self.tanks + self.xvols + self.pvols)
         self._x = None
+        # per instant: the port temperatures the relations use, the volumes' mass changes, pumps' medium T
+        self._pT = [[self.T_amb, self.T_amb] for _ in self.flows]
+        self._Tpump = {i: self.T_amb for i, f in enumerate(self.flows) if f["k"] == "fl_pump"}
+        self._mdp = np.zeros(len(self.pvols))
+        self._mdx = np.zeros(len(self.xvols))
         self._thermal_setup(sysp)
 
-    def _dpipe(self, e, d, node):
+    def _dpipe(self, e, d, node, T0):
         """A DynamicPipe (PartialTwoPortFlow, momentum steady): its volumes' hydraulic nodes (port_a's node is
         mediums[1]'s; av_vb: port_b's is mediums[n]'s) and the flow model's segments between them."""
         net, p = self.net, d["params"]
         n, st = int(p["nNodes"]), p.get("_structure") or "av_vb"
-        rho, mu = _medium(p)
-        cp, cv = _cp(p)
+        med = medium_of(p)
         L, D, npar = float(p["length"]), float(p["diameter"]), float(p["nParallel"])
         A = math.pi * D * D / 4
         li, hi = L / n, float(p["height_ab"]) / n            # lengths = L/n, dheights = height_ab dxs
@@ -551,20 +735,20 @@ class FluidRef:
         for v in vn:
             self.nodes.setdefault(v, len(self.nodes))
         pi_ = len(self.dpipes)
+        x0 = len(self.xvols)
         segs = []
         for k, (u, v) in enumerate(ends):
             segs.append(len(self.flows))
-            self.flows.append({"e": e, "k": "dp_seg", "p": p, "rho": rho, "mu": mu, "a": u, "b": v,
+            self.flows.append({"e": e, "k": "dp_seg", "p": p, "med": med, "a": u, "b": v, "own": e,
                                "a0": a0 if k == 0 else u, "b0": b0 if k == len(ends) - 1 else v,
-                               "L": pl[k], "dh": dh[k], "nFM": len(ends), "pipe": pi_, "seg": k})
-        x0 = len(self.xvols)
+                               "L": pl[k], "dh": dh[k], "nFM": len(ends), "pipe": pi_, "seg": k,
+                               "xa": x0 + k, "xb": x0 + k + 1 if k + 1 < n else None})
         for i in range(n):
-            self.xvols.append({"kind": "pipe", "e": e, "pipe": pi_, "i": i, "m": rho * A * li * npar, "cp": cp,
-                               "cv": cv, "rho": rho, "T_start": p.get("T_start")})
+            self.xvols.append({"kind": "pipe", "e": e, "pipe": pi_, "i": i, "V": A * li * npar, "med": med,
+                               "T_start": T0, "node": vn[i]})
         self.dpipes.append({"e": e, "n": n, "st": st, "vn": vn, "na": na, "nb": nb, "a0": a0, "b0": b0,
-                            "segs": segs, "x0": x0, "rho": rho, "mu": mu, "A": A, "D": D, "li": li, "hi": hi,
-                            "npar": npar, "cp": cp, "lam": _lambda(p), "p": p,
-                            "heat": "heat" in (d.get("enabled") or ())})
+                            "segs": segs, "x0": x0, "med": med, "A": A, "D": D, "li": li, "hi": hi,
+                            "npar": npar, "p": p, "heat": "heat" in (d.get("enabled") or ())})
 
     def _fix(self, n, how):
         if n in self.fixed and self.fixed[n] != how:
@@ -582,73 +766,81 @@ class FluidRef:
                 m[i] = float(f["p"]["nParallel"]) * max(x[i], 0.0)
         return m
 
-    # ---- one instant ----------------------------------------------------------------------------------------------
-    def _p_fixed(self, n, levels):
+    # ---- the storages' state ------------------------------------------------------------------------------------------
+    def _set_state(self, mt, Ut, Up, Ux):
+        """Temperatures, masses and levels of the storages from the states (tank masses and energies, the volumes'
+        energies); without temperatures (thermal off) the storages stay at their start temperatures."""
+        th = self.thermal
+        self._Tt = np.array([T_of_U(tk["med"], Ut[i], m=max(mt[i], EPS)) if th else tk["T_start"]
+                             for i, tk in enumerate(self.tanks)])
+        self._mt = np.asarray(mt, float)
+        self._levels = np.array([self._mt[i] / (tk["med"].d(self._Tt[i]) * tk["A"]) for i, tk in enumerate(self.tanks)])
+        self._Tp = np.array([T_of_U(pv["med"], Up[j], V=pv["V"]) if th else pv["T_start"]
+                             for j, pv in enumerate(self.pvols)])
+        self._Tx = np.array([T_of_U(xv["med"], Ux[j], V=xv["V"]) if th else xv["T_start"]
+                             for j, xv in enumerate(self.xvols)])
+        for j, pv in enumerate(self.pvols):
+            self._Tpump[pv["i"]] = self._Tp[j]
+        for i, f in enumerate(self.flows):            # a pipe segment's states are its volumes'
+            if f["k"] == "dp_seg":
+                self._pT[i][0] = self._Tx[f["xa"]]
+                if f["xb"] is not None:
+                    self._pT[i][1] = self._Tx[f["xb"]]
+
+    def _props(self, i):
+        """(rho_a, rho_b, mu_a, mu_b) at a flow element's two states this instant (cached for one solve)."""
+        pc = getattr(self, "_pc", None)
+        if pc is not None:
+            return pc[i]
+        med = self.flows[i]["med"]
+        Ta, Tb = self._pT[i]
+        return med.d(Ta), med.d(Tb), med.mu(Ta), med.mu(Tb)
+
+    # ---- one instant: hydraulics ------------------------------------------------------------------------------------
+    def _p_fixed(self, n, levels=None):
+        pf = getattr(self, "_pfix", None)
+        if pf and n in pf:
+            return pf[n]
         how = self.fixed[n]
         if how[0] == "p":
             return how[1]
-        tk = self.tanks[how[1]]
-        return max(0.0, levels[how[1]]) * self.g * tk["rho"] + self.p_amb
+        ti = how[1]
+        tk = self.tanks[ti]
+        return max(0.0, self._levels[ti]) * self.g * tk["med"].d(self._Tt[ti]) + self.p_amb
 
-    def _relation(self, f, m, pa, pb):
-        """Residual of one component: kg/s where MSL writes m_flow = f(dp), Pa/1e5 where it writes a pressure."""
-        k, p, rho = f["k"], f["p"], f["rho"]
+    def _valve_Av(self, p, med):
+        ch, rg = p["characteristic"], float(p.get("rangeability") or 20.0)
+        if p.get("Kv") is not None:
+            return float(p["Kv"]) * KV2AV
+        if p.get("Cv") is not None:
+            return float(p["Cv"]) * CV2AV
+        if p.get("Av") is not None:
+            return float(p["Av"])
+        # CvTypes.OpPoint at opening_nominal 1, rho_nominal = density at p_default, T_default
+        return float(p["m_flow_nominal"]) / (valve_char(ch, 1.0, rg) * math.sqrt(med.d_nom) *
+                                             reg_root(float(p["dp_nominal"]), self.dp_small))
+
+    def _relation(self, i, m, pa, pb):
+        """Residual of one component: kg/s where MSL writes m_flow = f(dp), Pa/1e5 where it writes a pressure.
+        Densities and viscosities at the component's states: inStream at each port (PartialTwoPortTransport), the
+        volumes' for a pipe segment, the pump's medium."""
+        f = self.flows[i]
+        k, p, med = f["k"], f["p"], f["med"]
         dp = pa - pb
         if k == "tank_port":       # PartialLumpedVessel, use_portsData (VesselPortsData zeta_out 0.5, zeta_in 1.04)
             D = f["D"]
             Ap, Av = math.pi / 4 * D * D, float(p["crossArea"])
-            level = self._levels[f["ti"]]
+            ti = f["ti"]
+            level = self._levels[ti]
             pen = reg_step(level - 0.1 * D, 1.0, 1e-3, 0.1 * D)
-            k_in = (1.04 - 1 + Ap ** 2 / Av ** 2) / rho * pen
-            k_out = (0.5 + 1 - Ap ** 2 / Av ** 2) / rho / pen
+            rho_in, rho_t = med.d(self._pT[i][0]), med.d(self._Tt[ti])     # portInDensities, medium.d
+            k_in = (1.04 - 1 + Ap ** 2 / Av ** 2) / rho_in * pen
+            k_out = (0.5 + 1 - Ap ** 2 / Av ** 2) / rho_t / pen
             return (dp - 0.5 / Ap ** 2 * reg_square2(m, self.m_small, k_in, k_out)) / 1e5
         if k in ZERO_DP:
             return dp / 1e5
-        if k == "dp_seg":            # one segment of a dynamic pipe's flow model (dps_fg = p_i - p_(i+1), steady)
-            gh, nfm = self.g * f["dh"], f["nFM"]
-            if p["friction"] == "nominal_laminar":
-                return (dp - gh * rho - float(p["dp_nominal"]) / nfm / float(p["m_flow_nominal"]) * m) / 1e5
-            return m - float(p["nParallel"]) * pipe_detailed(dp, rho, f["mu"], f["L"], float(p["diameter"]),
-                                                             float(p["roughness"]), self.dp_small / nfm, gh)
-        if k == "fl_pipe":
-            gh = self.g * float(p["height_ab"])
-            if p["friction"] == "nominal_laminar":
-                return (dp - gh * rho - float(p["dp_nominal"]) / float(p["m_flow_nominal"]) * m) / 1e5
-            return m - float(p["nParallel"]) * pipe_detailed(dp, rho, f["mu"], float(p["length"]),
-                                                             float(p["diameter"]), float(p["roughness"]),
-                                                             self.dp_small, gh)
-        if k == "fl_orifice":
-            D, z = float(p["diameter"]), float(p["zeta"])
-            kk = 8 * z / (math.pi ** 2 * D ** 4)              # lossConstant_D_zeta
-            return m - reg_root2(dp, self.dp_small, rho / kk, rho / kk)
-        if k == "fl_resistance":
-            a, b = float(p["a"]), float(p.get("b") or 0.0)
-            if b > 0:
-                v = (math.copysign(1.0, dp) if dp != 0 else 0.0) * (-b / (2 * a) + math.sqrt((b / (2 * a)) ** 2
-                                                                                          + abs(dp) / a))
-            else:                    # dp_small of the resistance: dp_volumeFlowRate_DP at m_flow_small, dp_min 1e-10
-                vs = self.m_small / rho
-                dmin = a * smooth_power(vs, (1e-10 / a) ** 0.5, 2)
-                v = smooth_power(dp / a, max(EPS, dmin) / a, 0.5)
-            return m - rho * v
-        if k == "fl_valve":
-            ch, rg = p["characteristic"], float(p.get("rangeability") or 20.0)
-            rc = valve_char(ch, float(p["opening"]), rg)   # opening_actual = opening (no filter: no leakage limit)
-            if p.get("Kv") is not None:
-                Av = float(p["Kv"]) * KV2AV
-            elif p.get("Cv") is not None:
-                Av = float(p["Cv"]) * CV2AV
-            elif p.get("Av") is not None:
-                Av = float(p["Av"])
-            else:                                          # CvTypes.OpPoint at opening_nominal 1
-                Av = float(p["m_flow_nominal"]) / (valve_char(ch, 1.0, rg) * math.sqrt(rho) *
-                                                  reg_root(float(p["dp_nominal"]), self.dp_small))
-            if p.get("checkValve"):
-                return m - rc * Av * math.sqrt(rho) * reg_root2(dp, self.dp_small, 1.0, 0.0, True, 0.0)
-            return m - rc * Av * reg_root2(dp, self.dp_small, rho, rho)
-        if k == "fl_valve_linear":
-            return m - float(p["opening"]) * float(p["m_flow_nominal"]) / float(p["dp_nominal"]) * dp
         if k == "fl_pump":
+            rho = med.d(self._Tpump[i])                   # PartialPump: rho = medium.d
             n0 = float(p["N_nominal"])
             n = float(p["N"]) if p.get("N") is not None else n0
             pts = p["curve"]
@@ -662,22 +854,79 @@ class FluidRef:
                 vs = m / rho / float(p["nParallel"])
                 head = (n / n0) ** 2 * pump_curve(vs * n0 / n, V, H)
             return ((pb - pa) - rho * self.g * head) / 1e5
+        rho_a, rho_b, mu_a, mu_b = self._props(i)
+        if k in ("dp_seg", "fl_pipe"):
+            if k == "dp_seg":            # one segment of a dynamic pipe's flow model (dps_fg = p_i - p_(i+1), steady)
+                gh, nfm, L = self.g * f["dh"], f["nFM"], f["L"]
+            else:
+                gh, nfm, L = self.g * float(p["height_ab"]), 1, float(p["length"])
+            if p["friction"] == "nominal_laminar":     # upwind density in the static head (useUpstreamScheme)
+                return (dp - gh * (rho_a if m > 0 else rho_b) -
+                        float(p["dp_nominal"]) / nfm / float(p["m_flow_nominal"]) * m) / 1e5
+            return m - float(p["nParallel"]) * pipe_detailed(dp, rho_a, mu_a, L, float(p["diameter"]),
+                                                             float(p["roughness"]), self.dp_small / nfm, gh,
+                                                             rho_b, mu_b)
+        if k == "fl_orifice":
+            D, z = float(p["diameter"]), float(p["zeta"])
+            kk = 8 * z / (math.pi ** 2 * D ** 4)              # lossConstant_D_zeta
+            return m - reg_root2(dp, self.dp_small, rho_a / kk, rho_b / kk)
+        if k == "fl_resistance":
+            a, b = float(p["a"]), float(p.get("b") or 0.0)
+            rho = reg_step(dp, rho_a, rho_b, self._resistance_dp_small(p, med))
+            if b > 0:
+                v = (math.copysign(1.0, dp) if dp != 0 else 0.0) * (-b / (2 * a) + math.sqrt((b / (2 * a)) ** 2
+                                                                                          + abs(dp) / a))
+            else:
+                dmin = self._resistance_dp_small(p, med)
+                v = smooth_power(dp / a, max(EPS, dmin) / a, 0.5)
+            return m - rho * v
+        if k == "fl_valve":
+            ch, rg = p["characteristic"], float(p.get("rangeability") or 20.0)
+            rc = valve_char(ch, float(p["opening"]), rg)   # opening_actual = opening (no filter: no leakage limit)
+            Av = self._valve_Av(p, med)
+            if p.get("checkValve"):
+                return m - rc * Av * math.sqrt(rho_a) * reg_root2(dp, self.dp_small, 1.0, 0.0, True, 0.0)
+            return m - rc * Av * reg_root2(dp, self.dp_small, rho_a, rho_b)
+        if k == "fl_valve_linear":
+            return m - float(p["opening"]) * float(p["m_flow_nominal"]) / float(p["dp_nominal"]) * dp
         raise FluidRefError(f"no relation for {k}")
 
-    def _solve(self, levels):
+    def _resistance_dp_small(self, p, med):
+        """GenericResistances.VolumeFlowRate's dp_small: dp_volumeFlowRate_DP at m_flow_small with the density at
+        reference_p, reference_T (dp_min 1e-10)."""
+        a, b = float(p["a"]), float(p.get("b") or 0.0)
+        vs = self.m_small / med.d_ref
+        if b > 0:
+            return a * vs * vs + b * vs
+        return a * smooth_power(vs, (1e-10 / a) ** 0.5, 2)
+
+    def _storage_at(self):
+        """{hydraulic node: the mass its volumes take (kg/s)} this instant."""
+        out = {}
+        for j, pv in enumerate(self.pvols):
+            out[pv["node"]] = out.get(pv["node"], 0.0) + self._mdp[j]
+        for j, xv in enumerate(self.xvols):
+            if xv["node"] is not None:
+                out[xv["node"]] = out.get(xv["node"], 0.0) + self._mdx[j]
+        return out
+
+    def _solve(self, levels=None):
         from scipy.optimize import root
         nf, fi = len(self.flows), {n: i for i, n in enumerate(self.free)}
+        store = self._storage_at()
+        self._pc = None
+        self._pc = [self._props(i) for i in range(nf)]      # the states do not change during the solve
+        self._pfix = {}
+        self._pfix = {n: self._p_fixed(n) for n in self.fixed}
 
         def pressures(x):
-            return {n: (x[nf + fi[n]] * 1e5 if n in fi else self._p_fixed(n, levels)) for n in self.nodes}
-
-        self._levels = levels
+            return {n: (x[nf + fi[n]] * 1e5 if n in fi else self._p_fixed(n)) for n in self.nodes}
 
         def res(x):
             P = pressures(x)
             r = np.empty(nf + len(fi))
             for i, f in enumerate(self.flows):
-                r[i] = self._relation(f, x[i], P[f["a"]], P[f["b"]])
+                r[i] = self._relation(i, x[i], P[f["a"]], P[f["b"]])
             mf = self._m_of(x[:nf])
             bal = np.zeros(len(fi))
             for i, f in enumerate(self.flows):
@@ -688,12 +937,15 @@ class FluidRef:
             for n, m, _, _ in self.sources:
                 if n in fi:
                     bal[fi[n]] += m
+            for n, md in store.items():
+                if n in fi:
+                    bal[fi[n]] -= md
             r[nf:] = bal
             return r
         if self._x is not None:
             x0 = self._x
         else:
-            pf = [self._p_fixed(n, levels) for n in self.fixed] or [self.p_amb]
+            pf = [self._p_fixed(n) for n in self.fixed] or [self.p_amb]
             x0 = np.concatenate([np.full(nf, 1e-3), np.full(len(fi), float(np.mean(pf)) / 1e5)])
         best = None
         for method, opts in (("hybr", {"xtol": 1e-15, "maxfev": 50000}),
@@ -704,6 +956,7 @@ class FluidRef:
                 best = (sol.x, err)
             if err < 1e-11:
                 break
+        self._pc, self._pfix = None, None
         if best[1] > 1e-8:
             raise FluidRefError(f"the hydraulics did not converge (residual {best[1]:.3g})")
         self._x = best[0]
@@ -711,12 +964,20 @@ class FluidRef:
         return self._m_of(best[0][:nf]), pressures(best[0])
 
     def _q_orig(self, m, sources=True):
-        """{network node: the flow the components put into it}: flow elements (-m at port_a, +m at port_b) and,
-        with sources, single-port mass-flow sources. A boundary's or tank's port takes it (Sum m_flow = 0)."""
+        """{network node: the flow the components put into it}: flow elements (-m at port_a, +m at port_b, a
+        volume at a port taking its mass change) and, with sources, single-port mass-flow sources. A boundary's or
+        tank's port takes it (Sum m_flow = 0)."""
         q = {}
         for i, f in enumerate(self.flows):
             q[f["a0"]] = q.get(f["a0"], 0.0) - m[i]
             q[f["b0"]] = q.get(f["b0"], 0.0) + m[i]
+        for j, pv in enumerate(self.pvols):                     # port_b.m_flow = -(port_a.m_flow - dm/dt)
+            b0 = self.flows[pv["i"]]["b0"]
+            q[b0] -= self._mdp[j]
+        for dp in self.dpipes:                                  # port_a.m_flow = m_flows[2] + dm1/dt (and port_b)
+            q[dp["a0"]] -= self._mdx[dp["x0"]]
+            if dp["st"] == "av_vb":
+                q[dp["b0"]] -= self._mdx[dp["x0"] + dp["n"] - 1]
         if sources:
             for _, ms, _, orig in self.sources:
                 if len(orig) == 1:
@@ -732,22 +993,20 @@ class FluidRef:
             share[n] = share.get(n, 0) + 1
         return {(e, j): q.get(n, 0.0) / share[n] for e, j, n in self.fixed_ports}
 
-    def _tank_inflows(self, m, P):
+    def _tank_inflows(self, m, P=None):
         ff = self._fixed_flows(m)
         return np.array([sum(ff[(tk["e"], j)] for j in range(1, len(tk["ports"]) + 1) if (tk["e"], j) in ff) +
                          sum(m[i] for _, i in tk["loss"]) for tk in self.tanks])
 
-    # ---- temperatures (FL9) -----------------------------------------------------------------------------------------
+    # ---- temperatures (FL9, FL14) -------------------------------------------------------------------------------------
     def _thermal_setup(self, sysp):
-        """Energy states and the thermal network. The hydraulics do not depend on temperature (constant density and
-        viscosity), so temperatures follow the flows: ideal mixing at each connection point (Modelica's stream
+        """Energy states and the thermal network: ideal mixing at each connection point (Modelica's stream
         connectors: the inflows' enthalpy weighted by their mass flows), isenthalpic static parts, a pump without a
-        volume adding W / m_flow, tanks and pump volumes with der(U) = Hb_flow + Qb_flow + Wb_flow (U = m cv (T - T0),
-        h = cp (T - T0), T0 273.15; a vessel's Hb_flow includes m v^2/2 at ports with port_diameter), and a linear
-        thermal network on the tanks' heat ports (OpenTank's IdealHeatTransfer: the port is at the fluid's T)."""
+        volume adding W / m_flow, storages with der(U) = Hb_flow + Qb_flow + Wb_flow (a vessel's Hb_flow includes
+        m v^2/2 at ports with port_diameter), and a linear thermal network on the heat ports (IdealHeatTransfer of
+        vessels: the port is at the fluid's T)."""
         net = self.net
         self.thermal, self.thermal_why = True, ""
-        self.T_amb = float(sysp.get("T_ambient", 293.15))
         for e, d in net.elems.items():
             if d["kind"] in ("fl_boundary", "fl_mass_flow") and "T_in" in (d.get("enabled") or ()):
                 self.thermal, self.thermal_why = False, f"{d['comp']}: input T_in (temperatures not in the reference)"
@@ -756,44 +1015,25 @@ class FluidRef:
                 self.thermal, self.thermal_why = False, (f"{net.elems[dp['e']]['comp']}: ideal heat transfer (the "
                                                          f"volumes at the wall's temperature: not in the reference)")
         dyn = sysp.get("dynamics", "fixed_initial")
-        if dyn != "fixed_initial" and (self.xvols or any(float(f["p"].get("V") or 0) > 0 for f in self.flows
-                                                         if f["k"] == "fl_pump")):
+        if dyn != "fixed_initial" and (self.xvols or self.pvols):
             self.thermal, self.thermal_why = False, f"system dynamics {dyn} (temperatures from fixed_initial only)"
-        for xv in self.xvols:
-            xv["T_start"] = float(xv["T_start"]) if xv["T_start"] is not None else self.T_amb
-        for tk in self.tanks:
-            p = net.elems[tk["e"]]["params"]
-            tk["cp"], tk["cv"] = _cp(p)
-            tk["T_start"] = float(p["T_start"]) if p.get("T_start") is not None else self.T_amb
-        self.pvols = []
-        for i, f in enumerate(self.flows):
-            f["cp"] = _cp(f["p"])[0] if f["k"] != "tank_port" else self.tanks[f["ti"]]["cp"]
-            if f["k"] == "fl_pump" and float(f["p"].get("V") or 0) > 0:
-                f["vol"] = len(self.pvols)
-                cp, cv = _cp(f["p"])
-                self.pvols.append({"i": i, "m": f["rho"] * float(f["p"]["V"]), "cp": cp, "cv": cv,
-                                   "T_start": float(f["p"]["T_start"]) if f["p"].get("T_start") is not None
-                                   else self.T_amb})
-        self.h_bnd = {}
+        if self.var and not self.thermal:
+            raise FluidRefError(f"a liquid whose properties change with temperature, without its temperatures: "
+                                f"{self.thermal_why}")
+        self.h_bnd, self.T_bnd = {}, {}
         for e, d in net.elems.items():
             if d["kind"] in ("fl_boundary", "fl_mass_flow"):
-                cp, _ = _cp(d["params"])
-                self.h_bnd[e] = cp * (float(d["params"]["T"]) - T0_MEDIUM)
-        self.h_default = 4184.0 * (self.T_amb - T0_MEDIUM)
-        # the thermal network: nodes of heat ports; fixed by fixed_temperature, a capacitor or a tank's heat port
-        par = {}
-
-        def find(n):
-            while par.get(n, n) != n:
-                n = par[n]
-            return n
+                self.T_bnd[e] = float(d["params"]["T"])
+                self.h_bnd[e] = medium_of(d["params"]).h(self.T_bnd[e])
+        med0 = next((x["med"] for x in self.flows + self.tanks + self.xvols), medium_of({}))
+        self.h_default = med0.h(self.T_amb)
+        # the thermal network: nodes of heat ports; fixed by fixed_temperature, a capacitor or a vessel's heat port
         tnode = {}
         for ep, nid in net.node_of.items():
             if net.port_type(ep) == "heat":
                 tnode[ep] = nid
-        self.tnode = {ep: find(n) for ep, n in tnode.items()}
+        self.tnode = dict(tnode)
         self.cond, self.hflows, self.tfix, self.caps, self.tsens = [], [], {}, [], []
-        self.tel = {}
 
         def fix(n, how, who):
             if n in self.tfix and self.tfix[n] != how:
@@ -882,8 +1122,12 @@ class FluidRef:
                 Qin[n] += Q * (1 + al * (T[n] - Tr))
         return T, Qin
 
-    def _pump_power(self, f, m, pa, pb):
-        p, rho = f["p"], f["rho"]
+    def _pump_power(self, i, m, pa, pb):
+        """W_total: (pb - pa) V / eta, or MSL's quadraticPower (N/N0)^3 (rho/rho_nominal) P(V N0/N) per pump; rho the
+        pump medium's, rho_nominal the density at p_default, T_default unless rho_power is given (FL5)."""
+        f = self.flows[i]
+        p, med = f["p"], f["med"]
+        rho = med.d(self._Tpump[i])
         n0 = float(p["N_nominal"])
         n = float(p["N"]) if p.get("N") is not None else n0
         npar = float(p["nParallel"])
@@ -891,7 +1135,7 @@ class FluidRef:
             from .chains import quad_points
             pw, _ = quad_points(p["power"])
             c = np.linalg.solve(np.vander([r[0] for r in pw], 3, increasing=True), [r[1] for r in pw])
-            rho_n = float(p["rho_power"]) if p.get("rho_power") is not None else rho
+            rho_n = float(p["rho_power"]) if p.get("rho_power") is not None else med.d_nom
             vs = m / rho / npar * n0 / n
             return npar * (n / n0) ** 3 * (rho / rho_n) * (c[0] + c[1] * vs + c[2] * vs * vs)
         return (pb - pa) * (m / rho) / float(p["eta"])
@@ -904,61 +1148,69 @@ class FluidRef:
                 for j, n0 in enumerate(xv["ports"], 1)}
 
     def _pipe_flow(self, dp, m, P):
-        """A dynamic pipe's m_flows[1..n+1], vs, port and volume pressures and dps_fg at one instant."""
+        """A dynamic pipe's m_flows[1..n+1] (the volumes' mass changes included), vs, densities, port and volume
+        pressures and dps_fg at one instant."""
+        n, x0 = dp["n"], dp["x0"]
         sg = [m[i] for i in dp["segs"]]
-        mf = [sg[0]] + sg + ([sg[-1]] if dp["st"] == "av_vb" else [])
-        rho, A, npar = dp["rho"], dp["A"], dp["npar"]
-        vs = [0.5 * (mf[i] + mf[i + 1]) / rho / A / npar for i in range(dp["n"])]
+        md = self._mdx[x0:x0 + n]
+        mf = [sg[0] + md[0]] + sg + ([sg[-1] - md[n - 1]] if dp["st"] == "av_vb" else [])
+        ds = [dp["med"].d(self._Tx[x0 + i]) for i in range(n)]
+        A, npar = dp["A"], dp["npar"]
+        vs = [0.5 * (mf[i] + mf[i + 1]) / ds[i] / A / npar for i in range(n)]
         dps = [P[self.flows[i]["a"]] - P[self.flows[i]["b"]] for i in dp["segs"]]
-        return {"mf": mf, "vs": vs, "pm": [P[v] for v in dp["vn"]], "pa": P[dp["na"]], "pb": P[dp["nb"]],
+        return {"mf": mf, "vs": vs, "ds": ds, "pm": [P[v] for v in dp["vn"]], "pa": P[dp["na"]], "pb": P[dp["nb"]],
                 "dps": dps}
 
     def _pipe_wb(self, dp, fl):
-        """DynamicPipe's Wb_flows (vs A (dp/dx + friction - g dh rho) nParallel, as MSL writes them per
+        """DynamicPipe's Wb_flows (vs A (dp/dx + friction - g dh d) nParallel, as MSL writes them per
         modelStructure)."""
-        n, A, npar, rho, g, dh = dp["n"], dp["A"], dp["npar"], dp["rho"], self.g, dp["hi"]
-        vs, pm, dps, pa, pb = fl["vs"], fl["pm"], fl["dps"], fl["pa"], fl["pb"]
+        n, A, npar, g, dh = dp["n"], dp["A"], dp["npar"], self.g, dp["hi"]
+        vs, pm, dps, pa, pb, ds = fl["vs"], fl["pm"], fl["dps"], fl["pa"], fl["pb"], fl["ds"]
         if n == 1:
-            return [vs[0] * A * ((pb - pa) + sum(dps) - g * dh * rho) * npar]
+            return [vs[0] * A * ((pb - pa) + sum(dps) - g * dh * ds[0]) * npar]
         W = [0.0] * n
         for i in range(1, n - 1):
-            W[i] = vs[i] * A * ((pm[i + 1] - pm[i - 1]) / 2 + (dps[i - 1] + dps[i]) / 2 - g * dh * rho) * npar
-        W[0] = vs[0] * A * ((pm[1] - pm[0]) / 2 + dps[0] / 2 - g * dh * rho) * npar
+            W[i] = vs[i] * A * ((pm[i + 1] - pm[i - 1]) / 2 + (dps[i - 1] + dps[i]) / 2 - g * dh * ds[i]) * npar
+        W[0] = vs[0] * A * ((pm[1] - pm[0]) / 2 + dps[0] / 2 - g * dh * ds[0]) * npar
         if dp["st"] == "av_vb":
-            W[n - 1] = vs[n - 1] * A * ((pm[n - 1] - pm[n - 2]) / 2 + dps[n - 2] / 2 - g * dh * rho) * npar
+            W[n - 1] = vs[n - 1] * A * ((pm[n - 1] - pm[n - 2]) / 2 + dps[n - 2] / 2 - g * dh * ds[n - 1]) * npar
         else:
-            W[n - 1] = vs[n - 1] * A * ((pb - pm[n - 2]) / 1.5 + dps[n - 2] / 2 + dps[n - 1] - g * dh * rho) * npar
+            W[n - 1] = vs[n - 1] * A * ((pb - pm[n - 2]) / 1.5 + dps[n - 2] / 2 + dps[n - 1] -
+                                        g * dh * ds[n - 1]) * npar
         return W
 
     def _pipe_alphas(self, dp, fl):
-        """Heat transfer coefficients of a dynamic pipe's volumes: alpha0 (constant) or LocalPipeFlowHeatTransfer."""
+        """Heat transfer coefficients of a dynamic pipe's volumes: alpha0 (constant) or LocalPipeFlowHeatTransfer
+        with each volume's properties."""
         p, n = dp["p"], dp["n"]
         if p.get("heat_transfer") == "constant":
             return [float(p["alpha"])] * n
-        rho, mu, D, lam = dp["rho"], dp["mu"], dp["D"], dp["lam"]
-        Pr = mu * dp["cp"] / lam
+        med, D, x0 = dp["med"], dp["D"], dp["x0"]
         out = []
         for i, v in enumerate(fl["vs"], 1):
+            T = self._Tx[x0 + i - 1]
+            rho, mu, lam = med.d(T), med.mu(T), med.lam(T)
             Re = abs(v) * rho * D / mu
+            Pr = mu * med.cp(T) / lam
             out.append(local_alpha(Re, Pr, D, dp["li"], (i - 0.5) if v >= 0 else (n - i + 0.5), lam))
         return out
 
-    def _energy(self, levels, Ut, Up, Ux, Tc, m, P, ports=False):
-        """(dU tanks, dU pump volumes, dU closed and pipe volumes, dT capacitors, details) at one instant. Mixing
-        at each connection point of the network (the study's, not the joined hydraulic nodes); ports: also the
-        ports' h_outflow (output points only)."""
+    def _energy(self, Tc, m, P, ports=False):
+        """(dU tanks, dU pump volumes, dU closed and pipe volumes, dT capacitors, details) at one instant, from the
+        storages' state (_set_state) and this instant's flows. Mixing at each connection point of the network (the
+        study's, not the joined hydraulic nodes). details['mdp'], ['mdx']: the volumes' mass changes these energies
+        imply (V d'(T) dT/dt); ['hout'], ['instream']: the ports' h_outflow and inStream (ports, or T-dependent
+        media)."""
         nt = len(self.tanks)
-        mt = np.array([tk["rho"] * tk["A"] * max(levels[i], EPS) for i, tk in enumerate(self.tanks)])
-        Tt = np.array([T0_MEDIUM + Ut[i] / (mt[i] * tk["cv"]) for i, tk in enumerate(self.tanks)])
-        ht = np.array([tk["cp"] * (Tt[i] - T0_MEDIUM) for i, tk in enumerate(self.tanks)])
-        Tp = np.array([T0_MEDIUM + Up[j] / (pv["m"] * pv["cv"]) for j, pv in enumerate(self.pvols)])
-        hp = np.array([pv["cp"] * (Tp[j] - T0_MEDIUM) for j, pv in enumerate(self.pvols)])
-        Tx = np.array([T0_MEDIUM + Ux[j] / (xv["m"] * xv["cv"]) for j, xv in enumerate(self.xvols)])
-        hx = np.array([xv["cp"] * (Tx[j] - T0_MEDIUM) for j, xv in enumerate(self.xvols)])
+        Tt, mt = self._Tt, self._mt
+        ht = np.array([tk["med"].h(Tt[i]) for i, tk in enumerate(self.tanks)])
+        Tp, Tx = self._Tp, self._Tx
+        hp = np.array([pv["med"].h(Tp[j]) for j, pv in enumerate(self.pvols)])
+        hx = np.array([xv["med"].h(Tx[j]) for j, xv in enumerate(self.xvols)])
         W = {}
         for i, f in enumerate(self.flows):
             if f["k"] == "fl_pump":
-                W[i] = self._pump_power(f, m[i], P[f["a"]], P[f["b"]])
+                W[i] = self._pump_power(i, m[i], P[f["a"]], P[f["b"]])
         # discharges into each connection point: (weight, constant h) or (weight, upstream node, added h), and the
         # port that discharges (inStream at a port excludes its own outflow)
         dis = {}
@@ -985,18 +1237,27 @@ class FluidRef:
         vq = self._vol_flows(m)
         for (xi, j), mp in vq.items():
             add(self.xvols[xi]["ports"][j - 1], -mp, h=hx[xi], own=(self.xvols[xi]["e"], j))
+        pflows = {}                   # a pump volume's port flows (into the pump): port_a, port_b
+        for jv, pv in enumerate(self.pvols):
+            i = pv["i"]
+            pflows[i] = (m[i], -(m[i] - self._mdp[jv]))
         for i, f in enumerate(self.flows):
             mi = m[i]
             if f["k"] == "tank_port":
-                add(f["a0"], -mi, h=ht[f["ti"]], own=(f["e"], f["j"]))
+                add(f["a0"], -mi, h=ht[f["ti"]], own=f["own"])
                 continue
             if f["k"] == "dp_seg":
                 continue
-            dst, src = (f["b0"], f["a0"]) if mi > 0 else (f["a0"], f["b0"])
             if "vol" in f:
-                add(dst, abs(mi), h=hp[f["vol"]], own=f["e"])
-            else:
-                add(dst, abs(mi), up=src, extra=(W[i] / abs(mi) if i in W and abs(mi) > 0 else 0.0), own=f["e"])
+                fa, fb = pflows[i]
+                add(f["a0"], -fa, h=hp[f["vol"]], own=f["e"])
+                add(f["b0"], -fb, h=hp[f["vol"]], own=f["e"])
+                continue
+            dst, src = (f["b0"], f["a0"]) if mi > 0 else (f["a0"], f["b0"])
+            ex = W[i] / abs(mi) if i in W and abs(mi) > 0 else 0.0
+            if f["k"] == "fl_pipe":          # StaticPipe: h_outflow(b) = inStream(a) - g height_ab, and back
+                ex = -self.g * float(f["p"]["height_ab"]) * (1.0 if mi > 0 else -1.0)
+            add(dst, abs(mi), up=src, extra=ex, own=f["e"])
         pfl = []
         for dp in self.dpipes:                   # a pipe's ports discharge its end volumes' h
             fl = self._pipe_flow(dp, m, P)
@@ -1024,7 +1285,7 @@ class FluidRef:
                     A[r, ix[up]] -= w
                     b[r] += w * extra
         hmix = dict(zip(keys, np.linalg.solve(A, b)))
-        hout = self._h_outflow(dis, hmix, m, W, ht, hp, hx) if ports else {}
+        hout, instream = self._h_outflow(dis, hmix, m, W, ht, hp, hx) if (ports or self.var) else ({}, None)
         # heat ports
         Tfix = {}
         for n, how in self.tfix.items():
@@ -1048,16 +1309,18 @@ class FluidRef:
                 f = self.flows[i]
                 mi = m[i]
                 Ap = math.pi / 4 * f["D"] ** 2
-                H += mi * (hmix[f["a0"]] if mi > 0 else ht[ti]) + mi * 0.5 * (mi / (tk["rho"] * Ap)) ** 2
+                # ports_E_flow: m v^2/2, v with the density of the actual stream (portVelocities)
+                rho_s = tk["med"].d(self._pT[i][0]) if mi > 0 else tk["med"].d(Tt[ti])
+                H += mi * (hmix[f["a0"]] if mi > 0 else ht[ti]) + mi * 0.5 * (mi / (rho_s * Ap)) ** 2
             Qt[ti] = Qin.get(tk["hn"], 0.0) if tk.get("hn") is not None else 0.0
             dUt[ti] = H + Qt[ti]
         dUp = np.zeros(len(self.pvols))
         for jv, pv in enumerate(self.pvols):
             i = pv["i"]
             f = self.flows[i]
-            mi = m[i]
-            up = f["a0"] if mi > 0 else f["b0"]
-            dUp[jv] = abs(mi) * (hmix[up] - hp[jv]) + W[i]
+            fa, fb = pflows[i]
+            dUp[jv] = (fa * (hmix[f["a0"]] if fa > 0 else hp[jv]) + fb * (hmix[f["b0"]] if fb > 0 else hp[jv]) +
+                       W[i])
         dUx = np.zeros(len(self.xvols))
         Qx = np.zeros(len(self.xvols))
         for xi, xv in enumerate(self.xvols):
@@ -1080,18 +1343,28 @@ class FluidRef:
             for i in range(n):
                 Qx[x0 + i] = Qb[i]
                 dUx[x0 + i] = Hb[i] + Wb[i] + Qb[i]
-            pdet.append({"H": H, "Hb": Hb, "Wb": Wb, "Qb": Qb, "alphas": alphas[pi_]})
+            pdet.append({"H": H, "Hb": Hb, "Wb": Wb, "Qb": Qb, "alphas": alphas[pi_], "mf": mf})
         dTc = np.array([Qin.get(c["n"], 0.0) / c["C"] for c in self.caps])
-        return dUt, dUp, dUx, dTc, {"hmix": hmix, "Tt": Tt, "Tp": Tp, "Tx": Tx, "hx": hx, "Tnet": Tnet, "Qin": Qin,
-                                    "Qt": Qt, "Qx": Qx, "W": W, "pipes": pdet, "hout": hout}
 
-    def _h_outflow(self, dis, hmix, m, W, ht, hp, hx) -> dict:
-        """{Modelica path of a port's h_outflow: value} as MSL defines them (FL12, for the energy check of a
-        reference run): a storage's ports carry its medium.h; a static part's port_a carries inStream at port_b
-        and back (PartialTwoPortTransport); a pump without a volume carries medium.h = inStream(inlet) + W/|m|
-        (its steady energy balance); pressure sensors Medium.h_default. inStream at a port (Modelica's stream
-        connectors): the other ports' outflows at its connection point mixed by their flows; without any outflow
-        there, the other port's h_outflow (two ports) or their mean."""
+        def mdot(med, V, T, dU):        # der(m) = V d'(T) dT/dt with der(U) = der(m) u + m u' dT/dt
+            if not med.var:
+                return 0.0, dU / (V * med.rho * med.cv_)
+            dd = med.dd(T)
+            Tdot = dU / (V * med.d(T) * med.du(T) + med.u(T) * V * dd)
+            return V * dd * Tdot, Tdot
+        mdp = np.array([mdot(pv["med"], pv["V"], Tp[j], dUp[j])[0] for j, pv in enumerate(self.pvols)])
+        mdx = np.array([mdot(xv["med"], xv["V"], Tx[j], dUx[j])[0] for j, xv in enumerate(self.xvols)])
+        return dUt, dUp, dUx, dTc, {"hmix": hmix, "Tt": Tt, "Tp": Tp, "Tx": Tx, "hx": hx, "Tnet": Tnet, "Qin": Qin,
+                                    "Qt": Qt, "Qx": Qx, "W": W, "pipes": pdet, "hout": hout, "instream": instream,
+                                    "mdp": mdp, "mdx": mdx, "pflows": pflows}
+
+    def _h_outflow(self, dis, hmix, m, W, ht, hp, hx):
+        """({Modelica path of a port's h_outflow: value}, inStream(node, port)) as MSL defines them (FL12): a
+        storage's ports carry its medium.h; a static part's port_a carries inStream at port_b and back
+        (PartialTwoPortTransport); a pump without a volume carries medium.h = inStream(inlet) + W/|m| (its steady
+        energy balance); pressure sensors Medium.h_default. inStream at a port (Modelica's stream connectors): the
+        other ports' outflows at its connection point mixed by their flows; without any outflow there, the other
+        port's h_outflow (two ports) or their mean."""
         net = self.net
         vals = {}
         for n, items in dis.items():
@@ -1117,7 +1390,7 @@ class FluidRef:
         for i, f in enumerate(self.flows):
             e, k = f["e"], f["k"]
             if k == "tank_port":
-                port(f"{e}.ports[{f['j']}].h_outflow", f["a0"], (e, f["j"]), ht[f["ti"]])
+                port(f"{e}.ports[{f['j']}].h_outflow", f["a0"], f["own"], ht[f["ti"]])
             elif k == "dp_seg":
                 continue
             elif "vol" in f:
@@ -1127,14 +1400,15 @@ class FluidRef:
                 port(f"{e}.port_a.h_outflow", f["a0"], e, rule=("pump", f, i))
                 port(f"{e}.port_b.h_outflow", f["b0"], e, rule=("pump", f, i))
             else:
-                port(f"{e}.port_a.h_outflow", f["a0"], e, rule=("pass", f["b0"]))
-                port(f"{e}.port_b.h_outflow", f["b0"], e, rule=("pass", f["a0"]))
+                gh = self.g * float(f["p"]["height_ab"]) if k == "fl_pipe" else 0.0
+                port(f"{e}.port_a.h_outflow", f["a0"], e, rule=("pass", f["b0"], gh))
+                port(f"{e}.port_b.h_outflow", f["b0"], e, rule=("pass", f["a0"], -gh))
         for dp in self.dpipes:
             port(f"{dp['e']}.port_a.h_outflow", dp["a0"], dp["e"], hx[dp["x0"]])
             port(f"{dp['e']}.port_b.h_outflow", dp["b0"], dp["e"], hx[dp["x0"] + dp["n"] - 1])
         for e, d in net.elems.items():       # PartialAbsoluteSensor, PartialRelativeSensor: h_default (20 degC)
             if d["kind"] in ("fl_pressure", "fl_relative_pressure"):
-                hd = _cp(d["params"])[0] * (293.15 - T0_MEDIUM)
+                hd = medium_of(d["params"]).h_default
                 for pn in (("port",) if d["kind"] == "fl_pressure" else ("port_a", "port_b")):
                     port(f"{e}.{pn}.h_outflow", net.node_of[f"{e}.{pn}"], e, hd)
 
@@ -1150,180 +1424,118 @@ class FluidRef:
             changed = False
             for path, own, rule in rules:
                 if rule[0] == "pass":
-                    v = instream(rule[1], own)
+                    v = instream(rule[1], own) + rule[2]
                 else:
                     f, i = rule[1], rule[2]
                     mi = m[i]
                     v = (instream(f["a0"], own) + W[i] / mi if mi > 0 else
                          instream(f["b0"], own) + W[i] / -mi if mi < 0 else instream(f["a0"], own))
-                if H.get(path) is None or abs(H[path] - v) > 1e-9 * max(1.0, abs(v)):
+                if H.get(path) is None or abs(H[path] - v) > 1e-15 * max(1.0, abs(v)):
                     H[path], changed = v, True
             if not changed:
                 break
-        return H
+        return H, instream
+
+    def _update_props(self, en) -> float:
+        """Take the port temperatures, pumps' medium temperatures and volumes' mass changes an energy pass gives;
+        the largest change (K, or kg/s scaled) for the instant's fixed point."""
+        en = en[4]
+        ins, H = en["instream"], en["hout"]
+        dmax = 0.0
+        for i, f in enumerate(self.flows):
+            med, k = f["med"], f["k"]
+            if k == "dp_seg":
+                if f["xb"] is None:                      # av_b's last segment: state_b = inStream at port_b
+                    T = med.T_h(ins(f["b0"], f["own"]))
+                    dmax = max(dmax, abs(T - self._pT[i][1]))
+                    self._pT[i][1] = T
+                continue
+            if k == "tank_port":
+                new = [med.T_h(ins(f["a0"], f["own"])), self._pT[i][1]]
+            else:
+                new = [med.T_h(ins(f["a0"], f["own"])), med.T_h(ins(f["b0"], f["own"]))]
+            dmax = max(dmax, abs(new[0] - self._pT[i][0]), abs(new[1] - self._pT[i][1]))
+            self._pT[i] = new
+            if k == "fl_pump" and "vol" not in f:        # medium.h of a pump without a volume
+                T = med.T_h(H[f"{f['e']}.port_b.h_outflow"])
+                dmax = max(dmax, abs(T - self._Tpump[i]))
+                self._Tpump[i] = T
+        M = max(1.0, float(np.max(np.abs(self._s))) if getattr(self, "_s", None) is not None and self._s.size else 1.0)
+        for old, new in ((self._mdp, en["mdp"]), (self._mdx, en["mdx"])):
+            if old.size:                       # 1e-13 of the flows counts as 1e-11 K
+                dmax = max(dmax, float(np.max(np.abs(new - old))) / M * 100.0)
+                old[:] = new
+        return dmax
+
+    def _instant(self, x, ports=False):
+        """Flows, pressures and the energy details at one instant of the states x (the coupled fixed point for
+        T-dependent liquids)."""
+        nt, nv, nx = self._split
+        mt, Ut, Up, Ux, Tc = self._unpack(x)
+        self._set_state(mt, Ut, Up, Ux)
+        if not self.thermal:
+            m, P = self._solve()
+            return m, P, None
+        for _ in range(100):
+            m, P = self._solve()
+            en = self._energy(Tc, m, P, ports=ports)
+            if not self.var:
+                if ports:                                # the port temperatures the outputs use
+                    self._update_props(en)
+                return m, P, en
+            if self._update_props(en) < 1e-11:
+                return m, P, en
+        raise FluidRefError("the flows and temperatures did not agree at one instant (T-dependent liquid)")
+
+    def _unpack(self, x):
+        nt, nv, nx = self._split
+        o = 2 * nt + nv
+        if not self.thermal:
+            return x[:nt], np.zeros(nt), np.zeros(nv), np.zeros(nx), np.zeros(0)
+        return x[:nt], x[nt:2 * nt], x[2 * nt:o], x[o:o + nx], x[o + nx:]
+
+    # ---- over time --------------------------------------------------------------------------------------------------
     def simulate(self, t_eval, t0=None) -> dict:
         from scipy.integrate import solve_ivp
         t = np.asarray(t_eval, float)
         self._x = None
         nt, nv, nx, nc = len(self.tanks), len(self.pvols), len(self.xvols), len(self.caps)
-        th = self.thermal
-        h0 = np.array([tk["h0"] for tk in self.tanks])
-        rho_a = np.array([tk["rho"] * tk["A"] for tk in self.tanks])
-        U0 = np.array([tk["rho"] * tk["A"] * tk["h0"] * tk["cv"] * (tk["T_start"] - T0_MEDIUM) for tk in self.tanks])
-        V0 = np.array([pv["m"] * pv["cv"] * (pv["T_start"] - T0_MEDIUM) for pv in self.pvols])
-        X0 = np.array([xv["m"] * xv["cv"] * (xv["T_start"] - T0_MEDIUM) for xv in self.xvols])
-        C0 = np.array([c["T0"] for c in self.caps])
-        x0 = np.concatenate([h0] + ([U0, V0, X0, C0] if th else []))
         self._split = (nt, nv, nx)
-
-        def split(x):
-            o = 2 * nt + nv
-            return x[:nt], x[nt:2 * nt], x[2 * nt:o], x[o:o + nx], x[o + nx:]
+        th = self.thermal
+        self._mdp[:], self._mdx[:] = 0.0, 0.0
+        m0 = np.array([tk["med"].d(tk["T_start"]) * tk["A"] * tk["h0"] for tk in self.tanks])
+        U0 = np.array([m0[i] * tk["med"].u(tk["T_start"]) for i, tk in enumerate(self.tanks)])
+        V0 = np.array([pv["V"] * pv["med"].d(pv["T_start"]) * pv["med"].u(pv["T_start"]) for pv in self.pvols])
+        X0 = np.array([xv["V"] * xv["med"].d(xv["T_start"]) * xv["med"].u(xv["T_start"]) for xv in self.xvols])
+        C0 = np.array([c["T0"] for c in self.caps])
+        x0 = np.concatenate([m0] + ([U0, V0, X0, C0] if th else []))
 
         def rhs(_, x):
-            lv, Ut, Up, Ux, Tc = split(x)
-            m, P = self._solve(lv)
-            dl = self._tank_inflows(m, P) / rho_a if nt else np.zeros(0)
+            m, P, en = self._instant(x)
+            dm = self._tank_inflows(m) if nt else np.zeros(0)
             if not th:
-                return dl
-            dUt, dUp, dUx, dTc, _ = self._energy(lv, Ut, Up, Ux, Tc, m, P)
-            return np.concatenate([dl, dUt, dUp, dUx, dTc])
+                return dm
+            dUt, dUp, dUx, dTc, _ = en
+            return np.concatenate([dm, dUt, dUp, dUx, dTc])
         ts = float(t[0] if t0 is None else t0)
         X = np.repeat(x0[:, None], t.size, axis=1)
         if x0.size and t[-1] > ts:
-            sc = np.concatenate([np.full(nt, max(1.0, float(np.max(h0)) if nt else 1.0) * 1e-12)] +
+            sc = np.concatenate([np.maximum(m0, 1.0) * 1e-12] +
                                 ([np.maximum(np.abs(U0), 1.0) * 1e-12, np.maximum(np.abs(V0), 1.0) * 1e-12,
                                   np.maximum(np.abs(X0), 1.0) * 1e-12, np.full(nc, 1e-9)] if th else []))
             sol = solve_ivp(rhs, (ts, float(t[-1])), x0, t_eval=t[t >= ts], method="Radau", rtol=1e-10, atol=sc)
             if not sol.success:
                 raise FluidRefError(f"the tank levels and temperatures did not integrate: {sol.message}")
             X[:, t >= ts] = sol.y
-        H = X[:nt]
-        if np.any(H < 0):
+        if nt and np.any(X[:nt] < 0):
             raise FluidRefError("a tank ran empty (below its ports: MSL's inflow-only mode, not in the reference)")
         self._x = None
-        cols, ecols = [], []
+        rows = []
         for j in range(t.size):
-            lv, Ut, Up, Ux, Tc = split(X[:, j])
-            m, P = self._solve(lv)
-            cols.append((m, P))
-            ecols.append(self._energy(lv, Ut, Up, Ux, Tc, m, P, ports=True) if th else None)
-        out = self._paths(t, H, cols)
-        if th:
-            out.update(self._thermal_paths(t, X, nt, nv, cols, ecols))
-        return out
-
-    def _thermal_paths(self, t, X, nt, nv, cols, ecols) -> dict:
-        nx = len(self.xvols)
-        D = 4             # ecols[k][D]: the details
-        out, net = {}, self.net
-
-        def ser(fn):
-            return np.array([fn(k) for k in range(t.size)], float)
-        if t.size:
-            for path in ecols[0][D]["hout"]:
-                out[path] = ser(lambda k, path=path: ecols[k][D]["hout"][path])
-        for ti, tk in enumerate(self.tanks):
-            e = tk["e"]
-            out[f"{e}.medium.T"] = ser(lambda k, ti=ti: ecols[k][D]["Tt"][ti])
-            out[f"{e}.U"] = X[nt + ti]
-            # OpenTank: Wb_flow = 0 (singleState media), Qb_flow = the heat port's, ports_E_flow: m v^2/2 at ports
-            # with port_diameter (portsData_height 0), else 0
-            out[f"{e}.Qb_flow"] = ser(lambda k, ti=ti: ecols[k][D]["Qt"][ti])
-            out[f"{e}.Wb_flow"] = np.zeros(t.size)
-            if tk.get("hn") is not None:
-                out[f"{e}.heatPort.T"] = out[f"{e}.medium.T"]
-                out[f"{e}.heatPort.Q_flow"] = out[f"{e}.Qb_flow"]
-            loss = dict(tk["loss"])
-            for j in range(1, len(tk["ports"]) + 1):
-                if j in loss:
-                    f = self.flows[loss[j]]
-                    Ap = math.pi / 4 * f["D"] ** 2
-                    mm = np.array([c[0][loss[j]] for c in cols], float)
-                    out[f"{e}.ports_E_flow[{j}]"] = mm * 0.5 * (mm / (tk["rho"] * Ap)) ** 2
-                else:
-                    out[f"{e}.ports_E_flow[{j}]"] = np.zeros(t.size)
-        pv_of = {pv["i"]: jv for jv, pv in enumerate(self.pvols)}
-        for i, f in enumerate(self.flows):          # pumps (PartialPump: Wb_flow = W_total, no heat transfer)
-            if f["k"] == "fl_pump":
-                e = f["e"]
-                out[f"{e}.U"] = X[2 * nt + pv_of[i]] if i in pv_of else np.zeros(t.size)
-                out[f"{e}.Qb_flow"] = np.zeros(t.size)
-                out[f"{e}.Wb_flow"] = ser(lambda k, i=i: ecols[k][D]["W"][i])
-        for jv, pv in enumerate(self.pvols):
-            e = self.flows[pv["i"]]["e"]
-            out[f"{e}.medium.T"] = ser(lambda k, jv=jv: ecols[k][D]["Tp"][jv])
-        o = 2 * nt + nv
-        for xi, xv in enumerate(self.xvols):
-            if xv["kind"] != "vol":
-                continue
-            e = xv["e"]
-            out[f"{e}.medium.T"] = ser(lambda k, xi=xi: ecols[k][D]["Tx"][xi])
-            out[f"{e}.U"] = X[o + xi]
-            out[f"{e}.Qb_flow"] = ser(lambda k, xi=xi: ecols[k][D]["Qx"][xi])
-            out[f"{e}.Wb_flow"] = np.zeros(t.size)
-            for j in range(1, len(xv["ports"]) + 1):           # no portsData: no kinetic energy at the ports
-                out[f"{e}.ports_E_flow[{j}]"] = np.zeros(t.size)
-            if xv["hn"] is not None:
-                out[f"{e}.heatPort.T"] = out[f"{e}.medium.T"]
-                out[f"{e}.heatPort.Q_flow"] = out[f"{e}.Qb_flow"]
-        for pi_, dp in enumerate(self.dpipes):
-            e, n, x0 = dp["e"], dp["n"], dp["x0"]
-            for i in range(n):
-                k1 = i + 1
-                out[f"{e}.mediums[{k1}].T"] = ser(lambda k, j=x0 + i: ecols[k][D]["Tx"][j])
-                out[f"{e}.mediums[{k1}].h"] = ser(lambda k, j=x0 + i: ecols[k][D]["hx"][j])
-                out[f"{e}.Us[{k1}]"] = X[o + x0 + i]
-                for nm, key in (("Hb_flows", "Hb"), ("Wb_flows", "Wb"), ("Qb_flows", "Qb")):
-                    out[f"{e}.{nm}[{k1}]"] = ser(lambda k, pi_=pi_, i=i, key=key: ecols[k][D]["pipes"][pi_][key][i])
-            for i in range(n + 1):
-                out[f"{e}.H_flows[{i + 1}]"] = ser(lambda k, pi_=pi_, i=i: ecols[k][D]["pipes"][pi_]["H"][i])
-            if dp["heat"] and dp["p"].get("heat_transfer") in ("constant", "local"):
-                wall = self.tnode.get(f"{e}.heat")
-                Tw = ser(lambda k, wall=wall: ecols[k][D]["Tnet"].get(wall, np.nan))
-                Qtot = sum(out[f"{e}.Qb_flows[{i + 1}]"] for i in range(n))
-                for i in range(n):
-                    out[f"{e}.heatTransfer.Q_flows[{i + 1}]"] = out[f"{e}.Qb_flows[{i + 1}]"]
-                    out[f"{e}.heatPorts[{i + 1}].Q_flow"] = out[f"{e}.Qb_flows[{i + 1}]"]
-                    out[f"{e}.heatPorts[{i + 1}].T"] = Tw
-                    out[f"{e}.heatTransfer.alphas[{i + 1}]"] = ser(
-                        lambda k, pi_=pi_, i=i: ecols[k][D]["pipes"][pi_]["alphas"][i])
-                out[f"omct_{e}_coll.port_b.Q_flow"] = Qtot
-                out[f"omct_{e}_coll.port_b.T"] = Tw
-        for i, f in enumerate(self.flows):
-            if f["k"] == "fl_temperature":
-                cp = f["cp"]
-
-                def Ts(k, f=f, i=i, cp=cp):
-                    hm = ecols[k][D]["hmix"]
-                    Ta, Tb = T0_MEDIUM + hm[f["a0"]] / cp, T0_MEDIUM + hm[f["b0"]] / cp
-                    return reg_step(cols[k][0][i], Ta, Tb, self.m_small)
-                out[f"{f['e']}.T"] = ser(Ts)
-        # thermal parts
-        def Tn(n):
-            return ser(lambda k: ecols[k][D]["Tnet"][n])
-        for ci, c in enumerate(self.caps):
-            e = c["e"]
-            out[f"{e}.T"] = X[2 * nt + nv + nx + ci]
-            out[f"{e}.der_T"] = ser(lambda k, c=c: ecols[k][D]["Qin"].get(c["n"], 0.0) / c["C"])
-            out[f"{e}.port.T"] = out[f"{e}.T"]
-            out[f"{e}.port.Q_flow"] = out[f"{e}.der_T"] * c["C"]
-        for na, nb, G, e in self.cond:
-            Ta, Tb = Tn(na), Tn(nb)
-            out.update({f"{e}.port_a.T": Ta, f"{e}.port_b.T": Tb, f"{e}.dT": Ta - Tb, f"{e}.Q_flow": G * (Ta - Tb),
-                        f"{e}.port_a.Q_flow": G * (Ta - Tb), f"{e}.port_b.Q_flow": -G * (Ta - Tb)})
-        for n, Q, al, Tr, e in self.hflows:
-            T_ = Tn(n)
-            out.update({f"{e}.port.T": T_, f"{e}.port.Q_flow": -Q * (1 + al * (T_ - Tr))})
-        for e, d in net.elems.items():
-            if d["kind"] == "fixed_temperature":
-                n = self.tnode[f"{e}.port"]
-                out[f"{e}.port.T"] = Tn(n)
-                out[f"{e}.port.Q_flow"] = ser(lambda k, n=n: ecols[k][D]["Qin"].get(n, 0.0))
-        for e, n in self.tsens:
-            out[f"{e}.T"] = Tn(n)
-            out[f"{e}.port.T"] = out[f"{e}.T"]
-        return out
+            m, P, en = self._instant(X[:, j], ports=True)
+            rows.append(self._row(X[:, j], m, P, en))
+        keys = list(dict.fromkeys(k for r in rows for k in r))
+        return {k: np.array([r.get(k, np.nan) for r in rows], float) for k in keys}
 
     def steady(self, t1=None) -> dict:
         """Without tanks the hydraulics are algebraic: the state at any time. With tanks: RefError (no steady
@@ -1334,16 +1546,14 @@ class FluidRef:
         v = self.simulate(np.array([0.0]))
         return {k: float(x[0]) for k, x in v.items()}
 
-    def _paths(self, t, H, cols) -> dict:
+    def _row(self, x, m, P, en) -> dict:
+        """{Modelica path: value} at one instant (after _instant)."""
         out, g, net = {}, self.g, self.net
-
-        def ser(fn):
-            return np.array([fn(m, P) for m, P in cols], float)
+        nt, nv, nx = self._split
+        mt, Ut, Up, Ux, Tc = self._unpack(x)
         for i, f in enumerate(self.flows):
-            e, k, p, rho = f["e"], f["k"], f["p"], f["rho"]
-            a, b = f["a"], f["b"]
-            mm = ser(lambda m, P, i=i: m[i])
-            pa, pb = ser(lambda m, P, a=a: P[a]), ser(lambda m, P, b=b: P[b])
+            e, k, p, med = f["e"], f["k"], f["p"], f["med"]
+            mm, pa, pb = m[i], P[f["a"]], P[f["b"]]
             if k == "tank_port":
                 out.update({f"{e}.ports[{f['j']}].m_flow": mm, f"{e}.ports[{f['j']}].p": pa})
                 continue
@@ -1353,82 +1563,174 @@ class FluidRef:
                 continue
             out.update({f"{e}.port_a.m_flow": mm, f"{e}.port_b.m_flow": -mm, f"{e}.port_a.p": pa,
                         f"{e}.port_b.p": pb})
-            if k in ("fl_resistance", "fl_orifice", "fl_valve", "fl_valve_linear", "fl_pipe"):
-                out[f"{e}.V_flow"] = mm / rho
+            rho_a, rho_b, _, _ = self._props(i)
+            if k in ("fl_resistance", "fl_orifice", "fl_valve", "fl_valve_linear", "fl_pipe", "fl_volume_flow_sensor"):
+                # PartialTwoPortTransport's V_flow, VolumeFlowRate sensor: m_flow / regStep(m_flow, d_a, d_b)
+                out[f"{e}.V_flow"] = mm / reg_step(mm, rho_a, rho_b, self.m_small)
             if k == "fl_mass_flow_sensor":
                 out[f"{e}.m_flow"] = mm
-            if k == "fl_volume_flow_sensor":
-                out[f"{e}.V_flow"] = mm / rho
             if k == "fl_pump":
+                rho = med.d(self._Tpump[i])
                 n0 = float(p["N_nominal"])
                 n = float(p["N"]) if p.get("N") is not None else n0
                 dpp = pb - pa
                 npar = float(p["nParallel"])
-                if p.get("power") is not None:     # quadraticPower through quad_points' 3 points, eta = dp V / W
-                    from .chains import quad_points
-                    pw, _ = quad_points(p["power"])
-                    c = np.linalg.solve(np.vander([r[0] for r in pw], 3, increasing=True), [r[1] for r in pw])
-                    rho_n = float(p["rho_power"]) if p.get("rho_power") is not None else rho
-                    vs = mm / rho / npar * n0 / n
-                    W1 = (n / n0) ** 3 * (rho / rho_n) * (c[0] + c[1] * vs + c[2] * vs * vs)
-                    W = W1 * npar
-                    eta = dpp * (mm / rho / npar) / W1
-                else:
-                    eta = np.full(t.size, float(p["eta"]))
-                    W = dpp * (mm / rho) / eta
-                out[f"{e}.m"] = np.full(t.size, rho * float(p.get("V") or 0.0))    # constant density
+                W = self._pump_power(i, mm, pa, pb)
+                eta = dpp * (mm / rho / npar) / (W / npar) if p.get("power") is not None else float(p["eta"])
+                out[f"{e}.m"] = rho * float(p.get("V") or 0.0)
                 out.update({f"{e}.m_flow": mm, f"{e}.V_flow": mm / rho, f"{e}.dp_pump": dpp,
                             f"{e}.head": dpp / (rho * g), f"{e}.eta": eta,
-                            f"{e}.W_total": W, f"{e}.N": np.full(t.size, n * C.W_RPM)})
+                            f"{e}.W_total": W, f"{e}.N": n * C.W_RPM})
+                if "vol" in f:                  # port_b.m_flow = -(port_a.m_flow - der(m))
+                    out[f"{e}.port_b.m_flow"] = -(mm - self._mdp[f["vol"]])
         for dp in self.dpipes:
-            e, n = dp["e"], dp["n"]
-            fls = [self._pipe_flow(dp, m, P) for m, P in cols]
-            mf = np.array([f_["mf"] for f_ in fls], float)
-            out.update({f"{e}.port_a.m_flow": mf[:, 0], f"{e}.port_b.m_flow": -mf[:, n],
-                        f"{e}.port_a.p": np.array([f_["pa"] for f_ in fls]),
-                        f"{e}.port_b.p": np.array([f_["pb"] for f_ in fls])})
+            e, n, x0 = dp["e"], dp["n"], dp["x0"]
+            fl = self._pipe_flow(dp, m, P)
+            out.update({f"{e}.port_a.m_flow": fl["mf"][0], f"{e}.port_b.m_flow": -fl["mf"][n],
+                        f"{e}.port_a.p": fl["pa"], f"{e}.port_b.p": fl["pb"]})
             for i in range(n + 1):
-                out[f"{e}.m_flows[{i + 1}]"] = mf[:, i]
+                out[f"{e}.m_flows[{i + 1}]"] = fl["mf"][i]
             for i in range(n):
-                out[f"{e}.mediums[{i + 1}].p"] = np.array([f_["pm"][i] for f_ in fls])
-                out[f"{e}.vs[{i + 1}]"] = np.array([f_["vs"][i] for f_ in fls])
-                out[f"{e}.ms[{i + 1}]"] = np.full(t.size, self.xvols[dp["x0"] + i]["m"])
-        for xv in self.xvols:
+                out[f"{e}.mediums[{i + 1}].p"] = fl["pm"][i]
+                out[f"{e}.mediums[{i + 1}].d"] = fl["ds"][i]
+                out[f"{e}.vs[{i + 1}]"] = fl["vs"][i]
+                out[f"{e}.ms[{i + 1}]"] = self.xvols[x0 + i]["V"] * fl["ds"][i]
+        vq = self._vol_flows(m)
+        for xi, xv in enumerate(self.xvols):
             if xv["kind"] == "vol":
                 e = xv["e"]
-                n = self.find(f"{e}.port[1]") if xv["ports"] else None
-                if n is not None:
-                    out[f"{e}.medium.p"] = ser(lambda m, P, n=n: P[n])
-                out[f"{e}.m"] = np.full(t.size, xv["m"])
-                vqs = [self._vol_flows(m) for m, _ in cols]
-                xi = self.xvols.index(xv)
+                d = xv["med"].d(self._Tx[xi])
+                if xv["node"] is not None:
+                    out[f"{e}.medium.p"] = P[xv["node"]]
+                out[f"{e}.m"] = xv["V"] * d
+                out[f"{e}.medium.d"] = d
                 for j in range(1, len(xv["ports"]) + 1):
-                    out[f"{e}.ports[{j}].m_flow"] = np.array([v[(xi, j)] for v in vqs], float)
-                    if n is not None:
+                    out[f"{e}.ports[{j}].m_flow"] = vq[(xi, j)]
+                    if xv["node"] is not None:
                         out[f"{e}.ports[{j}].p"] = out[f"{e}.medium.p"]
         for j, tk in enumerate(self.tanks):
             e, A = tk["e"], tk["A"]
-            out[f"{e}.level"] = H[j]
-            out[f"{e}.V"] = A * H[j]
-            out[f"{e}.m"] = tk["rho"] * A * H[j]
+            out[f"{e}.level"] = self._levels[j]
+            out[f"{e}.V"] = A * self._levels[j]
+            out[f"{e}.m"] = self._mt[j]
+            out[f"{e}.medium.d"] = tk["med"].d(self._Tt[j])
         # vessels', boundaries' and sources' ports: ports[j].p, ports[j].m_flow (into the component)
-        ffs = [self._fixed_flows(m) for m, _ in cols]
+        ff = self._fixed_flows(m)
         for e, j, n in self.fixed_ports:
-            out[f"{e}.ports[{j}].p"] = ser(lambda m, P, n=n: P[self.nodes_root[n]])
-            out[f"{e}.ports[{j}].m_flow"] = np.array([ff[(e, j)] for ff in ffs], float)
+            out[f"{e}.ports[{j}].p"] = P[self.nodes_root[n]]
+            out[f"{e}.ports[{j}].m_flow"] = ff[(e, j)]
         for n, ms, e, orig in self.sources:
+            q = self._q_orig(m, False)
             for j, n0 in enumerate(orig, 1):
-                out[f"{e}.ports[{j}].p"] = ser(lambda m, P, n=n: P[n])
-                out[f"{e}.ports[{j}].m_flow"] = (np.full(t.size, -ms) if len(orig) == 1 else
-                                                 ser(lambda m, P, n0=n0: self._q_orig(m, False).get(n0, 0.0)))
+                out[f"{e}.ports[{j}].p"] = P[n]
+                out[f"{e}.ports[{j}].m_flow"] = -ms if len(orig) == 1 else q.get(n0, 0.0)
         for e, d in net.elems.items():
             if d["kind"] == "fl_pressure":
                 n = self.find(f"{e}.port")
-                out[f"{e}.p"] = ser(lambda m, P, n=n: P[n])
-                out[f"{e}.port.p"] = out[f"{e}.p"]
-                out[f"{e}.port.m_flow"] = np.zeros(t.size)
+                out[f"{e}.p"] = out[f"{e}.port.p"] = P[n]
+                out[f"{e}.port.m_flow"] = 0.0
             if d["kind"] == "fl_relative_pressure":
                 na, nb = self.find(f"{e}.port_a"), self.find(f"{e}.port_b")
-                out[f"{e}.p_rel"] = ser(lambda m, P, na=na, nb=nb: P[na] - P[nb])
-                out[f"{e}.port_a.m_flow"] = out[f"{e}.port_b.m_flow"] = np.zeros(t.size)
+                out[f"{e}.p_rel"] = P[na] - P[nb]
+                out[f"{e}.port_a.m_flow"] = out[f"{e}.port_b.m_flow"] = 0.0
+        if self.thermal:
+            out.update(self._thermal_row(x, m, P, en))
+        return out
+
+    def _thermal_row(self, x, m, P, en) -> dict:
+        dUt, dUp, dUx, dTc, D = en
+        out, net = dict(D["hout"]), self.net
+        nt, nv, nx = self._split
+        mt, Ut, Up, Ux, Tc = self._unpack(x)
+        for ti, tk in enumerate(self.tanks):
+            e = tk["e"]
+            out[f"{e}.medium.T"] = D["Tt"][ti]
+            out[f"{e}.U"] = Ut[ti]
+            # OpenTank: Wb_flow = 0 (singleState media), Qb_flow = the heat port's, ports_E_flow: m v^2/2 at ports
+            # with port_diameter (portsData_height 0; v with the actual stream's density), else 0
+            out[f"{e}.Qb_flow"] = D["Qt"][ti]
+            out[f"{e}.Wb_flow"] = 0.0
+            if tk.get("hn") is not None:
+                out[f"{e}.heatPort.T"] = out[f"{e}.medium.T"]
+                out[f"{e}.heatPort.Q_flow"] = out[f"{e}.Qb_flow"]
+            loss = dict(tk["loss"])
+            for j in range(1, len(tk["ports"]) + 1):
+                if j in loss:
+                    i = loss[j]
+                    f = self.flows[i]
+                    Ap = math.pi / 4 * f["D"] ** 2
+                    mm = m[i]
+                    rho_s = tk["med"].d(self._pT[i][0]) if mm > 0 else tk["med"].d(D["Tt"][ti])
+                    out[f"{e}.ports_E_flow[{j}]"] = mm * 0.5 * (mm / (rho_s * Ap)) ** 2
+                else:
+                    out[f"{e}.ports_E_flow[{j}]"] = 0.0
+        pv_of = {pv["i"]: jv for jv, pv in enumerate(self.pvols)}
+        for i, f in enumerate(self.flows):          # pumps (PartialPump: Wb_flow = W_total, no heat transfer)
+            if f["k"] == "fl_pump":
+                e = f["e"]
+                out[f"{e}.U"] = Up[pv_of[i]] if i in pv_of else 0.0
+                out[f"{e}.Qb_flow"] = 0.0
+                out[f"{e}.Wb_flow"] = D["W"][i]
+        for jv, pv in enumerate(self.pvols):
+            out[f"{self.flows[pv['i']]['e']}.medium.T"] = D["Tp"][jv]
+        for xi, xv in enumerate(self.xvols):
+            if xv["kind"] != "vol":
+                continue
+            e = xv["e"]
+            out[f"{e}.medium.T"] = D["Tx"][xi]
+            out[f"{e}.U"] = Ux[xi]
+            out[f"{e}.Qb_flow"] = D["Qx"][xi]
+            out[f"{e}.Wb_flow"] = 0.0
+            for j in range(1, len(xv["ports"]) + 1):           # no portsData: no kinetic energy at the ports
+                out[f"{e}.ports_E_flow[{j}]"] = 0.0
+            if xv["hn"] is not None:
+                out[f"{e}.heatPort.T"] = out[f"{e}.medium.T"]
+                out[f"{e}.heatPort.Q_flow"] = out[f"{e}.Qb_flow"]
+        for pi_, dp in enumerate(self.dpipes):
+            e, n, x0 = dp["e"], dp["n"], dp["x0"]
+            det = D["pipes"][pi_]
+            for i in range(n):
+                k1 = i + 1
+                out[f"{e}.mediums[{k1}].T"] = D["Tx"][x0 + i]
+                out[f"{e}.mediums[{k1}].h"] = D["hx"][x0 + i]
+                out[f"{e}.Us[{k1}]"] = Ux[x0 + i]
+                for nm, key in (("Hb_flows", "Hb"), ("Wb_flows", "Wb"), ("Qb_flows", "Qb")):
+                    out[f"{e}.{nm}[{k1}]"] = det[key][i]
+            for i in range(n + 1):
+                out[f"{e}.H_flows[{i + 1}]"] = det["H"][i]
+            if dp["heat"] and dp["p"].get("heat_transfer") in ("constant", "local"):
+                Tw = D["Tnet"].get(self.tnode.get(f"{e}.heat"), np.nan)
+                for i in range(n):
+                    out[f"{e}.heatTransfer.Q_flows[{i + 1}]"] = det["Qb"][i]
+                    out[f"{e}.heatPorts[{i + 1}].Q_flow"] = det["Qb"][i]
+                    out[f"{e}.heatPorts[{i + 1}].T"] = Tw
+                    out[f"{e}.heatTransfer.alphas[{i + 1}]"] = det["alphas"][i]
+                out[f"omct_{e}_coll.port_b.Q_flow"] = sum(det["Qb"])
+                out[f"omct_{e}_coll.port_b.T"] = Tw
+        for i, f in enumerate(self.flows):
+            if f["k"] == "fl_temperature":       # TemperatureTwoPort: regStep(m_flow, T_a_inflow, T_b_inflow)
+                Ta, Tb = self._pT[i]
+                out[f"{f['e']}.T"] = reg_step(m[i], Ta, Tb, self.m_small)
+        # thermal parts
+        Tn = D["Tnet"]
+        for ci, c in enumerate(self.caps):
+            e = c["e"]
+            out[f"{e}.T"] = Tc[ci]
+            out[f"{e}.der_T"] = D["Qin"].get(c["n"], 0.0) / c["C"]
+            out[f"{e}.port.T"] = out[f"{e}.T"]
+            out[f"{e}.port.Q_flow"] = out[f"{e}.der_T"] * c["C"]
+        for na, nb, G, e in self.cond:
+            Ta, Tb = Tn[na], Tn[nb]
+            out.update({f"{e}.port_a.T": Ta, f"{e}.port_b.T": Tb, f"{e}.dT": Ta - Tb, f"{e}.Q_flow": G * (Ta - Tb),
+                        f"{e}.port_a.Q_flow": G * (Ta - Tb), f"{e}.port_b.Q_flow": -G * (Ta - Tb)})
+        for n, Q, al, Tr, e in self.hflows:
+            T_ = Tn[n]
+            out.update({f"{e}.port.T": T_, f"{e}.port.Q_flow": -Q * (1 + al * (T_ - Tr))})
+        for e, d in net.elems.items():
+            if d["kind"] == "fixed_temperature":
+                n = self.tnode[f"{e}.port"]
+                out[f"{e}.port.T"] = Tn[n]
+                out[f"{e}.port.Q_flow"] = D["Qin"].get(n, 0.0)
+        for e, n in self.tsens:
+            out[f"{e}.T"] = out[f"{e}.port.T"] = Tn[n]
         return out

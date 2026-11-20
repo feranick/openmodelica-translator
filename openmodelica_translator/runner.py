@@ -1,5 +1,5 @@
 """runner.py — one study end to end: validate, translate, build (or reuse), run, read, check, write the result.
-Version: 2026.11.19.23
+Version: 2026.11.19.25
 
 run_study(name, study, folder, solver, timeout, cancel) -> the result dict, also written atomically to
 <folder>/<name>.json. solver: "omc" (OpenModelica) or "ref" (the reference implementation only: linear
@@ -558,6 +558,11 @@ def fluid_energy_terms(tr):
             n = int(d["params"]["nNodes"])
             src += [f"{e}.Qb_flows[{i}]" for i in range(1, n + 1)] + [f"{e}.Wb_flows[{i}]" for i in range(1, n + 1)]
             store += [f"{e}.Us[{i}]" for i in range(1, n + 1)]
+        elif k == "fl_pipe" and float(d["params"].get("height_ab") or 0.0) != 0.0:
+            # StaticPipe: h_outflow(b) = inStream(a) - g height_ab: the rise takes Wb_flow = -m_flow g height_ab
+            # (carbonio run_fl14_probe2 e1_static: 1.6e-5 off without it, a 1 m rise)
+            sysp = next((x["params"] for x in net.elems.values() if x["kind"] == "fl_system"), {})
+            src.append((-float(sysp.get("g", 9.80665)) * float(d["params"]["height_ab"]), f"{e}.port_a.m_flow"))
     return (bnd, src, store) if bnd or store else None
 
 
@@ -569,7 +574,7 @@ def fluid_energy_paths(tr) -> list:
     out = []
     for m, h, others in bnd.values():
         out += [m, h] + [p for mh in others for p in mh]
-    return sorted(set(out + src + store))
+    return sorted(set(out + [p[1] if isinstance(p, tuple) else p for p in src] + store))
 
 
 def boundary_enthalpy_in(m_b, h_b, others):
@@ -605,8 +610,9 @@ def _fluid_energy(out, tr, r, tol=1e-6):
                 continue
             H = boundary_enthalpy_in(r.series(m), r.series(h), [(r.series(a), r.series(b)) for a, b in others])
             parts.append(H)
-        for p in src:
-            parts.append(np.asarray(r.series(p), float))
+        for p in src:                       # a path, or (coefficient, path)
+            c, p = p if isinstance(p, tuple) else (1.0, p)
+            parts.append(c * np.asarray(r.series(p), float))
         U = sum(np.asarray(r.series(p), float) for p in store) if store else np.zeros_like(tt)
         dU = sum(abs(float(np.asarray(r.series(p), float)[-1] - np.asarray(r.series(p), float)[0])) for p in store)
     except KeyError as exc:
@@ -660,9 +666,12 @@ def _fluid_mass(out, tr, r, tol=1e-6):
     flows_abs = sum(np.abs(np.asarray(r.series(p), float)) for _, p in flows) if flows else np.zeros_like(tt)
     through = _trapezoid_richardson(tt, flows_abs)[0]
     dm = float(m[-1] - m[0])
-    scale = max(through, abs(dm), float(np.max(np.abs(m))) * 1e-9, 1e-300)
+    mmax = float(np.max(np.abs(m))) if np.size(m) else 0.0
+    scale = max(through, abs(dm), mmax * 1e-9, 1e-300)
     err = abs(dm - inflow) / scale
-    lim = max(MASS_FLOOR, 10 * tol, 10 * est / scale)
+    # the stored mass is the integrator's (volumes whose density follows T, FL14): its error, 10 tol of it, counts
+    # too (a closed loop has no throughput: carbonio run_fl14_probe1 g4_loop, 3.5e-4 kg of 1050 kg at 1e-6)
+    lim = max(MASS_FLOOR, 10 * tol, 10 * est / scale, 10 * tol * mmax / scale)
     out["checks"]["mass"] = {"ok": err <= lim, "covered": True, "error_rel": err, "tol": lim, "stored_change_kg": dm,
                              "inflow_kg": inflow, "throughput_kg": through}
 
