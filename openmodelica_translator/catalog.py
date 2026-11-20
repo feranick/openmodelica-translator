@@ -1,5 +1,5 @@
 """catalog.py — the curated MSL 4.0.0 components: kinds, ports, parameters (SI), variables, initial values.
-Version: 2026.11.19.12
+Version: 2026.11.19.14
 
 Every name below was checked against the MSL 4.0.0 sources (tag v4.0.0): class paths, port names, parameter
 names and defaults. A kind is either elementary (one MSL class) or composite (parts that are elementary kinds,
@@ -1019,8 +1019,9 @@ kind("fl_resistance", MF + "Fittings.GenericResistances.VolumeFlowRate", FAB_M,
      {**FMED, "a": P("Pa.s2/m6", gt=0, doc="dp = a V_flow^2 + b V_flow; a > 0 (MSL 4.0.0 gives m_flow = rho b dp "
                                           "for a = 0, not rho dp / b: for a linear law use fl_valve_linear)"),
       "b": P("Pa.s/m3", 0.0, min=0)},
-     {**TWO_VARS, "V_flow": "m3/s"}, var_paths=TWO_PATHS, domain="mfluid",
-     doc="a generic resistance dp = a V_flow|V_flow| + b V_flow (a fitting, a filter, a heat exchanger's side)")
+     {**TWO_VARS, "V_flow": "m3/s"}, var_paths=TWO_PATHS, domain="mfluid", fluid={"cfdt": "resistance"},
+     doc="a generic resistance dp = a V_flow|V_flow| + b V_flow (a fitting, a filter, a heat exchanger's side); "
+         "\"cfdt\": [cfd-translator results] fits a, b to their total pressure drops")
 kind("fl_orifice", MF + "Fittings.SimpleGenericOrifice", FAB_M,
      {**FMED, "diameter": P("m", gt=0), "zeta": P("1", gt=0, doc="loss factor: dp = zeta rho v^2 / 2")},
      {**TWO_VARS, "V_flow": "m3/s"}, var_paths=TWO_PATHS, domain="mfluid", doc="a loss coefficient on a diameter")
@@ -1079,6 +1080,24 @@ def _pump(p, e):
             "efficiencyCharacteristic": "Modelica.Fluid.Machines.BaseClasses.PumpCharacteristics.constantEfficiency("
                                         f"eta_nominal=omct_{e}_eta)"}
     lifted = {"V_curve": [r[0] for r in pts], "head_curve": [r[1] for r in pts], "eta": p["eta"]}
+    if p.get("power") is not None:        # a power curve (FL5): MSL's quadraticPower, eta = dp V / W
+        from .chains import quad_points
+        pw, _ = quad_points(p["power"])
+        mods["use_powerCharacteristic"] = "true"
+        mods["powerCharacteristic"] = ("Modelica.Fluid.Machines.BaseClasses.PumpCharacteristics.quadraticPower("
+                                       f"V_flow_nominal=omct_{e}_V_power, W_nominal=omct_{e}_W_power)")
+        lifted.update({"V_power": [r[0] for r in pw], "W_power": [r[1] for r in pw]})
+        del lifted["eta"], mods["efficiencyCharacteristic"]
+        if p.get("m_flow_start") is None:
+            # MSL's homotopy for the power divides by V_flow_single_init = m_flow_start / rho_nominal / nParallel:
+            # 0 by default (system.m_flow_start), so initialisation fails with a division by zero (carbonio
+            # 2026-11-19, run_fl5_power_probe1). A start at the power curve's middle flow.
+            med = p.get("medium")
+            rho = p.get("rho_power") or (med["rho"] if isinstance(med, dict) else 1000.0)
+            v = pw[1][0] if pw[1][0] > 0 else max(r[0] for r in pw)
+            mods["m_flow_start"] = repr(float(rho * v * p.get("nParallel", 1)))
+    if p.get("rho_power") is not None:
+        mods["rho_nominal"] = repr(float(p["rho_power"]))
     if p.get("_w_in"):
         mods["use_N_in"] = "true"
     return mods, lifted
@@ -1092,7 +1111,12 @@ PUMP = {"curve": P("1", type="table", structural=False, msl=False,
         "nParallel": P("1", 1, type="int", structural=True, min=1),
         "V": P("m3", 0.0, min=0, structural=True, doc="volume inside (0: none)"),
         "checkValve": P("1", False, type="bool", structural=True),
-        "m_flow_start": P("kg/s", None, doc="start guess of the flow"), "T_start": P("K", None, gt=0, abs_T=True)}
+        "m_flow_start": P("kg/s", None, doc="start guess of the flow"), "T_start": P("K", None, gt=0, abs_T=True),
+        "power": P("1", None, type="table", structural=False, msl=False,
+                   doc="shaft power [[V_flow (m3/s), W (W)], ...] at N_nominal: a quadratic by least squares (MSL "
+                       "quadraticPower, scaled (N/N_nominal)^3 rho/rho_power); eta = dp V / W; instead of eta"),
+        "rho_power": P("kg/m3", None, gt=0, structural=True, msl=False,
+                       doc="the density the power curve is for (MSL rho_nominal; default the medium's)")}
 PUMP_VARS = {"m_flow": "kg/s", "V_flow": "m3/s", "head": "m", "dp": "Pa", "W": "W", "eta": "1", "w": "rad/s"}
 PUMP_PATHS = {"dp": "dp_pump", "W": "W_total", "w": [(1.0 / W_RPM, "N")]}
 kind("fl_pump", MF + "Machines.PrescribedPump", {**FAB_M, "w_in": "in"},
@@ -1100,13 +1124,13 @@ kind("fl_pump", MF + "Machines.PrescribedPump", {**FAB_M, "w_in": "in"},
      PUMP_VARS, var_paths=PUMP_PATHS, cond_ports={"w_in": None}, domain="mfluid",
      mods={"N_nominal": lambda p: p["N_nominal"] * W_RPM,
            "N_const": lambda p: (p["N"] if p.get("N") is not None else p["N_nominal"]) * W_RPM},
-     fluid={"build": _pump, "pump": True, "speed_in": ("w_in", "N_in", W_RPM)},
+     fluid={"build": _pump, "pump": True, "speed_in": ("w_in", "N_in", W_RPM), "cfdt": "pump"},
      doc="a centrifugal pump at a prescribed speed (constant N, or the input w_in [rad/s]); affinity laws off the "
-         "nominal speed")
+         "nominal speed; \"cfdt\": [cfd-translator pump results] gives curve, N_nominal, power, rho_power")
 kind("fl_pump_shaft", MF + "Machines.Pump", {**FAB_M, "shaft": "flange_r"}, {**FMED, **PUMP},
      PUMP_VARS, var_paths=PUMP_PATHS, domain="mfluid", mods={"N_nominal": lambda p: p["N_nominal"] * W_RPM},
-     fluid={"build": _pump, "pump": True},
-     doc="a centrifugal pump driven by its shaft (a motor or a speed source): torque = W / w")
+     fluid={"build": _pump, "pump": True, "cfdt": "pump"},
+     doc="a centrifugal pump driven by its shaft (a motor or a speed source): torque = W / w; \"cfdt\" as fl_pump")
 
 
 def _tank(p, e):

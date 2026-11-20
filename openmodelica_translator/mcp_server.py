@@ -60,7 +60,7 @@ losses, heat ports) with grids and drives, heat, coolant loops (pumps, pipes, va
 control blocks (PI, PID, LimPID, limiters, tables). A study lists components (catalog kinds with parameters),
 connections between their ports, outputs, and an analysis: transient, steady or linearize (eigenvalues, modes, Bode);
 derived quantities (step metrics, crossing times, window statistics) and expect checks. It takes other translators'
-results as values (build123d-translator parts give masses and moments of inertia: see study_format).
+results as values (build123d-translator parts: masses, inertias; cfd-translator: pump curves, resistances).
 Workflow: call study_format once and follow its conventions; validate_studies and fix every error; run_studies (longer
 ones come back 'pending': collect them with study_status). Before trusting numbers check warnings and checks: balance,
 initialization, solver, events, overrides, energy, reference (an independent solver; custom models: cross_solver,

@@ -1,5 +1,5 @@
 """format.py — the study format (study_format) and the static checks (validate, validate_study).
-Version: 2026.11.19.13
+Version: 2026.11.19.14
 
 validate_study(study) -> {ok, errors, warnings}: nothing runs (no omc). It resolves the network (network.build),
 checks outputs, analysis, derived quantities, sweep, expect, run (against the OMCT_MAX_* caps) and images, then
@@ -176,6 +176,11 @@ FLUID_TOPIC = {
         "...] with head falling. Valves: Kv [m3/h] or Cv [USG/min] or Av [m2], else the op point (dp_nominal, "
         "m_flow_nominal, always required); opening 0-1 constant or the input. Pipe dp = port_a.p - port_b.p "
         "(friction + rho g height_ab).",
+        "From cfd-translator: fl_pump / fl_pump_shaft \"cfdt\": [its pump study results, any speeds] -> curve, "
+        "N_nominal, power (shaft power curve, eta = rho g V H / W) and rho_power, by least squares at one speed "
+        "(affinity laws); fl_resistance \"cfdt\": [results] or {results, mu} -> a, b from total_pressure_drop, "
+        "scaled to the circuit's density (and viscosity with mu). Given values win; unreliable results are refused; "
+        "result.inputs.<comp>.cfdt records the points and the fit.",
         "Outputs: comp.var (vars below), comp.port_a.p / .m_flow (into the component), sensors' signal outputs. "
         "Checks: reference (constant-density liquids: boundaries, sources, pipes, fittings, valves, pumps, tanks; "
         "not temperatures, inputs that change the flows, dynamic pipes, gases), mass; studies the reference does not "

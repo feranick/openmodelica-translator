@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with closed-form answers: is the toolchain right?
-Version: 2026.11.19.12
+Version: 2026.11.19.14
 
 Each case is a study plus checks [(result path, expected, tolerance, why)]; tolerances are relative unless
 written {"abs": x}. Chains (chain_feat_modal, chain_b3dt_mass, chain_b3dt_inertia) run the other translator first and only when named; they are skipped
@@ -849,9 +849,81 @@ def _fl_network():
                 ("checks.reference.max_error_rel", 0.0, {"abs": 1e-4}, "OpenModelica = the reference")]
 
 
+def _cfdt_pump_result(V, rpm, name, rho=1000.0):
+    """A cfd-translator pump result shaped like run_studies' (results.flow, pump, rotating), from the pump
+    H = 20 - 2e5 V^2 m, P = 500 + 1e5 V W at 1450 rpm (affinity laws at other speeds)."""
+    s = 1450.0 / rpm
+    H, P = (20 - 2e5 * (V * s) ** 2) / s ** 2, (500 + 1e5 * V * s) / s ** 3
+    return {"name": name, "ok": True, "reliable": True,
+            "results": {"flow": {"inlet": {"Q": V, "mdot": rho * V}, "outlet": {"Q": -V, "mdot": -rho * V}},
+                        "pump": {"head_m": H, "flow_m3h": V * 3600, "power_W": P, "efficiency": rho * G * V * H / P},
+                        "rotating": {"impeller": {"rpm": rpm}}, "total_pressure_drop": -rho * G * H}}
+
+
+def _fl_cfdt_pump():
+    """The cfdt chain (FL5): four cfd-translator pump results (one at 1200 rpm, moved to 1450 by the affinity laws)
+    give the head and power curves; the pump at 1300 rpm on dp = a V^2: rho g r^2 (20 - 2e5 (V/r)^2) = a V^2,
+    W = r^3 (500 + 1e5 V / r), eta = rho g V H / W (r = 1300/1450)."""
+    pts = [_cfdt_pump_result(0.002, 1450, "q2"), _cfdt_pump_result(0.005, 1450, "q5"),
+           _cfdt_pump_result(0.006, 1200, "q6_1200"), _cfdt_pump_result(0.008, 1450, "q8")]
+    a, r = 3.0e9, 1300.0 / 1450.0
+    rg = LIQ["rho"] * G
+    V = math.sqrt(20 * r * r * rg / (a + 2e5 * rg))
+    H = a * V * V / rg
+    W = r ** 3 * (500 + 1e5 * V / r)
+    st = {"components": {"src": {"kind": "fl_boundary", "medium": LIQ},
+                         "pump": {"kind": "fl_pump", "cfdt": pts, "N": "1300 rpm"},
+                         "r": {"kind": "fl_resistance", "a": a}, "out": {"kind": "fl_boundary"}},
+          "connect": [["src.port", "pump.port_a"], ["pump.port_b", "r.port_a"], ["r.port_b", "out.port"]],
+          "outputs": {"V": "pump.V_flow", "head": "pump.head", "W": "pump.W", "eta": "pump.eta"},
+          "analysis": {"kind": "transient", "stop_time": 1, "intervals": 10}}
+    return st, [("outputs.V.final", V, 1e-6, "the curve from cfdt meets the system at 1300 rpm"),
+                ("outputs.head.final", H, 1e-6, "head = a V^2 / (rho g)"),
+                ("outputs.W.final", W, 1e-6, "the power curve from cfdt (MSL quadraticPower), N^3"),
+                ("outputs.eta.final", rg * V * H / W, 1e-6, "eta = rho g V H / W")]
+
+
+# total pressure drops of a 20 mm x 200 mm pipe, rho 1000, mu 0.01, uniform inflow (developing laminar flow):
+# cfd-translator 2026.11.18.9 on carbonio, run_fl5_pipe_chain1 (OpenFOAM 14, 13520 cells, all reliable)
+CFDT_PIPE = {"pipe_u05": (1.56827e-05, 8.37266), "pipe_u10": (3.13655e-05, 17.3712), "pipe_u15": (4.70482e-05, 26.9747),
+             "pipe_u20": (6.2731e-05, 37.1391)}
+
+
+def _fl_cfdt_resistance():
+    """The cfdt chain (FL5): fl_resistance fitted to three cfd-translator pipe results (0.05, 0.1, 0.2 m/s) predicts
+    the fourth (0.15 m/s): the flow at its total pressure drop. Exact against the fitted law
+    V = (-b + sqrt(b^2 + 4 a dp)) / 2a, and within the fit's error against cfd-translator's own flow."""
+    import numpy as np
+    from scipy.optimize import nnls
+
+    def res(name):
+        Q, dp = CFDT_PIPE[name]
+        return {"name": name, "ok": True, "reliable": True,
+                "results": {"total_pressure_drop": dp, "flow": {"inlet": {"Q": Q, "mdot": 1000 * Q},
+                                                                "outlet": {"Q": -Q, "mdot": -1000 * Q}}}}
+    fit = ["pipe_u05", "pipe_u10", "pipe_u20"]
+    Vs = np.array([CFDT_PIPE[n][0] for n in fit])
+    dps = np.array([CFDT_PIPE[n][1] for n in fit])
+    A = np.column_stack([Vs * Vs, Vs])
+    sc = A.max(axis=0)
+    x, _ = nnls(A / sc, dps)
+    a, b = (float(v) for v in x / sc)
+    Q15, dp15 = CFDT_PIPE["pipe_u15"]
+    V = (-b + math.sqrt(b * b + 4 * a * dp15)) / (2 * a)
+    liq = {"rho": 1000.0, "cp": 4000.0, "eta": 0.01}
+    st = {"components": {"a": {"kind": "fl_boundary", "p": 101325.0 + dp15, "medium": liq},
+                         "r": {"kind": "fl_resistance", "cfdt": {"results": [res(n) for n in fit], "mu": 0.01}},
+                         "b": {"kind": "fl_boundary"}},
+          "connect": [["a.port", "r.port_a"], ["r.port_b", "b.port"]], "outputs": {"V": "r.V_flow"},
+          "analysis": {"kind": "transient", "stop_time": 1, "intervals": 10}}
+    return st, [("outputs.V.final", V, 1e-6, "the fitted law dp = a V^2 + b V at the held-out point"),
+                ("outputs.V.final", Q15, 5e-3, "cfd-translator's own flow at 0.15 m/s (carbonio: 7.9e-4)")]
+
+
 FLUID_CASES = {"fl_drain_torricelli": _fl_drain, "fl_pipe_laminar": _fl_laminar, "fl_pump_system_curve": _fl_pump_system,
                "fl_valve_kv": _fl_valve, "fl_heated_pipe": _fl_heated_pipe, "fl_air_fill": _fl_air_fill,
-               "fl_pipe_turbulent": _fl_turbulent, "fl_two_tanks": _fl_two_tanks, "fl_network_reference": _fl_network}
+               "fl_pipe_turbulent": _fl_turbulent, "fl_two_tanks": _fl_two_tanks, "fl_network_reference": _fl_network,
+               "fl_cfdt_pump": _fl_cfdt_pump, "fl_cfdt_resistance": _fl_cfdt_resistance}
 # not in the Fluid reference (fluidref.covered): a dynamic pipe, a gas; judged against the reference itself
 FLUID_OMC_ONLY = {"fl_heated_pipe", "fl_air_fill", "fl_network_reference"}
 

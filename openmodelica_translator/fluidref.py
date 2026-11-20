@@ -1,5 +1,5 @@
 """fluidref.py — the reference implementation for Modelica.Fluid liquid networks (V5 FL4).
-Version: 2026.11.19.12
+Version: 2026.11.19.14
 
 An independent solver of the same equations MSL 4.0.0 writes for constant-density liquids, ported from the MSL
 sources (tag v4.0.0) rather than reused: what OpenModelica must reproduce. Covered (covered(net)):
@@ -30,7 +30,8 @@ MSL relations ported (Modelica.Fluid 4.0.0, tag v4.0.0; planning.md V5 FL4):
              m_nom / (rc(1) sqrt(rho) regRoot(dp_nom, dp_small)); rc linear, quadratic, equal percentage
   linear     m = opening m_nom / dp_nom dp
   pump       p_b - p_a = rho g (N/N0)^2 H(V N0 / N); H linearFlow, quadraticFlow, polynomialFlow (linear outside the
-             points); W = dp V / eta
+             points); W = dp V / eta, or with a power curve (FL5) MSL's quadraticPower:
+             W = (N/N0)^3 (rho/rho_nominal) P(V N0 / N), eta = dp V / W
 """
 from __future__ import annotations
 
@@ -577,11 +578,23 @@ class FluidRef:
             if k == "fl_pump":
                 n0 = float(p["N_nominal"])
                 n = float(p["N"]) if p.get("N") is not None else n0
-                eta = float(p["eta"])
                 dpp = pb - pa
+                npar = float(p["nParallel"])
+                if p.get("power") is not None:     # quadraticPower through quad_points' 3 points, eta = dp V / W
+                    from .chains import quad_points
+                    pw, _ = quad_points(p["power"])
+                    c = np.linalg.solve(np.vander([r[0] for r in pw], 3, increasing=True), [r[1] for r in pw])
+                    rho_n = float(p["rho_power"]) if p.get("rho_power") is not None else rho
+                    vs = mm / rho / npar * n0 / n
+                    W1 = (n / n0) ** 3 * (rho / rho_n) * (c[0] + c[1] * vs + c[2] * vs * vs)
+                    W = W1 * npar
+                    eta = dpp * (mm / rho / npar) / W1
+                else:
+                    eta = np.full(t.size, float(p["eta"]))
+                    W = dpp * (mm / rho) / eta
                 out.update({f"{e}.m_flow": mm, f"{e}.V_flow": mm / rho, f"{e}.dp_pump": dpp,
-                            f"{e}.head": dpp / (rho * g), f"{e}.eta": np.full(t.size, eta),
-                            f"{e}.W_total": dpp * (mm / rho) / eta, f"{e}.N": np.full(t.size, n * C.W_RPM)})
+                            f"{e}.head": dpp / (rho * g), f"{e}.eta": eta,
+                            f"{e}.W_total": W, f"{e}.N": np.full(t.size, n * C.W_RPM)})
         for j, tk in enumerate(self.tanks):
             e, A = tk["e"], tk["A"]
             out[f"{e}.level"] = H[j]

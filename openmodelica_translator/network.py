@@ -304,11 +304,16 @@ def build(study: dict) -> Net:
             net.errors.append(f"{w}: unknown kind '{kname}' (kinds: {', '.join(C.public_kinds())})")
             continue
         k = C.KINDS[kname]
-        known = set(k["params"]) | set(k["inits"]) | {"kind", "msl", "comment"}
+        cfdt_kind = (k.get("fluid") or {}).get("cfdt")
+        known = set(k["params"]) | set(k["inits"]) | {"kind", "msl", "comment"} | ({"cfdt"} if cfdt_kind else set())
         unknown = sorted(set(spec) - known)
         if unknown:
             net.errors.append(f"{w}: unknown keys {unknown} for {kname} (parameters: {sorted(k['params'])}; "
                               f"initial values: {sorted(k['inits']) or 'none'})")
+        given_keys = set(spec)
+        cfdt_scale = None
+        if cfdt_kind and "cfdt" in spec:
+            spec, cfdt_scale = _from_cfdt(cfdt_kind, spec, w, net, name)
         params = resolve_params(kname, spec, w, net, name)
         if k.get("parts") is not None:
             inits_given = {i: spec[i] for i in k["inits"] if i in spec}
@@ -342,9 +347,11 @@ def build(study: dict) -> Net:
                 net.conns.append((f"{name}__{pa}.{qa}", f"{name}__{pb}.{qb}"))
         else:
             inits = resolve_inits(kname, spec, params, w, net, name)
-            net.comps[name] = {"kind": kname, "params": params, "given": set(spec) & set(k["params"])}
+            net.comps[name] = {"kind": kname, "params": params, "given": given_keys & set(k["params"])}
             net.elems[name] = {"kind": kname, "params": params, "inits": inits, "comp": name, "part": None,
                                "enabled": set()}
+            if cfdt_scale:
+                net.elems[name]["cfdt"] = cfdt_scale
     _kind_checks(net)
     _connections(study, net)
     for name, d in net.comps.items():
@@ -354,6 +361,74 @@ def build(study: dict) -> Net:
     if not net.errors:
         _topology(study, net)
     return net
+
+
+def _from_cfdt(how, spec, where, net, name):
+    """The "cfdt" key of fl_pump / fl_pump_shaft / fl_resistance (V5 FL5): values from cfd-translator results for
+    the parameters the study does not give (given ones win), each recorded in net.inputs. Returns (spec with them,
+    what the circuit's medium will rescale: {rho, mu, a, b} for a resistance)."""
+    from .chains import ChainError, cfdt_pump, cfdt_resistance
+    w = f"{where}.cfdt"
+    spec = dict(spec)
+    raw = spec.pop("cfdt")
+    try:
+        if how == "pump":
+            N0 = None
+            if "N_nominal" in spec:
+                try:
+                    N0 = to_si(spec["N_nominal"], "rad/s", where=f"{where}.N_nominal")[0]
+                except UnitError as exc:
+                    net.errors.append(str(exc))
+                    return spec, None
+            r = cfdt_pump(raw, w, N0)
+            take = {"curve": r["curve"], "N_nominal": r["N_nominal"], "rho_power": r["rho_power"]}
+            if "eta" not in spec:                  # a given constant efficiency wins over the power curve
+                take["power"] = r["power"]
+        else:
+            r = cfdt_resistance(raw, w)
+            take = {"a": r["a"], "b": r["b"]}
+    except ChainError as exc:
+        net.errors.append(str(exc))
+        return spec, None
+    taken = sorted(p for p in take if p not in spec)
+    for p in taken:
+        spec[p] = take[p]
+    rec = dict(r["record"], parameters=taken)
+    net.inputs[f"{name}.cfdt"] = rec
+    if how == "resistance":
+        return spec, {"rho": r["rho"], "mu": r["mu"], "a": "a" in taken, "b": "b" in taken and r["b"] > 0,
+                      "record": rec}
+    return spec, None
+
+
+def _cfdt_rescale(net, e, d, medium):
+    """A resistance from cfd-translator, to the circuit's medium: a (dp ~ rho V^2) x rho/rho_cfdt, b (laminar,
+    dp ~ mu V) x mu/mu_cfdt when cfdt.mu was given; a medium omct does not know the constants of: a warning."""
+    sc = d["cfdt"]
+    rec = sc["record"]
+    m = C.fmedium(medium)
+    if m["class"] != "liquid_const":
+        if sc["a"] or sc["b"]:
+            net.warnings.append(f"components.{d['comp']}: a, b from cfd-translator at {sc['rho']:g} kg/m3 are used "
+                                f"as they are with {m['name']} (omct knows no constant density for it)")
+        rec["scaled"] = "no (medium without constant properties)"
+        return
+    rho, mu = (995.586, 1.0e-3) if not isinstance(medium, dict) else (medium["rho"], medium.get("eta", 1.0e-3))
+    p = d["params"]
+    done = {}
+    if sc["a"] and abs(rho / sc["rho"] - 1) > 1e-12:
+        p["a"] = p["a"] * rho / sc["rho"]
+        done["a"] = rho / sc["rho"]
+    if sc["b"]:
+        if sc["mu"] is not None:
+            if abs(mu / sc["mu"] - 1) > 1e-12:
+                p["b"] = p["b"] * mu / sc["mu"]
+                done["b"] = mu / sc["mu"]
+        elif p["b"] > 0:
+            rec["b_not_scaled"] = "cfd-translator's results do not give its viscosity: cfdt.mu (Pa.s) scales b"
+    rec["scaled"] = done or "no (same density)"
+    if done:
+        rec["a_used"], rec["b_used"] = p["a"], p["b"]
 
 
 def study_conns_of(net, comp, port):
@@ -777,6 +852,12 @@ def _fluid_sets(net, members):
             given = [x for x in ("Kv", "Cv", "Av") if d["params"].get(x) is not None]
             if len(given) > 1:
                 net.errors.append(f"components.{e}: size it by one of Kv, Cv, Av ({', '.join(given)} given)")
+        given_c = net.comps.get(d["comp"], {}).get("given") or set()
+        if d["kind"] in ("fl_pump", "fl_pump_shaft") and "eta" in given_c and "power" in given_c:
+            net.errors.append(f"components.{e}: give eta (constant) or power (a curve), not both")
+        if d["kind"] in ("fl_pump", "fl_pump_shaft") and d["params"].get("power") is not None \
+                and len(d["params"]["power"]) < 2:
+            net.errors.append(f"components.{e}.power: at least 2 points [[V_flow, W], ...]")
         if d["kind"] in ("fl_pump", "fl_pump_shaft") and d["params"].get("curve") is not None:
             pts = d["params"]["curve"]
             if len(pts) < 2:
@@ -803,6 +884,8 @@ def _fluid_sets(net, members):
         medium = next(iter(given.values()))[0] if given else "water"
         for x in elems:
             net.elems[x]["params"]["medium"] = medium
+            if net.elems[x].get("cfdt"):
+                _cfdt_rescale(net, x, net.elems[x], medium)
         liquid = C.is_liquid(medium)
         kinds = {net.elems[x]["kind"] for x in elems}
         if not any((C.KINDS[kk].get("fluid") or {}).get("pressure_ref") for kk in kinds) and \

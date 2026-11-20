@@ -1,5 +1,5 @@
 """modelica.py — a study -> the Modelica model, the omc build script, and the values applied at run time.
-Version: 2026.11.19.12
+Version: 2026.11.19.14
 
 translate(study, name) -> Translation with
   text        model.mo: `model omct_model` with one declaration per element (sorted), every value in SI with
@@ -83,7 +83,7 @@ def fmedia(net) -> dict:
 
 
 REDECLARE = {"FlowModel": "model", "HeatTransfer": "model", "flowCharacteristic": "function",
-             "efficiencyCharacteristic": "function", "valveCharacteristic": "function"}
+             "efficiencyCharacteristic": "function", "powerCharacteristic": "function", "valveCharacteristic": "function"}
 
 
 def fluid_parts(net, e: str):
