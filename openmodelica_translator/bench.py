@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with closed-form answers: is the toolchain right?
-Version: 2026.11.19.19
+Version: 2026.11.19.20
 
 Each case is a study plus checks [(result path, expected, tolerance, why)]; tolerances are relative unless
 written {"abs": x}. Chains (chain_feat_modal, chain_b3dt_mass, chain_b3dt_inertia) run the other translator first and only when named; they are skipped
@@ -1080,6 +1080,43 @@ def _fl_thermal_reference():
                 ("checks.fluid_energy.ok", 1, {"abs": 0.5}, "energy balance")]
 
 
+def _fl_pump_into_tank():
+    """A pump with a volume and a check valve straight into a tank (FL10: OpenModelica 1.27.2 failed to initialise
+    this while the pump volume preferred p as a state), judged against the reference: the tank fills, the pump's
+    work warms the water."""
+    st = {"components": {"src": {"kind": "fl_boundary", "p": 101325.0, "T": 300.0, "medium": LIQ},
+                         "pump": {"kind": "fl_pump", "curve": [[0, 20], [0.005, 15], [0.01, 0]], "N_nominal": "1450 rpm",
+                                  "V": 0.002, "checkValve": True, "T_start": 300.0},
+                         "tank": {"kind": "fl_tank", "height": 12, "crossArea": 0.5, "level_start": 1, "T_start": 290.0}},
+          "connect": [["src.port", "pump.port_a"], ["pump.port_b", "tank.port"]],
+          "outputs": {"m": "pump.m_flow", "level": "tank.level", "T": "tank.T"},
+          "analysis": {"kind": "transient", "stop_time": 300, "intervals": 60}}
+    return st, [("checks.reference.covered", 1, {"abs": 0.5}, "the reference covers it"),
+                ("checks.reference.max_error_rel", 0.0, {"abs": 1e-4}, "OpenModelica = the reference"),
+                ("checks.fluid_energy.ok", 1, {"abs": 0.5}, "energy balance")]
+
+
+def _fl_heated_loop():
+    """A heated closed loop of water (FL10: volumes on closed constant-density loops were refused before): a tank,
+    a pump with a volume and a check valve, a heated dynamic pipe (wall 350 K, alpha 500) after a valve; the
+    balances judge it (the wall's heat and the pump's work end up in the stored energy)."""
+    st = {"components": {"tank": {"kind": "fl_tank", "height": 5, "crossArea": 1.0, "level_start": 1,
+                                  "T_start": 293.15, "medium": LIQ},
+                         "pump": {"kind": "fl_pump", "curve": [[0, 20], [0.005, 15], [0.01, 0]], "N_nominal": "1450 rpm",
+                                  "V": 0.001, "checkValve": True},
+                         "v": {"kind": "fl_valve", "Kv": 20, "dp_nominal": 1e5, "m_flow_nominal": 5, "opening": 0.8},
+                         "pipe": {"kind": "fl_dynamic_pipe", "length": 10.0, "diameter": 0.05, "nNodes": 3,
+                                  "heat_transfer": "constant", "alpha": 500.0},
+                         "wall": {"kind": "fixed_temperature", "T": 350.0}},
+          "connect": [["tank.port", "pump.port_a"], ["pump.port_b", "v.port_a"], ["v.port_b", "pipe.port_a"],
+                      ["pipe.port_b", "tank.port"], ["pipe.heat", "wall.port"]],
+          "outputs": {"m": "pump.m_flow", "T": "tank.T", "Q": "pipe.heat.Q_flow"},
+          "analysis": {"kind": "transient", "stop_time": 600, "intervals": 120}}
+    return st, [("checks.fluid_energy.ok", 1, {"abs": 0.5}, "energy: the wall's heat and the pump's work stored"),
+                ("checks.mass.ok", 1, {"abs": 0.5}, "mass balance"),
+                ("checks.cross_solver.ok", 1, {"abs": 0.5}, "the other integrator agrees")]
+
+
 FLUID_CASES = {"fl_drain_torricelli": _fl_drain, "fl_pipe_laminar": _fl_laminar, "fl_pump_system_curve": _fl_pump_system,
                "fl_valve_kv": _fl_valve, "fl_heated_pipe": _fl_heated_pipe, "fl_air_fill": _fl_air_fill,
                "fl_pipe_turbulent": _fl_turbulent, "fl_two_tanks": _fl_two_tanks, "fl_network_reference": _fl_network,
@@ -1087,10 +1124,11 @@ FLUID_CASES = {"fl_drain_torricelli": _fl_drain, "fl_pipe_laminar": _fl_laminar,
                "fl_sweep_opening": _fl_sweep_opening, "fl_fit_kv": _fl_fit_kv, "fl_check_valve": _fl_check_valve,
                "fl_tank_port_drain": _fl_tank_port_drain, "fl_loop_reference": _fl_loop_reference,
                "fl_heated_tank": _fl_heated_tank, "fl_pump_heating": _fl_pump_heating,
-               "fl_thermal_reference": _fl_thermal_reference}
+               "fl_thermal_reference": _fl_thermal_reference, "fl_pump_into_tank": _fl_pump_into_tank,
+               "fl_heated_loop": _fl_heated_loop}
 # not in the Fluid reference (fluidref.covered): a dynamic pipe, a gas; judged against the reference itself
 FLUID_OMC_ONLY = {"fl_heated_pipe", "fl_air_fill", "fl_network_reference", "fl_loop_reference", "fl_heated_tank",
-                  "fl_thermal_reference"}
+                  "fl_thermal_reference", "fl_pump_into_tank", "fl_heated_loop"}
 
 
 def omc_only() -> set:

@@ -94,28 +94,36 @@ def test_valves_follow_the_phase():
     assert "Modelica.Media.Air.DryAirNasa" in translate(st).text
 
 
-def test_closed_loop_rule():
-    # a dynamic pipe right after the pump: allowed, av_b (carbonio: the only volume that builds on such a loop)
+def test_closed_loops_with_volumes():
+    """Volumes on closed constant-density loops build since they do not prefer p as a state (carbonio
+    run_pv_matrix5); a dynamic pipe right after the pump keeps av_b, elsewhere av_vb."""
     st = loop(pipe={"kind": "fl_dynamic_pipe", "length": 20, "diameter": 0.05, "nNodes": 3})
     assert validate_study(st)["ok"], errors(st)
-    assert "modelStructure=Modelica.Fluid.Types.ModelStructure.av_b" in translate(st).text
-    # after the valve (on the loop, not at the pump): refused with the fix
+    t = translate(st).text
+    assert "modelStructure=Modelica.Fluid.Types.ModelStructure.av_b" in t
+    assert "mediums(each preferredMediumStates=false)" in t
     st["connect"] = [["tank.port", "pump.port_a"], ["pump.port_b", "v.port_a"], ["v.port_b", "pipe.port_a"],
                      ["pipe.port_b", "tank.port"]]
-    assert "closed loop of a constant-density liquid" in errors(st)
-    # a closed volume on the loop
+    assert validate_study(st)["ok"], errors(st)
+    assert "ModelStructure.av_vb" in translate(st).text
     st = loop()
     st["components"]["cv"] = {"kind": "fl_volume", "V": 0.01}
     st["connect"] = [["tank.port", "pump.port_a"], ["pump.port_b", "cv.port"], ["cv.port", "pipe.port_a"],
                      ["pipe.port_b", "v.port_a"], ["v.port_b", "tank.port"]]
-    assert "fl_volume on a closed loop" in errors(st)
-    # open circuit: no restriction, MSL's av_vb
+    assert validate_study(st)["ok"], errors(st)
+    line = next(x for x in translate(st).text.splitlines() if "ClosedVolume cv(" in x)
+    assert "medium(preferredMediumStates=false)" in line
     st = loop(pipe={"kind": "fl_dynamic_pipe", "length": 20, "diameter": 0.05})
     st["components"]["out"] = {"kind": "fl_boundary"}
     st["connect"] = [["tank.port", "pump.port_a"], ["pump.port_b", "v.port_a"], ["v.port_b", "pipe.port_a"],
                      ["pipe.port_b", "out.port"]]
     assert validate_study(st)["ok"], errors(st)
     assert "ModelStructure.av_vb" in translate(st).text
+    gas = {"components": {"src": {"kind": "fl_mass_flow", "m_flow": 0.01, "medium": "air"},
+                          "vol": {"kind": "fl_volume", "V": 0.1}},
+           "connect": [["src.port", "vol.port"]], "outputs": {"p": "vol.p"},
+           "analysis": {"kind": "transient", "stop_time": 1}}
+    assert "preferredMediumStates" not in translate(gas).text          # gases keep MSL's states
 
 
 def test_heat_port_collector_and_speed_input():
@@ -204,12 +212,13 @@ def test_msl_notes_are_not_warnings():
     assert any("delta_head_init" in x for x in OM_NOTES)
 
 
-def test_pump_volume_on_a_closed_liquid_loop_is_refused():
-    """carbonio run_fl7_probe6: structurally singular, as fl_volume there (a check valve needs V > 0)."""
+def test_pump_volume_on_a_closed_liquid_loop():
+    """A pump volume (also for checkValve) on a closed loop: valid, without p as a preferred state (carbonio
+    run_pv_matrix4: the loop with a check-valve pump volume ran, flows as with V = 0)."""
     st = loop(pump=dict(PUMP, V=0.001, checkValve=True))
-    assert "a pump with a volume (V > 0, which checkValve needs)" in errors(st)
-    st = loop(pump=dict(PUMP, V=0.001))
-    assert "a pump with a volume (V > 0)" in errors(st)
+    assert validate_study(st)["ok"], errors(st)
+    line = next(x for x in translate(st).text.splitlines() if "PrescribedPump pump(" in x)
+    assert "medium(preferredMediumStates=false)" in line and "energyDynamics=system.energyDynamics" in line
 
 
 def test_fluid_energy_balance():

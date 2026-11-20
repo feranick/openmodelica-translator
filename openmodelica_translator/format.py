@@ -1,5 +1,5 @@
 """format.py — the study format (study_format) and the static checks (validate, validate_study).
-Version: 2026.11.19.19
+Version: 2026.11.19.20
 
 validate_study(study) -> {ok, errors, warnings}: nothing runs (no omc). It resolves the network (network.build),
 checks outputs, analysis, derived quantities, sweep, expect, run (against the OMCT_MAX_* caps) and images, then
@@ -167,9 +167,9 @@ FLUID_TOPIC = {
         "Every circuit needs a pressure: an fl_boundary or an fl_tank (gases: also an fl_volume). Ports of "
         "fl_boundary, fl_mass_flow, fl_tank and fl_volume take any number of connections ('tank.port' each time); "
         "three or more connections at one port mix ideally.",
-        "Closed loops of a constant-density liquid (water, a custom liquid): no fl_volume and no fl_dynamic_pipe on "
-        "the loop, except a dynamic pipe right after one pump (OpenModelica 1.27.2 cannot build them); heated closed "
-        "liquid loops: the coolant kinds. Open circuits and gases: no limit.",
+        "Closed loops of a constant-density liquid may hold volumes (fl_volume, fl_dynamic_pipe, pump volumes); "
+        "omct keeps their pressure off the states (OpenModelica 1.27.2 needs it). Every circuit still needs a "
+        "pressure: a boundary or a tank.",
         "fl_system (named 'system') sets p_ambient, T_ambient, g and the initial balances (default fixed_initial: "
         "storages start at T_start, p_start, level_start); omct adds one when absent.",
         "Speeds in rad/s ('1450 rpm' allowed): fl_pump N_nominal, N, input w_in. Pump curve [[V_flow m3/s, head m], "

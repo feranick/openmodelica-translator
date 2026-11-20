@@ -1,5 +1,5 @@
 """modelica.py — a study -> the Modelica model, the omc build script, and the values applied at run time.
-Version: 2026.11.19.14
+Version: 2026.11.19.20
 
 translate(study, name) -> Translation with
   text        model.mo: `model omct_model` with one declaration per element (sorted), every value in SI with
@@ -95,6 +95,17 @@ def fluid_parts(net, e: str):
     mods, lifted = (fk["build"](d["params"], e) if fk.get("build") else ({}, {}))
     for base, (_, size) in k.get("multi", {}).items():
         mods[size] = str(d.get("multi_n", {}).get(base, 0))
+    p = d["params"]
+    if (fk.get("volume") or (fk.get("pump") and float(p.get("V") or 0) > 0)) and \
+            C.fmedium(p.get("medium") or "water")["class"] == "liquid_const":
+        # a constant-density volume's p cannot be a state: MSL prefers p and T as states (preferredMediumStates when
+        # a balance is dynamic), and OpenModelica 1.27.2 then failed with 'structurally singular' (a volume on a
+        # closed loop, a pump volume before a tank) or at initialisation (a pump volume straight into a tank);
+        # without the preference every one of these runs (carbonio 2026-11-19, run_pv_matrix1-5)
+        if d["kind"] == "fl_dynamic_pipe":
+            mods["mediums.each preferredMediumStates"] = "false"
+        else:
+            mods["medium.preferredMediumStates"] = "false"
     if _has_medium(d, "fmedium"):
         mods["Medium"] = fmedia(net)[repr(d["params"]["medium"])]
     return mods, lifted

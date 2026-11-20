@@ -1,6 +1,6 @@
 """network.py — a study's components, values and connections, resolved: the common ground of validation, the
 Modelica generator and the reference implementation.
-Version: 2026.11.19.17
+Version: 2026.11.19.20
 
 build(study) -> Net, with net.errors (each says the fix) and net.warnings. It
   - resolves kinds (or "msl" class paths) and parameter values to SI (units.to_si), with defaults;
@@ -938,8 +938,8 @@ def _fluid_sets(net, members):
 
 
 def _closed_loops(net, elems, label):
-    """Constant density: refuse a volume (fl_dynamic_pipe, fl_volume) on a hydraulic cycle, except a dynamic pipe
-    whose inlet meets only one pump's outlet (it gets modelStructure av_b); open dynamic pipes keep MSL's av_vb.
+    """Constant density: a dynamic pipe on a hydraulic cycle whose inlet meets only one pump's outlet gets
+    modelStructure av_b, the others MSL's av_vb (volumes on loops were refused before 2026.11.19.20).
     Cycles: an undirected graph of the connection nodes, two-port components as edges, a vessel (tank, volume) as a
     hub joined to each of its ports; boundaries and mass-flow sources cut it (their pressure or flow is set)."""
     adj, edges = {}, []
@@ -966,34 +966,16 @@ def _closed_loops(net, elems, label):
             by_node.setdefault(nid, []).append(ep)
     for x in elems:
         d = net.elems[x]
-        pump_volume = d["kind"] in ("fl_pump", "fl_pump_shaft") and float(d["params"].get("V") or 0) > 0
-        if d["kind"] not in FL_VOLUMES and not pump_volume:
+        if d["kind"] != "fl_dynamic_pipe":
             continue
+        # closed loops of a constant-density liquid build since the volumes do not prefer p as a state
+        # (modelica.fluid_parts, run_pv_matrix5: fl_volume and a dynamic pipe after a valve on a loop); a dynamic
+        # pipe right after one pump keeps av_b (FL2, probed then), the others MSL's av_vb
         cyc = any(edges[i][2] == x for i in on_cycle)
-        if pump_volume:
-            if cyc:      # carbonio 2026-11-19, run_fl7_probe6: structurally singular, as the other volumes
-                net.errors.append(
-                    f"components.{d['comp']}: a pump with a volume (V > 0{', which checkValve needs' if d['params'].get('checkValve') else ''}) "
-                    f"on a closed loop of a constant-density liquid does not build in OpenModelica 1.27.2 (structurally "
-                    f"singular; probed 2026-11-19): use V = 0 without checkValve there, or open the circuit with "
-                    f"fl_boundary")
-            continue
-        if d["kind"] == "fl_dynamic_pipe":
-            if not cyc:
-                d["params"]["_structure"] = "av_vb"
-                continue
-            mates = [ep for ep in by_node.get(net.node_of[f"{x}.port_a"], []) if ep != f"{x}.port_a"]
-            if len(mates) == 1 and mates[0].endswith(".port_b") and \
-                    net.elems[mates[0].split(".")[0]]["kind"] in ("fl_pump", "fl_pump_shaft"):
-                d["params"]["_structure"] = "av_b"
-                continue
-        if cyc:
-            net.errors.append(
-                f"components.{d['comp']}: a {d['kind']} on a closed loop of a constant-density liquid does not build in "
-                f"OpenModelica 1.27.2 (structurally singular; probed 2026-11-19). In a closed liquid loop a dynamic "
-                f"pipe may sit right after one pump (port_a to the pump's port_b only); otherwise use fl_pipe, open "
-                f"the circuit with fl_boundary, or model the heated loop with the coolant kinds (pipe, volume_flow, "
-                f"pressure_reference)")
+        mates = [ep for ep in by_node.get(net.node_of[f"{x}.port_a"], []) if ep != f"{x}.port_a"]
+        after_pump = len(mates) == 1 and mates[0].endswith(".port_b") and \
+            net.elems[mates[0].split(".")[0]]["kind"] in ("fl_pump", "fl_pump_shaft")
+        d["params"]["_structure"] = "av_b" if (cyc and after_pump) else "av_vb"
 
 
 def _cycle_edges(adj, edges) -> set:
