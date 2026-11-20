@@ -1,5 +1,5 @@
 """npsh.py — net positive suction head of Modelica.Fluid pumps (V5 FL16).
-Version: 2026.11.20.1
+Version: 2026.11.20.2
 
 MSL's pumps carry one single-phase medium and its PumpMonitoringNPSH needs a two-phase one, so OpenModelica does not
 say when a pump would cavitate. omct reads every liquid pump's inlet state (MSL's pump.monitoring.state_in: p and T
@@ -170,17 +170,45 @@ def from_cfdt(results, where: str, N_nominal: float | None = None) -> dict:
                                "an upper bound), V ~ N, NPSH ~ N^2"}}
 
 
+def _onset_revs(r, res, ff, probe, inlet, rpm, spec, where, name):
+    """The revolution numbers onset_cfdt uses: spec 'revolutions' (a list), else those that start at or after the
+    run's averaging start (results.averaged.settings.from, or pump.averaged_over[0]; revolution k spans
+    switched_at + (k-1, k) x 60/rpm): a run freed at t = 0 has the start from rest in revolution 1 (rung 2 g 5,
+    spark1 job 756: +2 to +5 kPa on the dip and the amplitude). Without an averaging start: all."""
+    have = [x["rev"] for x in probe if "rev" in x]
+    if len(have) != len(probe) or not all(any(y.get("rev") == k for y in inlet) for k in have):
+        return [x.get("rev") for x in probe], "all (no revolution numbers)"
+    if spec.get("revolutions") is not None:
+        want = spec["revolutions"]
+        if not isinstance(want, list) or not want or any(k not in have for k in want):
+            raise NpshError(f"{where} ({name}): revolutions {want!r}: a list of the result's revolutions {have}")
+        return list(want), "given"
+    t0 = ((res.get("averaged") or {}).get("settings") or {}).get("from")
+    if t0 is None:
+        t0 = ((res.get("pump") or {}).get("averaged_over") or [None])[0]
+    if t0 is None:
+        return have, "all (no averaging start in the result)"
+    T = 60.0 / rpm
+    tsw = float(ff.get("switched_at_s") or 0.0)
+    keep = [k for k in have if tsw + (k - 1) * T >= float(t0) - 1e-3 * T]
+    if not keep:
+        raise NpshError(f"{where} ({name}): no whole revolution after the averaging start {t0:g} s (run longer, or "
+                        f"give onset_cfdt.revolutions)")
+    return keep, f"from the averaging start {float(t0):.6g} s"
+
+
 def onset_from_cfdt(spec, where: str) -> dict:
     """{eye_dip, pulse_amplitude, rpm, V_flow, raw} from a cfd-translator free-flow run (results.free_flow):
-    spec {result, eye_probe, inlet}: dip = the inlet's mean static pressure (static_Pa, not total) - the eye probe's
-    mean (both over the revolutions after the switch): the mean dip; amplitude = the eye probe's mean half
-    peak-to-peak per revolution, from min_f / max_f (cfd-translator 2026.11.20.1: [1 2 1]/4 over time steps, without
-    the step-to-step jitter) or, without them, from the raw min / max (raw: True; an upper bound: the jitter adds to
-    it, which only deepens the eye minimum)."""
+    spec {result, eye_probe, inlet, revolutions (optional)}. Over the revolutions after the run's averaging start
+    (_onset_revs): dip = the inlet's mean static pressure (static_Pa, not total) - the eye probe's mean: the mean dip;
+    amplitude = the eye's minimum below its mean, mean - min_f per revolution (cfd-translator 2026.11.20.1: [1 2 1]/4
+    over time steps, without the step-to-step jitter), averaged: p_in - dip - amplitude is then the eye's mean
+    minimum (the pulse is not symmetric: rung 2, eye probe, 26.4 kPa below the mean against 20.3 half
+    peak-to-peak; FL19). Without min_f, the raw min (raw: True; an upper bound, the jitter deepens it)."""
     if not isinstance(spec, dict) or not isinstance(spec.get("result"), dict) or not spec.get("eye_probe") \
-            or not spec.get("inlet"):
+            or not spec.get("inlet") or set(spec) - {"result", "eye_probe", "inlet", "revolutions"}:
         raise NpshError(f"{where}: {{result: <a cfd-translator transient pump result with free_flow>, eye_probe: "
-                        f"<probe name>, inlet: <inlet bc name>}}")
+                        f"<probe name>, inlet: <inlet bc name>, revolutions (optional): [k, ...]}}")
     r = spec["result"]
     name = r.get("name", "result")
     res = r.get("results") or {}
@@ -191,24 +219,29 @@ def onset_from_cfdt(spec, where: str) -> dict:
         raise NpshError(f"{where} ({name}): no free_flow.probes_p_Pa_by_revolution['{spec['eye_probe']}'] or "
                         f"free_flow.pressure_by_revolution['{spec['inlet']}'].static_Pa (solve.transient.free_flow "
                         f"with a probe at the eye)")
+    rpm = _rpm_of(res, where, name)
+    revs, revs_from = _onset_revs(r, res, ff, probe, inlet, rpm, spec, where, name)
+    pick = (lambda rows: [x for x in rows if x.get("rev") in revs]) if revs_from[:3] != "all" else (lambda rows: rows)
+    probe, inlet = pick(probe), pick(inlet)
     mean = lambda rows: float(np.mean([x["mean"] for x in rows]))          # noqa: E731
     dip = mean(inlet) - mean(probe)
     raw = not all("min_f" in x and "max_f" in x for x in probe)
     lo, hi = ("min", "max") if raw else ("min_f", "max_f")
-    amp = float(np.mean([(x[hi] - x[lo]) / 2 for x in probe]))
-    below = float(np.mean([x["mean"] - x[lo] for x in probe]))
-    rpm = _rpm_of(res, where, name)
-    flows = [x["mean"] for x in ff.get("flow_m3h_by_revolution") or []]
+    amp = float(np.mean([x["mean"] - x[lo] for x in probe]))
+    half = float(np.mean([(x[hi] - x[lo]) / 2 for x in probe]))
+    flows = [x["mean"] for x in pick(ff.get("flow_m3h_by_revolution") or [])]
     V = float(np.mean(flows)) / 3600 if flows else None
     return {"eye_dip": dip, "pulse_amplitude": amp, "rpm": rpm, "V_flow": V, "raw": raw,
             "record": {"from": "cfdt free_flow", "result": name, "eye_probe": spec["eye_probe"],
-                       "inlet": spec["inlet"], "inlet_pressure": "static_Pa mean", "revolutions": len(probe),
-                       "eye_dip_Pa": dip, "eye_dip_is": "mean (inlet static mean - eye mean)",
-                       "pulse_amplitude_Pa": amp,
+                       "inlet": spec["inlet"], "inlet_pressure": "static_Pa mean", "revolutions": revs,
+                       "revolutions_from": revs_from, "eye_dip_Pa": dip,
+                       "eye_dip_is": "mean (inlet static mean - eye mean)", "pulse_amplitude_Pa": amp,
+                       "pulse_amplitude_is": "the eye's minimum below its mean (mean - min" +
+                                             ("" if raw else "_f") + ")",
+                       "half_peak_to_peak_Pa": half,
                        "amplitude_from": ("raw per-step min/max (no min_f/max_f: an upper bound, the step-to-step "
                                           "jitter adds to it)") if raw else "min_f/max_f ([1 2 1]/4 over time steps)",
-                       "eye_min_below_mean_Pa": below, "rpm": rpm,
-                       **({"V_flow_m3h": V * 3600} if V else {})}}
+                       "rpm": rpm, **({"V_flow_m3h": V * 3600} if V else {})}}
 
 
 def merge_curve(known, below) -> list:

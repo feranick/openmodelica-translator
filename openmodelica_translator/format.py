@@ -1,5 +1,5 @@
 """format.py — the study format (study_format) and the static checks (validate, validate_study).
-Version: 2026.11.20.1
+Version: 2026.11.20.2
 
 validate_study(study) -> {ok, errors, warnings}: nothing runs (no omc). It resolves the network (network.build),
 checks outputs, analysis, derived quantities, sweep, expect, run (against the OMCT_MAX_* caps) and images, then
@@ -187,9 +187,11 @@ FLUID_TOPIC = {
         "sweeps): linear between the flows given, held below the lowest, x (V/V_max)^npsh_flow_exponent above, "
         "x (N/N_nominal)^2 at other speeds; status 'below' (NPSHa/NPSH3 < 1), 'approaching' (< npsh_margin, 1.5), "
         "'unresolved' (against an upper bound: the ratio is a lower bound), 'ok'; a warning names the flows the data "
-        "apply to. Onset: eye_dip (the MEAN dip: inlet static mean less eye mean) and pulse_amplitude (half "
-        "peak-to-peak, jitter filtered) in Pa at onset_N, or onset_cfdt {result: a cfd-translator free_flow result, "
-        "eye_probe, inlet}, give the eye's lowest pressure p_in - dip - amplitude (~ N^2), compared with the vapour "
+        "apply to. Onset: eye_dip (the MEAN dip: inlet static mean less eye mean) and pulse_amplitude (how far the "
+        "eye falls below its mean: mean - min, jitter filtered; not half peak-to-peak, the pulse is not symmetric) "
+        "in Pa at onset_N, or onset_cfdt {result: a cfd-translator free_flow result, eye_probe, inlet, revolutions: "
+        "optional, default those after the run's averaging start}, give the eye's lowest pressure p_in - dip - "
+        "amplitude (~ N^2), compared with the vapour "
         "pressure (cavitation onset) and air_saturation_pressure (air release, default p_ambient; also reported as "
         "the fraction eye minimum / saturation pressure, since at p_ambient any suction lift trips it). A dip already "
         "measured to the eye's minimum goes in eye_dip with pulse_amplitude 0. Raw cfd-translator extremes (no "

@@ -1,7 +1,8 @@
 """test_npsh.py — pumps' NPSH (V5 FL16, FL17): vapour pressures, NPSH3 (known or an upper bound) from cfd-translator
 sweeps, the flow scaling, statuses, eye onset (vapour, air release; FL18: filtered or raw amplitude, jitter flags,
-the eye minimum as a fraction of the air-saturation pressure), the run's npsh block.
-Version: 2026.11.20.1
+the eye minimum as a fraction of the air-saturation pressure; FL19: revolutions after the averaging start, the
+minimum below the mean), the run's npsh block.
+Version: 2026.11.20.2
 """
 import copy
 import math
@@ -103,6 +104,44 @@ def _free_flow(dip=3000.0, amp=1200.0, rpm=1450, filtered=True, jitter=3000.0):
                         "free_flow": {"probes_p_Pa_by_revolution": {"eye": revs},
                                       "pressure_by_revolution": {"inlet": {"static_Pa": inlet}},
                                       "flow_m3h_by_revolution": [{"mean": 20.0}, {"mean": 20.0}]}}}
+
+
+# rung 2 g 5, ESI at 1 degree, free_flow from t = 0 (spark1 job 756, cfd-translator 2026.11.20.1): the eye probe
+# [20, 0, 16] and the inlet's static pressure per revolution, as reported
+RUNG2 = {"name": "r2_g5_ff_esi", "reliable": False, "results": {
+    "rotating": {"imp": {"rpm": 2900.0}}, "averaged": {"settings": {"from": 0.02068968966}},
+    "free_flow": {"switched_at_s": 0.0,
+                  "flow_m3h_by_revolution": [{"rev": 1, "mean": 19.3757}, {"rev": 2, "mean": 20.2484},
+                                             {"rev": 3, "mean": 20.0339}],
+                  "pressure_by_revolution": {"inlet": {"static_Pa": [
+                      {"rev": 1, "mean": 229846.0, "min": 229546.0, "max": 230064.0},
+                      {"rev": 2, "mean": 229498.0, "min": 229321.0, "max": 229682.0},
+                      {"rev": 3, "mean": 229585.0, "min": 229437.0, "max": 229691.0}]}},
+                  "probes_p_Pa_by_revolution": {"eye": [
+                      {"rev": 1, "mean": 216584.0, "min": 181527.0, "max": 248435.0, "min_f": 182020.0, "max_f": 247163.0},
+                      {"rev": 2, "mean": 222624.0, "min": 193569.0, "max": 238546.0, "min_f": 194541.0, "max_f": 237515.0},
+                      {"rev": 3, "mean": 222218.0, "min": 196106.0, "max": 236815.0, "min_f": 197472.0,
+                       "max_f": 235556.0}]}}}}
+
+
+def test_onset_from_a_real_free_flow_run():
+    """Revolutions 2-3 (from the averaging start; revolution 1 holds the start from rest), the amplitude as the
+    eye's minimum below its mean (26.4 kPa against 20.3 kPa half peak-to-peak: the pulse is not symmetric)."""
+    r = N.onset_from_cfdt({"result": RUNG2, "eye_probe": "eye", "inlet": "inlet"}, "p")
+    rec = r["record"]
+    assert rec["revolutions"] == [2, 3] and rec["revolutions_from"].startswith("from the averaging start")
+    assert r["eye_dip"] == pytest.approx((229498 + 229585) / 2 - (222624 + 222218) / 2)               # 7120.5 Pa
+    assert r["pulse_amplitude"] == pytest.approx(((222624 - 194541) + (222218 - 197472)) / 2)          # 26414.5 Pa
+    assert rec["half_peak_to_peak_Pa"] == pytest.approx(((237515 - 194541) + (235556 - 197472)) / 4)   # 20264.5 Pa
+    assert r["V_flow"] == pytest.approx((20.2484 + 20.0339) / 2 / 3600) and not r["raw"]
+    a = N.onset_from_cfdt({"result": RUNG2, "eye_probe": "eye", "inlet": "inlet", "revolutions": [1, 2, 3]}, "p")
+    assert a["record"]["revolutions_from"] == "given" and a["eye_dip"] > r["eye_dip"] + 2000
+    with pytest.raises(N.NpshError, match="revolutions"):
+        N.onset_from_cfdt({"result": RUNG2, "eye_probe": "eye", "inlet": "inlet", "revolutions": [4]}, "p")
+    late = copy.deepcopy(RUNG2)
+    late["results"]["averaged"]["settings"]["from"] = 0.07
+    with pytest.raises(N.NpshError, match="no whole revolution"):
+        N.onset_from_cfdt({"result": late, "eye_probe": "eye", "inlet": "inlet"}, "p")
 
 
 def test_onset_from_cfdt():
