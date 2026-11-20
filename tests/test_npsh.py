@@ -1,6 +1,7 @@
 """test_npsh.py — pumps' NPSH (V5 FL16, FL17): vapour pressures, NPSH3 (known or an upper bound) from cfd-translator
-sweeps, the flow scaling, statuses, eye onset (vapour, air release), the run's npsh block.
-Version: 2026.11.19.28
+sweeps, the flow scaling, statuses, eye onset (vapour, air release; FL18: filtered or raw amplitude, jitter flags,
+the eye minimum as a fraction of the air-saturation pressure), the run's npsh block.
+Version: 2026.11.20.1
 """
 import copy
 import math
@@ -91,8 +92,11 @@ def test_npsh3_between_flows():
     assert N._status(1.2, True, 1.5) == "unresolved" and N._status(0.5, True, 1.5) == "unresolved"
 
 
-def _free_flow(dip=3000.0, amp=1200.0, rpm=1450):
-    revs = [{"mean": 5000.0 - dip + d, "min": 5000.0 - dip + d - amp, "max": 5000.0 - dip + d + amp} for d in (-10, 10)]
+def _free_flow(dip=3000.0, amp=1200.0, rpm=1450, filtered=True, jitter=3000.0):
+    """The eye probe per revolution: raw extremes +-(amp + jitter), filtered (min_f, max_f) +-amp."""
+    revs = [{"mean": 5000.0 - dip + d, "min": 5000.0 - dip + d - amp - jitter, "max": 5000.0 - dip + d + amp + jitter,
+             **({"min_f": 5000.0 - dip + d - amp, "max_f": 5000.0 - dip + d + amp} if filtered else {})}
+            for d in (-10, 10)]
     inlet = [{"mean": 5000.0, "min": 4900, "max": 5100}] * 2
     return {"name": "s50_ff", "reliable": True,
             "results": {"rotating": {"impeller": {"rpm": rpm}},
@@ -103,7 +107,10 @@ def _free_flow(dip=3000.0, amp=1200.0, rpm=1450):
 
 def test_onset_from_cfdt():
     r = N.onset_from_cfdt({"result": _free_flow(), "eye_probe": "eye", "inlet": "inlet"}, "p")
-    assert r["eye_dip"] == pytest.approx(3000) and r["pulse_amplitude"] == pytest.approx(1200)
+    assert r["eye_dip"] == pytest.approx(3000) and r["pulse_amplitude"] == pytest.approx(1200) and not r["raw"]
+    assert r["record"]["inlet_pressure"] == "static_Pa mean"
+    raw = N.onset_from_cfdt({"result": _free_flow(filtered=False), "eye_probe": "eye", "inlet": "inlet"}, "p")
+    assert raw["raw"] and raw["pulse_amplitude"] == pytest.approx(4200) and raw["eye_dip"] == pytest.approx(3000)
     assert r["rpm"] == 1450 and r["V_flow"] == pytest.approx(20 / 3600)
     with pytest.raises(N.NpshError, match="probes_p_Pa_by_revolution"):
         N.onset_from_cfdt({"result": _free_flow(), "eye_probe": "nope", "inlet": "inlet"}, "p")
@@ -142,6 +149,10 @@ def test_study_keys():
     assert not net.errors and p["eye_dip"] == pytest.approx(3000) and p["pulse_amplitude"] == 500
     assert p["onset_N"] == pytest.approx(2900 * math.pi / 30)
     assert net.inputs["pump.onset_cfdt"]["parameters"] == ["eye_dip", "onset_N", "onset_V_flow"]
+    assert p["_onset_raw"] is False                                         # the amplitude was given
+    del st["components"]["pump"]["pulse_amplitude"]
+    st["components"]["pump"]["onset_cfdt"]["result"] = _free_flow(rpm=2900, filtered=False)
+    assert build(st).elems["pump"]["params"]["_onset_raw"] is True
 
 
 def test_suction_lift_warns_and_stays_reliable(tmp_path):
@@ -165,6 +176,8 @@ def test_suction_lift_warns_and_stays_reliable(tmp_path):
     assert on["p_eye_min_Pa"] == pytest.approx(b["p_in_at_min_Pa"] - 4500, rel=1e-12)
     assert not on["cavitation_onset"] and on["air_release"] and "air release" in w
     assert on["air_margin_min_Pa"] == pytest.approx(b["p_in_at_min_Pa"] - 4500 - 101325, rel=1e-12)
+    assert on["eye_min_over_air_saturation"] == pytest.approx((b["p_in_at_min_Pa"] - 4500) / 101325, rel=1e-12)
+    assert "judge by the fraction" in w and "jitter_Pa" not in on and "possibly jitter" not in w
     st["components"]["pump"]["eye_dip"] = 6000                             # now below p_vap too
     st["components"]["pump"]["air_saturation_pressure"] = 4e4               # degassed: no air release
     out = run_study("v", st, tmp_path / "v", solver="ref")
@@ -182,3 +195,20 @@ def test_suction_lift_warns_and_stays_reliable(tmp_path):
     b = out["npsh"]["pump"]
     assert b["status"] == "unresolved" and b["NPSH3_is_upper_bound"] and not b["short"]
     assert "only known to be below 2 m" in " ".join(out["warnings"]) and out["reliable"]
+
+
+def test_raw_amplitude_and_jitter_flags(tmp_path):
+    """Raw cfd-translator extremes: an upper bound, warned; a trip within 3 kPa of its threshold: possibly jitter.
+    p_in 52.49 kPa, p_vap 47.40 kPa: dip 3 kPa + raw amplitude 3.5 kPa trips the vapour pressure by 1.4 kPa."""
+    st = copy.deepcopy(LIFT)
+    ff = _free_flow(dip=3000.0, amp=500.0, rpm=2900, filtered=False)            # raw +-3.5 kPa
+    st["components"]["pump"]["onset_cfdt"] = {"result": ff, "eye_probe": "eye", "inlet": "inlet"}
+    out = run_study("raw", st, tmp_path, solver="ref")
+    on = out["npsh"]["pump"]["onset"]
+    w = " ".join(out["warnings"])
+    assert on["amplitude_upper_bound"] and on["jitter_Pa"] == 3000.0 and on["pulse_amplitude_Pa"] == pytest.approx(3500)
+    assert on["cavitation_onset"] and on["cavitation_onset_possibly_jitter"] and not on["air_release_possibly_jitter"]
+    assert "min_f/max_f" in w and "possibly jitter" in w and out["reliable"]
+    st["components"]["pump"]["onset_cfdt"]["result"] = _free_flow(dip=3000.0, amp=500.0, rpm=2900)   # filtered
+    on = run_study("f", st, tmp_path / "f", solver="ref")["npsh"]["pump"]["onset"]
+    assert not on["cavitation_onset"] and "jitter_Pa" not in on and "amplitude_upper_bound" not in on

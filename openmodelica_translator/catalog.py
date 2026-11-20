@@ -1,5 +1,5 @@
 """catalog.py — the curated MSL 4.0.0 components: kinds, ports, parameters (SI), variables, initial values.
-Version: 2026.11.19.28
+Version: 2026.11.20.1
 
 Every name below was checked against the MSL 4.0.0 sources (tag v4.0.0): class paths, port names, parameter
 names and defaults. A kind is either elementary (one MSL class) or composite (parts that are elementary kinds,
@@ -1152,11 +1152,18 @@ NPSH = {"npsh_required": P("m", None, type="npsh", msl=False,
         "inlet_diameter": P("m", None, gt=0, msl=False,
                             doc="suction port diameter: adds the velocity head v^2/2g to NPSH available"),
         "eye_dip": P("Pa", None, min=0, msl=False,
-                     doc="the impeller eye's mean static pressure below the inlet's (cfd-translator free_flow); with "
-                         "pulse_amplitude the eye's lowest pressure p_in - dip - amplitude is compared with the "
-                         "vapour pressure (cavitation onset) and the air-saturation pressure (air release)"),
+                     doc="the MEAN dip: the inlet's mean static pressure less the eye's mean (cfd-translator "
+                         "free_flow); the eye's lowest pressure p_in - dip - pulse_amplitude is compared with the "
+                         "vapour pressure (cavitation onset) and the air-saturation pressure (air release). A dip "
+                         "already measured to the eye's minimum (an 'eye dip below inlet' that runs to the minimum): "
+                         "give it with pulse_amplitude 0"),
         "pulse_amplitude": P("Pa", None, min=0, msl=False,
-                             doc="the eye's pressure pulsation amplitude (half peak-to-peak) at onset_N"),
+                             doc="the eye's pressure pulsation amplitude (half peak-to-peak, jitter filtered) at "
+                                 "onset_N; 0 when eye_dip already runs to the minimum"),
+        "onset_jitter": P("Pa", None, min=0, msl=False,
+                          doc="onset trips within this of their threshold are flagged 'possibly jitter' (default "
+                              "3000 Pa when pulse_amplitude came from raw, unfiltered cfd-translator extremes, else "
+                              "none)"),
         "onset_N": P("rad/s", None, gt=0, msl=False,
                      doc="the speed eye_dip and pulse_amplitude were found at (default N_nominal); both ~ N^2"),
         "onset_V_flow": P("m3/s", None, gt=0, msl=False,
@@ -1174,7 +1181,9 @@ kind("fl_pump", MF + "Machines.PrescribedPump", {**FAB_M, "w_in": "in"},
          "nominal speed; \"cfdt\": [cfd-translator pump results] gives curve, N_nominal, power, rho_power; "
          "\"npsh_cfdt\": [cfd-translator cavitation sweep results] gives npsh_required (NPSH3 per flow) and npsh3_below "
          "(sweeps without a 3 % drop: below their lowest NPSH); \"onset_cfdt\": {result: <cfd-translator free_flow "
-         "result>, eye_probe, inlet} gives eye_dip, pulse_amplitude, onset_N and onset_V_flow")
+         "result>, eye_probe, inlet} gives eye_dip (the inlet's static mean less the eye's mean), pulse_amplitude "
+         "(the eye's filtered min_f/max_f; raw min/max without them: an upper bound, warned), onset_N and "
+         "onset_V_flow")
 kind("fl_pump_shaft", MF + "Machines.Pump", {**FAB_M, "shaft": "flange_r"}, {**FMED, **PUMP},
      PUMP_VARS, var_paths=PUMP_PATHS, domain="mfluid", mods={"N_nominal": lambda p: p["N_nominal"] * W_RPM},
      fluid={"build": _pump, "pump": True, "cfdt": "pump"},

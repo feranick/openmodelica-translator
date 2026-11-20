@@ -1,5 +1,5 @@
 """format.py — the study format (study_format) and the static checks (validate, validate_study).
-Version: 2026.11.19.28
+Version: 2026.11.20.1
 
 validate_study(study) -> {ok, errors, warnings}: nothing runs (no omc). It resolves the network (network.build),
 checks outputs, analysis, derived quantities, sweep, expect, run (against the OMCT_MAX_* caps) and images, then
@@ -187,9 +187,13 @@ FLUID_TOPIC = {
         "sweeps): linear between the flows given, held below the lowest, x (V/V_max)^npsh_flow_exponent above, "
         "x (N/N_nominal)^2 at other speeds; status 'below' (NPSHa/NPSH3 < 1), 'approaching' (< npsh_margin, 1.5), "
         "'unresolved' (against an upper bound: the ratio is a lower bound), 'ok'; a warning names the flows the data "
-        "apply to. Onset: eye_dip and pulse_amplitude (Pa, at onset_N; or onset_cfdt {result: a cfd-translator "
-        "free_flow result, eye_probe, inlet}) give the eye's lowest pressure p_in - dip - amplitude (~ N^2), compared "
-        "with the vapour pressure (cavitation onset) and air_saturation_pressure (air release; default p_ambient). "
+        "apply to. Onset: eye_dip (the MEAN dip: inlet static mean less eye mean) and pulse_amplitude (half "
+        "peak-to-peak, jitter filtered) in Pa at onset_N, or onset_cfdt {result: a cfd-translator free_flow result, "
+        "eye_probe, inlet}, give the eye's lowest pressure p_in - dip - amplitude (~ N^2), compared with the vapour "
+        "pressure (cavitation onset) and air_saturation_pressure (air release, default p_ambient; also reported as "
+        "the fraction eye minimum / saturation pressure, since at p_ambient any suction lift trips it). A dip already "
+        "measured to the eye's minimum goes in eye_dip with pulse_amplitude 0. Raw cfd-translator extremes (no "
+        "min_f/max_f): an upper bound, warned; trips within onset_jitter (3 kPa) flagged as possibly jitter. "
         "Findings, not errors: the run stays reliable.",
         "Outputs: comp.var (vars below), comp.port_a.p / .m_flow (into the component), sensors' signal outputs. "
         "Checks: reference (constant-density liquids: boundaries, sources, pipes, dynamic pipes (heat_transfer "

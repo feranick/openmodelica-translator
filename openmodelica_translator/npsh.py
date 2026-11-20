@@ -1,5 +1,5 @@
 """npsh.py — net positive suction head of Modelica.Fluid pumps (V5 FL16).
-Version: 2026.11.19.28
+Version: 2026.11.20.1
 
 MSL's pumps carry one single-phase medium and its PumpMonitoringNPSH needs a two-phase one, so OpenModelica does not
 say when a pump would cavitate. omct reads every liquid pump's inlet state (MSL's pump.monitoring.state_in: p and T
@@ -35,6 +35,8 @@ import numpy as np
 
 G_STD = 9.80665
 RPM = 2 * math.pi / 60
+ONSET_JITTER = 3000.0       # Pa: trips this close to a threshold with a raw (unfiltered) amplitude: possibly jitter
+                            # (the S50 eye probe's step-to-step jitter, +-3 kPa; Nicola 2026-11-20)
 
 # IAPWS-IF97 region 4 (saturation line) coefficients n1..n10
 IF97_N = [0.11670521452767e4, -0.72421316703206e6, -0.17073846940092e2, 0.12020824702470e5, -0.32325550322333e7,
@@ -169,9 +171,12 @@ def from_cfdt(results, where: str, N_nominal: float | None = None) -> dict:
 
 
 def onset_from_cfdt(spec, where: str) -> dict:
-    """{eye_dip, pulse_amplitude, rpm, V_flow} from a cfd-translator free-flow run (results.free_flow):
-    spec {result, eye_probe, inlet}: dip = the inlet's mean static pressure - the eye probe's mean (over the
-    revolutions after the switch), amplitude = the eye probe's mean half peak-to-peak per revolution."""
+    """{eye_dip, pulse_amplitude, rpm, V_flow, raw} from a cfd-translator free-flow run (results.free_flow):
+    spec {result, eye_probe, inlet}: dip = the inlet's mean static pressure (static_Pa, not total) - the eye probe's
+    mean (both over the revolutions after the switch): the mean dip; amplitude = the eye probe's mean half
+    peak-to-peak per revolution, from min_f / max_f (cfd-translator 2026.11.20.1: [1 2 1]/4 over time steps, without
+    the step-to-step jitter) or, without them, from the raw min / max (raw: True; an upper bound: the jitter adds to
+    it, which only deepens the eye minimum)."""
     if not isinstance(spec, dict) or not isinstance(spec.get("result"), dict) or not spec.get("eye_probe") \
             or not spec.get("inlet"):
         raise NpshError(f"{where}: {{result: <a cfd-translator transient pump result with free_flow>, eye_probe: "
@@ -188,14 +193,21 @@ def onset_from_cfdt(spec, where: str) -> dict:
                         f"with a probe at the eye)")
     mean = lambda rows: float(np.mean([x["mean"] for x in rows]))          # noqa: E731
     dip = mean(inlet) - mean(probe)
-    amp = float(np.mean([(x["max"] - x["min"]) / 2 for x in probe]))
+    raw = not all("min_f" in x and "max_f" in x for x in probe)
+    lo, hi = ("min", "max") if raw else ("min_f", "max_f")
+    amp = float(np.mean([(x[hi] - x[lo]) / 2 for x in probe]))
+    below = float(np.mean([x["mean"] - x[lo] for x in probe]))
     rpm = _rpm_of(res, where, name)
     flows = [x["mean"] for x in ff.get("flow_m3h_by_revolution") or []]
     V = float(np.mean(flows)) / 3600 if flows else None
-    return {"eye_dip": dip, "pulse_amplitude": amp, "rpm": rpm, "V_flow": V,
+    return {"eye_dip": dip, "pulse_amplitude": amp, "rpm": rpm, "V_flow": V, "raw": raw,
             "record": {"from": "cfdt free_flow", "result": name, "eye_probe": spec["eye_probe"],
-                       "inlet": spec["inlet"], "revolutions": len(probe), "eye_dip_Pa": dip,
-                       "pulse_amplitude_Pa": amp, "rpm": rpm,
+                       "inlet": spec["inlet"], "inlet_pressure": "static_Pa mean", "revolutions": len(probe),
+                       "eye_dip_Pa": dip, "eye_dip_is": "mean (inlet static mean - eye mean)",
+                       "pulse_amplitude_Pa": amp,
+                       "amplitude_from": ("raw per-step min/max (no min_f/max_f: an upper bound, the step-to-step "
+                                          "jitter adds to it)") if raw else "min_f/max_f ([1 2 1]/4 over time steps)",
+                       "eye_min_below_mean_Pa": below, "rpm": rpm,
                        **({"V_flow_m3h": V * 3600} if V else {})}}
 
 
@@ -371,7 +383,10 @@ def _onset(p_, t, pin, pv, r, V, p_ambient, comp):
     ma = peye - psat_air
     kv, ka = int(np.argmin(mv)), int(np.argmin(ma))
     ke = int(np.argmin(peye))
+    raw = bool(p_.get("_onset_raw"))
+    jit = float(p_["onset_jitter"]) if p_.get("onset_jitter") is not None else (ONSET_JITTER if raw else 0.0)
     out = {"eye_dip_Pa": dip0, "pulse_amplitude_Pa": amp0, "from": p_.get("_onset_from", "given"),
+           "eye_dip_is": "the mean dip (inlet static mean - eye mean); p_eye_min = p_in - dip - amplitude",
            "measured_at_rpm": rref * float(p_["N_nominal"]) / RPM,
            "scaling": "x (N/N_measured)^2 (not with flow)",
            "air_saturation_pressure_Pa": psat_air,
@@ -380,7 +395,14 @@ def _onset(p_, t, pin, pv, r, V, p_ambient, comp):
            "p_eye_min_Pa": float(peye[ke]), "t_p_eye_min": float(t[ke]),
            "vapour_margin_min_Pa": float(mv[kv]), "t_vapour_margin_min": float(t[kv]),
            "air_margin_min_Pa": float(ma[ka]), "t_air_margin_min": float(t[ka]),
+           "eye_min_over_air_saturation": float(peye[ka] / psat_air),
            "cavitation_onset": bool(mv[kv] < 0), "air_release": bool(ma[ka] < 0)}
+    if raw:
+        out["amplitude_upper_bound"] = True
+    if jit > 0:
+        out["jitter_Pa"] = jit
+        out["cavitation_onset_possibly_jitter"] = bool(-jit <= mv[kv] < 0)
+        out["air_release_possibly_jitter"] = bool(-jit <= ma[ka] < 0)
     Vm = p_.get("onset_V_flow")
     if Vm:                                      # the flow it was measured at, moved with the speed (V ~ N)
         Vs = float(Vm) * np.asarray(r) / rref
@@ -391,14 +413,23 @@ def _onset(p_, t, pin, pv, r, V, p_ambient, comp):
                            f"at (scaled to the speed) for {float(np.mean(far)) * 100:.0f} % of the samples: they are "
                            f"not scaled with flow")
     w = []
-    how = (f"p_in - dip {dip0:.4g} Pa - amplitude {amp0:.4g} Pa (at {out['measured_at_rpm']:.5g} rpm, x (N/N_measured)^2)")
+    how = (f"p_in - dip {dip0:.4g} Pa - amplitude {amp0:.4g} Pa{' (raw: an upper bound)' if raw else ''} (at "
+           f"{out['measured_at_rpm']:.5g} rpm, x (N/N_measured)^2)")
+    jtxt = (f"; within {jit:.3g} Pa of it: possibly jitter{' (the raw amplitude)' if raw else ''}")
+    if raw:
+        w.append(f"{comp}: onset: pulse_amplitude from the eye probe's raw per-step min/max (the cfd-translator result "
+                 f"has no min_f/max_f): an upper bound, conservative (the step-to-step jitter only deepens the eye "
+                 f"minimum); a cfd-translator reprocess (2026.11.20.1 or later) adds min_f/max_f and removes the bias")
     if out["cavitation_onset"]:
         w.append(f"{comp}: cavitation onset: the eye's lowest pressure {peye[kv]:.4g} Pa = {how} is below the "
-                 f"vapour pressure {pv[kv]:.4g} Pa at t = {t[kv]:.4g} s (by {-mv[kv]:.4g} Pa)")
+                 f"vapour pressure {pv[kv]:.4g} Pa at t = {t[kv]:.4g} s (by {-mv[kv]:.4g} Pa)"
+                 f"{jtxt if out.get('cavitation_onset_possibly_jitter') else ''}")
     if out["air_release"]:
         w.append(f"{comp}: air release: the eye's lowest pressure {peye[ka]:.4g} Pa = {how} is below the "
                  f"air-saturation pressure {psat_air:.6g} Pa ({out['air_saturation_from']}) at t = {t[ka]:.4g} s "
-                 f"(by {-ma[ka]:.4g} Pa): dissolved air comes out there, a cause of head loss under suction")
+                 f"(by {-ma[ka]:.4g} Pa; {out['eye_min_over_air_saturation']:.3f} of it): dissolved air comes out "
+                 f"there, a cause of head loss under suction{jtxt if out.get('air_release_possibly_jitter') else ''}"
+                 f"{'; with saturation at p_ambient any suction lift trips this: judge by the fraction' if p_.get('air_saturation_pressure') is None else ''}")
     if "note" in out:
         w.append(f"{comp}: onset: {out['note']}")
     return out, w

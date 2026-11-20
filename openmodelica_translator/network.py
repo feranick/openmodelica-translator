@@ -1,6 +1,6 @@
 """network.py — a study's components, values and connections, resolved: the common ground of validation, the
 Modelica generator and the reference implementation.
-Version: 2026.11.19.28
+Version: 2026.11.20.1
 
 build(study) -> Net, with net.errors (each says the fix) and net.warnings. It
   - resolves kinds (or "msl" class paths) and parameter values to SI (units.to_si), with defaults;
@@ -356,7 +356,7 @@ def build(study: dict) -> Net:
         if npsh_from:
             params["_npsh_from"] = npsh_from
         if onset_from:
-            params["_onset_from"] = onset_from
+            params["_onset_from"], params["_onset_raw"] = onset_from
         if kname == "fl_pump":
             _npsh_curve(params, w, net)
         if k.get("parts") is not None:
@@ -425,8 +425,9 @@ def _npsh_curve(params, where, net):
 
 
 def _onset_from_cfdt(spec, where, net, name):
-    """The "onset_cfdt" key of fl_pump (FL17): eye_dip, pulse_amplitude, onset_N, onset_V_flow from a
-    cfd-translator free-flow run; given values win."""
+    """The "onset_cfdt" key of fl_pump (FL17, FL18): eye_dip (the mean dip), pulse_amplitude (from min_f/max_f, or
+    the raw min/max: an upper bound, flagged), onset_N, onset_V_flow from a cfd-translator free-flow run; given values
+    win. Returns (spec, (where from, amplitude raw?) or None)."""
     from .npsh import NpshError, onset_from_cfdt
     spec = dict(spec)
     raw = spec.pop("onset_cfdt")
@@ -442,7 +443,9 @@ def _onset_from_cfdt(spec, where, net, name):
     net.inputs[f"{name}.onset_cfdt"] = dict(r["record"], parameters=taken)
     for k in taken:
         spec[k] = vals[k]
-    return spec, f"cfd-translator free_flow ({r['record']['result']})" if taken else None
+    if not taken:
+        return spec, None
+    return spec, (f"cfd-translator free_flow ({r['record']['result']})", r["raw"] and "pulse_amplitude" in taken)
 
 
 def _npsh_from_cfdt(spec, where, net, name):
