@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with closed-form answers: is the toolchain right?
-Version: 2026.11.19.26
+Version: 2026.11.19.27
 
 Each case is a study plus checks [(result path, expected, tolerance, why)]; tolerances are relative unless
 written {"abs": x}. Chains (chain_feat_modal, chain_b3dt_mass, chain_b3dt_inertia) run the other translator first and only when named; they are skipped
@@ -1283,6 +1283,26 @@ def _fl_gas_pipe():
                 ("checks.fluid_energy.ok", 1, {"abs": 0.5}, "energy balance")]
 
 
+def _fl_npsh_lift():
+    """FL16: 80 degC water lifted 3 m to a pump (tank level 1 m, the pump 4 m above the tank's port): NPSH available
+    = (p_in + rho v^2/2 - p_vap(T_in)) / (rho g) = 1.143 m (the reference; by hand from its p_in, v and IF97's p_vap)
+    against 1.1 x 2.39 m required: the run warns that the pump would cavitate and stays reliable."""
+    st = {"components": {"tank": {"kind": "fl_tank", "height": 3, "crossArea": 2.0, "level_start": 1, "T_start": 353.15},
+                         "pipe": {"kind": "fl_pipe", "length": 6, "diameter": 0.04, "height_ab": 4.0},
+                         "pump": {"kind": "fl_pump", "curve": [[0, 25], [0.004, 22], [0.008, 12]], "N_nominal": "2900 rpm",
+                                  "npsh_required": [[0.002, 1.5], [0.006, 3.0], [0.01, 5.0]], "inlet_diameter": 0.04},
+                         "v": {"kind": "fl_valve", "Kv": 15, "dp_nominal": 1e5, "m_flow_nominal": 4},
+                         "b": {"kind": "fl_boundary", "p": 1.5e5, "T": 353.15}},
+          "connect": [["tank.port", "pipe.port_a"], ["pipe.port_b", "pump.port_a"], ["pump.port_b", "v.port_a"],
+                      ["v.port_b", "b.port"]],
+          "outputs": {"m": "pump.m_flow", "p": "pump.port_a.p"},
+          "analysis": {"kind": "transient", "stop_time": 60, "intervals": 6, "tolerance": 1e-8}}
+    return st, [("npsh.pump.NPSHa_min_m", 1.1427307251012755, 1e-4, "NPSH available (the reference's)"),
+                ("npsh.pump.short", 1, {"abs": 0.5}, "below 1.1 x NPSH required: warned"),
+                ("npsh.pump.T_in_at_min_K", 353.15 - 9.80665 * 4.0 / 4184, {"abs": 1e-5},
+                 "the inlet T: the tank's less g height_ab / cp (StaticPipe)")]
+
+
 FLUID_CASES = {"fl_drain_torricelli": _fl_drain, "fl_pipe_laminar": _fl_laminar, "fl_pump_system_curve": _fl_pump_system,
                "fl_valve_kv": _fl_valve, "fl_heated_pipe": _fl_heated_pipe, "fl_air_fill": _fl_air_fill,
                "fl_pipe_turbulent": _fl_turbulent, "fl_two_tanks": _fl_two_tanks, "fl_network_reference": _fl_network,
@@ -1294,7 +1314,8 @@ FLUID_CASES = {"fl_drain_torricelli": _fl_drain, "fl_pipe_laminar": _fl_laminar,
                "fl_heated_loop": _fl_heated_loop, "fl_pipe_loop_reference": _fl_pipe_loop_reference,
                "fl_volume_reference": _fl_volume_reference, "fl_glycol_loop": _fl_glycol_loop,
                "fl_essotherm_pipe": _fl_essotherm_pipe, "fl_static_head": _fl_static_head,
-               "fl_gas_valve_volume": _fl_gas_valve_volume, "fl_gas_choked": _fl_gas_choked, "fl_gas_pipe": _fl_gas_pipe}
+               "fl_gas_valve_volume": _fl_gas_valve_volume, "fl_gas_choked": _fl_gas_choked, "fl_gas_pipe": _fl_gas_pipe,
+               "fl_npsh_lift": _fl_npsh_lift}
 # judged on OpenModelica only: checks of OpenModelica's run against the reference (checks.reference); reference
 # runs check their own energy balance since FL12 (fl_heated_tank runs there), gases since FL15 (fl_air_fill)
 FLUID_OMC_ONLY = {"fl_heated_pipe", "fl_network_reference", "fl_loop_reference",

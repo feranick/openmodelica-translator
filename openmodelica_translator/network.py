@@ -1,6 +1,6 @@
 """network.py — a study's components, values and connections, resolved: the common ground of validation, the
 Modelica generator and the reference implementation.
-Version: 2026.11.19.22
+Version: 2026.11.19.27
 
 build(study) -> Net, with net.errors (each says the fix) and net.warnings. It
   - resolves kinds (or "msl" class paths) and parameter values to SI (units.to_si), with defaults;
@@ -203,14 +203,23 @@ def _value(spec, v, where, rec_key, net):
                                 f"liquid {{rho, cp, eta, lambda}})")
             return v
         if isinstance(v, dict):
-            bad = set(v) - set(C.FMEDIUM_KEYS)
+            bad = set(v) - set(C.FMEDIUM_KEYS) - C.FMEDIUM_EXTRA
             if bad or not {"rho", "cp"} <= set(v):
-                raise UnitError(f"{where}: a custom liquid has rho [kg/m3] and cp [J/(kg.K)], optionally eta [Pa.s] and "
-                                f"lambda [W/(m.K)] (SI numbers){'; unknown ' + str(sorted(bad)) if bad else ''}")
+                raise UnitError(f"{where}: a custom liquid has rho [kg/m3] and cp [J/(kg.K)], optionally eta [Pa.s], "
+                                f"lambda [W/(m.K)] and p_vapour [Pa] (SI numbers)"
+                                f"{'; unknown ' + str(sorted(bad)) if bad else ''}")
             if not all(isinstance(x, (int, float)) and not isinstance(x, bool) and x > 0 for x in v.values()):
                 raise UnitError(f"{where}: medium properties are positive numbers (SI)")
             return {k: float(x) for k, x in sorted(v.items())}
         raise UnitError(f"{where}: a medium name ({', '.join(C.FMEDIA)}) or a liquid {{rho, cp, eta, lambda}}")
+    if typ == "npsh":
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+            return [[0.0, float(v)]]
+        ok = isinstance(v, list) and len(v) >= 1 and all(isinstance(r, list) and len(r) == 2 and all(
+            isinstance(x, (int, float)) and not isinstance(x, bool) for x in r) and r[0] >= 0 and r[1] > 0 for r in v)
+        if not ok or any(b[0] <= a[0] for a, b in zip(v, v[1:])):
+            raise UnitError(f"{where}: NPSHr in m (> 0), or [[V_flow (m3/s), NPSHr (m)], ...] with the flows rising")
+        return [[float(a), float(b)] for a, b in v]
     if typ == "table":
         ok = isinstance(v, list) and len(v) >= 1 and all(isinstance(r, list) and len(r) == 2 and all(
             isinstance(x, (int, float)) and not isinstance(x, bool) for x in r) for r in v)
@@ -328,7 +337,8 @@ def build(study: dict) -> Net:
             continue
         k = C.KINDS[kname]
         cfdt_kind = (k.get("fluid") or {}).get("cfdt")
-        known = set(k["params"]) | set(k["inits"]) | {"kind", "msl", "comment"} | ({"cfdt"} if cfdt_kind else set())
+        known = set(k["params"]) | set(k["inits"]) | {"kind", "msl", "comment"} | ({"cfdt"} if cfdt_kind else set()) | \
+            ({"npsh_cfdt"} if kname == "fl_pump" else set())
         unknown = sorted(set(spec) - known)
         if unknown:
             net.errors.append(f"{w}: unknown keys {unknown} for {kname} (parameters: {sorted(k['params'])}; "
@@ -337,7 +347,12 @@ def build(study: dict) -> Net:
         cfdt_scale = None
         if cfdt_kind and "cfdt" in spec:
             spec, cfdt_scale = _from_cfdt(cfdt_kind, spec, w, net, name)
+        npsh_from = None
+        if kname == "fl_pump" and "npsh_cfdt" in spec:
+            spec, npsh_from = _npsh_from_cfdt(spec, w, net, name)
         params = resolve_params(kname, spec, w, net, name)
+        if npsh_from:
+            params["_npsh_from"] = npsh_from
         if k.get("parts") is not None:
             inits_given = {i: spec[i] for i in k["inits"] if i in spec}
             net.comps[name] = {"kind": kname, "params": params, "given": set(spec) & set(k["params"]),
@@ -384,6 +399,33 @@ def build(study: dict) -> Net:
     if not net.errors:
         _topology(study, net)
     return net
+
+
+def _npsh_from_cfdt(spec, where, net, name):
+    """The "npsh_cfdt" key of fl_pump (FL16): npsh_required from cfd-translator cavitation sweeps (NPSH3 per flow,
+    moved to N_nominal); a given npsh_required wins. Returns (spec, where npsh_required came from)."""
+    from .npsh import NpshError, from_cfdt
+    spec = dict(spec)
+    raw = spec.pop("npsh_cfdt")
+    N0 = None
+    if spec.get("N_nominal") is not None:
+        try:
+            N0 = spec["N_nominal"] if isinstance(spec["N_nominal"], (int, float)) else \
+                to_si(spec["N_nominal"], "rad/s", where=f"{where}.N_nominal")[0]
+        except UnitError as exc:
+            net.errors.append(str(exc))
+            return spec, None
+    try:
+        r = from_cfdt(raw, f"{where}.npsh_cfdt", N0)
+    except NpshError as exc:
+        net.errors.append(str(exc))
+        return spec, None
+    rec = dict(r["record"], parameters=[] if "npsh_required" in spec else ["npsh_required"])
+    net.inputs[f"{name}.npsh_cfdt"] = rec
+    if "npsh_required" in spec:
+        return spec, None
+    spec["npsh_required"] = r["curve"]
+    return spec, f"cfd-translator NPSH3 ({len(r['curve'])} sweep(s))"
 
 
 def _from_cfdt(how, spec, where, net, name):

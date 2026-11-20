@@ -1,5 +1,5 @@
 """catalog.py — the curated MSL 4.0.0 components: kinds, ports, parameters (SI), variables, initial values.
-Version: 2026.11.19.18
+Version: 2026.11.19.27
 
 Every name below was checked against the MSL 4.0.0 sources (tag v4.0.0): class paths, port names, parameter
 names and defaults. A kind is either elementary (one MSL class) or composite (parts that are elementary kinds,
@@ -907,6 +907,7 @@ FMEDIA = {          # name: (MSL package, class): liquid_const = constant densit
     "simple_air": ("Modelica.Media.Air.SimpleAir", "gas"),
 }
 FMEDIUM_KEYS = {"rho": "d_const", "cp": "cp_const", "eta": "eta_const", "lambda": "lambda_const"}
+FMEDIUM_EXTRA = {"p_vapour"}            # omct's own (NPSH, FL16): not a Modelica constant
 
 
 def fmedium(v) -> dict:
@@ -916,7 +917,7 @@ def fmedium(v) -> dict:
         pkg, cls = FMEDIA[v]
         return {"name": v, "msl": pkg, "class": cls}
     d = dict(v)
-    args = ", ".join(f"{FMEDIUM_KEYS[k]}={float(d[k])!r}" for k in sorted(d))
+    args = ", ".join(f"{FMEDIUM_KEYS[k]}={float(d[k])!r}" for k in sorted(d) if k in FMEDIUM_KEYS)
     if "cp" in d:     # cv_const would stay water's 4184 (carbonio 2026-11-19, fl_heated_tank): incompressible, cv = cp
         args += f", cv_const={float(d['cp'])!r}"
     return {"name": "custom", "msl": f"Modelica.Media.Water.ConstantPropertyLiquidWater({args})",
@@ -928,8 +929,9 @@ def is_liquid(v) -> bool:
 
 
 FMED = {"medium": P("1", None, structural=True, type="fmedium", msl=False,
-                    doc="one of " + ", ".join(FMEDIA) + ", or a liquid {rho, cp, eta, lambda} (SI); given on one "
-                        "component of a connected set, the others take it (default water)")}
+                    doc="one of " + ", ".join(FMEDIA) + ", or a liquid {rho, cp, eta, lambda, p_vapour} (SI; p_vapour "
+                        "only for NPSH, default water's); given on one component of a connected set, the others take "
+                        "it (default water)")}
 FAB_M = {"port_a": "mfluid", "port_b": "mfluid"}
 TWO_VARS = {"m_flow": "kg/s", "dp": "Pa", "p_a": "Pa", "p_b": "Pa"}
 TWO_PATHS = {"m_flow": "port_a.m_flow", "dp": [(1.0, "port_a.p"), (-1.0, "port_b.p")], "p_a": "port_a.p",
@@ -1135,14 +1137,22 @@ PUMP = {"curve": P("1", type="table", structural=False, msl=False,
                        doc="the density the power curve is for (MSL rho_nominal; default the medium's)")}
 PUMP_VARS = {"m_flow": "kg/s", "V_flow": "m3/s", "head": "m", "dp": "Pa", "W": "W", "eta": "1", "w": "rad/s"}
 PUMP_PATHS = {"dp": "dp_pump", "W": "W_total", "w": [(1.0 / W_RPM, "N")]}
+NPSH = {"npsh_required": P("m", None, type="npsh", msl=False,
+                           doc="required NPSH (m): a number, or [[V_flow (m3/s), NPSHr (m)], ...] at N_nominal (NPSHr ~ "
+                               "N^2 at other speeds); with it each run reports the pump's NPSH margin (FL16)"),
+        "npsh_margin": P("1", 1.1, gt=0, msl=False,
+                         doc="NPSH available must be at least npsh_margin x required (ANSI/HI 9.6.1: 1.1-2.0)"),
+        "inlet_diameter": P("m", None, gt=0, msl=False,
+                            doc="suction port diameter: adds the velocity head v^2/2g to NPSH available")}
 kind("fl_pump", MF + "Machines.PrescribedPump", {**FAB_M, "w_in": "in"},
-     {**FMED, **PUMP, "N": P("rad/s", None, gt=0, msl=False, doc="constant speed (default N_nominal)")},
+     {**FMED, **PUMP, **NPSH, "N": P("rad/s", None, gt=0, msl=False, doc="constant speed (default N_nominal)")},
      PUMP_VARS, var_paths=PUMP_PATHS, cond_ports={"w_in": None}, domain="mfluid",
      mods={"N_nominal": lambda p: p["N_nominal"] * W_RPM,
            "N_const": lambda p: (p["N"] if p.get("N") is not None else p["N_nominal"]) * W_RPM},
      fluid={"build": _pump, "pump": True, "speed_in": ("w_in", "N_in", W_RPM), "cfdt": "pump"},
      doc="a centrifugal pump at a prescribed speed (constant N, or the input w_in [rad/s]); affinity laws off the "
-         "nominal speed; \"cfdt\": [cfd-translator pump results] gives curve, N_nominal, power, rho_power")
+         "nominal speed; \"cfdt\": [cfd-translator pump results] gives curve, N_nominal, power, rho_power; "
+         "\"npsh_cfdt\": [cfd-translator cavitation sweep results] gives npsh_required (NPSH3 per flow)")
 kind("fl_pump_shaft", MF + "Machines.Pump", {**FAB_M, "shaft": "flange_r"}, {**FMED, **PUMP},
      PUMP_VARS, var_paths=PUMP_PATHS, domain="mfluid", mods={"N_nominal": lambda p: p["N_nominal"] * W_RPM},
      fluid={"build": _pump, "pump": True, "cfdt": "pump"},

@@ -421,7 +421,7 @@ def _run(name, study, folder, solver, timeout, cancel) -> dict:
     t0, t1, n, tol, method = _times(an)
     lin = an["kind"] == "linearize"
     pl = E.plan(tr.net)
-    filt = None if lin else M.variable_filter(tr, extra=tuple((pl or {}).get("paths", ())) + tuple(fluid_mass_paths(tr)) + tuple(fluid_energy_paths(tr)))
+    filt = None if lin else M.variable_filter(tr, extra=tuple((pl or {}).get("paths", ())) + tuple(fluid_mass_paths(tr)) + tuple(fluid_energy_paths(tr)) + tuple(_npsh_paths(tr)))
     sim = simrun.simulate(b["dir"], folder, run_overrides, start=t0, stop=t1 if not lin else max(t1, t0),
                           intervals=n, tolerance=tol, method=method, variable_filter=filt,
                           timeout=timeout, linearize_at=t1 if lin else None, cancel=cancel)
@@ -469,6 +469,7 @@ def _run(name, study, folder, solver, timeout, cancel) -> dict:
             if has_fluid(study):
                 _fluid_mass(out, tr, r, tol)
                 _fluid_energy(out, tr, r, tol)
+                _npsh(out, tr, r.time, r.series)
             if study.get("invariants"):
                 _invariants(out, study, r.time, vals, units)
             if study.get("converge"):
@@ -629,6 +630,27 @@ def _fluid_energy(out, tr, r, tol=1e-6):
     lim = max(ENERGY_FLOOR, 100 * tol, 10 * est / scale)
     out["checks"]["fluid_energy"] = {"ok": err <= lim, "covered": True, "error_rel": err, "tol": lim,
                                      "stored_change_J": change, "inflow_J": inflow, "throughput_J": through}
+
+
+def _npsh_paths(tr) -> list:
+    if tr.net is None:
+        return []
+    from .npsh import paths
+    return paths(tr.net)
+
+
+def _npsh(out, tr, t, series):
+    """The pumps' NPSH (FL16): out['npsh'][pump] and a warning when it falls below npsh_margin x required; not a
+    check (the run's reliability does not change: cavitation is a finding, not a numerical error)."""
+    if tr.net is None:
+        return
+    from .npsh import evaluate, pumps
+    if not pumps(tr.net):
+        return
+    blocks, warns = evaluate(tr.net, np.asarray(t, float), series)
+    if blocks:
+        out["npsh"] = blocks
+    out.setdefault("warnings", []).extend(warns)
 
 
 def _trapezoid_richardson(t, y):
@@ -877,6 +899,7 @@ def _run_ref(study, tr, out, units) -> dict:
             _fluid_mass(out, tr, _Series(tt, vals), tol)
             if getattr(r, "thermal", False):    # and its energy balance (FL12: the reference's own ports' h)
                 _fluid_energy(out, tr, _Series(tt, vals), tol)
+            _npsh(out, tr, tt, vals.__getitem__)
     return out
 
 

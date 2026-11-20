@@ -1,5 +1,5 @@
 """fluidref.py — the reference implementation for Modelica.Fluid liquid networks (V5 FL4).
-Version: 2026.11.19.26
+Version: 2026.11.19.27
 
 An independent solver of the same equations MSL 4.0.0 writes for constant-density liquids, ported from the MSL
 sources (tag v4.0.0) rather than reused: what OpenModelica must reproduce. Covered (covered(net)):
@@ -1798,6 +1798,7 @@ class FluidRef:
                 W = self._pump_power(i, mm, pa, pb)
                 eta = dpp * (mm / rho / npar) / (W / npar) if p.get("power") is not None else float(p["eta"])
                 out[f"{e}.m"] = rho * float(p.get("V") or 0.0)
+                out[f"{e}.monitoring.state_in.p"] = pa              # PartialPump's monitoring (NPSH, FL16)
                 out.update({f"{e}.m_flow": mm, f"{e}.V_flow": mm / rho, f"{e}.dp_pump": dpp,
                             f"{e}.head": dpp / (rho * g), f"{e}.eta": eta,
                             f"{e}.W_total": W, f"{e}.N": n * C.W_RPM})
@@ -1893,6 +1894,9 @@ class FluidRef:
                 out[f"{e}.Wb_flow"] = D["W"][i]
         for jv, pv in enumerate(self.pvols):
             out[f"{self.flows[pv['i']]['e']}.medium.T"] = D["Tp"][jv]
+        for i, f in enumerate(self.flows):         # monitoring.state_in.T: inStream at port_a (NPSH, FL16)
+            if f["k"] == "fl_pump":
+                out[f"{f['e']}.monitoring.state_in.T"] = self._pT[i][0]
         for xi, xv in enumerate(self.xvols):
             if xv["kind"] != "vol":
                 continue

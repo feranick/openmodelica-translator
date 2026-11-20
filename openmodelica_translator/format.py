@@ -1,5 +1,5 @@
 """format.py — the study format (study_format) and the static checks (validate, validate_study).
-Version: 2026.11.19.26
+Version: 2026.11.19.27
 
 validate_study(study) -> {ok, errors, warnings}: nothing runs (no omc). It resolves the network (network.build),
 checks outputs, analysis, derived quantities, sweep, expect, run (against the OMCT_MAX_* caps) and images, then
@@ -181,6 +181,10 @@ FLUID_TOPIC = {
         "(affinity laws); fl_resistance \"cfdt\": [results] or {results, mu} -> a, b from total_pressure_drop, "
         "scaled to the circuit's density (and viscosity with mu). Given values win; unreliable results are refused; "
         "result.inputs.<comp>.cfdt records the points and the fit.",
+        "Pumps (fl_pump, liquids): every run reports npsh.<pump> (NPSH available from the inlet's p and T, IF97 "
+        "or MSL's vapour-pressure tables; with npsh_required or npsh_cfdt [cfd-translator cavitation sweeps: NPSH3 "
+        "per flow] also the ratio to the required and short: a warning below npsh_margin x required, 1.1 by default; "
+        "the run stays reliable). inlet_diameter adds the velocity head.",
         "Outputs: comp.var (vars below), comp.port_a.p / .m_flow (into the component), sensors' signal outputs. "
         "Checks: reference (constant-density liquids: boundaries, sources, pipes, dynamic pipes (heat_transfer "
         "constant or local), volumes, fittings, valves, pumps, tanks, temperatures with thermal parts on the heat "
