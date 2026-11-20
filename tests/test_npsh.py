@@ -1,5 +1,6 @@
-"""test_npsh.py — pumps' NPSH (V5 FL16): vapour pressures, NPSH3 from cfd-translator sweeps, the run's npsh block.
-Version: 2026.11.19.27
+"""test_npsh.py — pumps' NPSH (V5 FL16, FL17): vapour pressures, NPSH3 (known or an upper bound) from cfd-translator
+sweeps, the flow scaling, statuses, eye onset (vapour, air release), the run's npsh block.
+Version: 2026.11.19.28
 """
 import copy
 import math
@@ -52,19 +53,60 @@ def _sweep(V, rpm, tag, scale=1.0):
 def test_npsh3_from_cfdt_sweeps():
     n3 = 3 - (19.7 - 19.4) / (19.7 - 19.0) * 0.5
     r = N.from_cfdt(_sweep(0.004, 1450, "a") + _sweep(0.008, 1450, "b"), "p")
-    assert r["curve"] == [[0.004, pytest.approx(n3)], [0.008, pytest.approx(n3)]]
+    assert r["known"] == [[0.004, pytest.approx(n3)], [0.008, pytest.approx(n3)]] and r["below"] == []
     s = 1200 / 1450                                                          # a sweep at 1200 rpm, moved to 1450
     r = N.from_cfdt(_sweep(0.004, 1450, "a") + _sweep(0.006 * s, 1200, "c", s), "p")
-    assert r["curve"][1] == [pytest.approx(0.006), pytest.approx(n3)]
+    assert r["known"][1] == [pytest.approx(0.006), pytest.approx(n3)]
     bad = _sweep(0.004, 1450, "a")
     bad[3]["results"]["cavitation"]["flows"]["liquid_flow_error"] = 0.05       # left out, as cfd-translator does
     assert N.npsh3([{"npsh": p["results"]["cavitation"]["npsh_m"], "head": p["results"]["pump"]["head_m"],
                      "flow_error": p["results"]["cavitation"]["flows"]["liquid_flow_error"]} for p in bad]) \
-        == pytest.approx(3 - (19.7 - 19.4) / (19.7 - 15) * 1.0)
-    with pytest.raises(N.NpshError, match="3 % head drop"):
-        N.from_cfdt([_cav(0.004, 1450, n, 20.0, f"x{n}") for n in (6, 4, 3)], "p")
+        == (pytest.approx(3 - (19.7 - 19.4) / (19.7 - 15) * 1.0), "at")
+    # no 3 % drop down to 2 m at 20 m3/h: NPSH3 below 2 m there (an upper bound), with a known one at 10 m3/h
+    held = [_cav(20 / 3600, 1450, n, 20.0, f"x{n}") for n in (6, 4, 2)]
+    r = N.from_cfdt(_sweep(10 / 3600, 1450, "a") + held, "p")
+    assert r["below"] == [[pytest.approx(20 / 3600), 2.0]] and len(r["known"]) == 1
+    assert r["record"]["sweeps"][1]["kind"] == "below"
+    with pytest.raises(N.NpshError, match="fewer than two points"):
+        N.from_cfdt([_cav(0.004, 1450, 6, 20, "x6")], "p")
     with pytest.raises(N.NpshError, match="cavitation study"):
         N.from_cfdt([{"name": "q", "results": {"pump": {"head_m": 20}}}], "p")
+
+
+def test_npsh3_between_flows():
+    """Linear between the flows given, held below the lowest, x (V/V_max)^n above; a bound if either side is."""
+    c = N.merge_curve([[0.004, 2.0]], [[0.008, 3.0]])
+    assert N.npshr(c, 0.002) == (2.0, False, "held below the lowest flow")
+    assert N.npshr(c, 0.004)[:2] == (2.0, False)
+    assert N.npshr(c, 0.006)[:2] == (pytest.approx(2.5), True)
+    assert N.npshr(c, 0.016)[:2] == (pytest.approx(12.0), True)
+    assert N.npshr(c, 0.016, 1.0)[0] == pytest.approx(6.0)
+    assert N.npshr([[0.0, 2.5, False]], 0.1) == (2.5, False, "constant")
+    with pytest.raises(N.NpshError, match="twice"):
+        N.merge_curve([[0.004, 2.0]], [[0.004, 3.0]])
+    d = N.describe(c, 2.0)
+    assert "2 m at 14.4 m3/h" in d and "< 3 m at 28.8 m3/h" in d and "(V/V_max)^2" in d
+    assert N._status(0.9, False, 1.5) == "below" and N._status(1.2, False, 1.5) == "approaching"
+    assert N._status(1.6, False, 1.5) == "ok" and N._status(1.6, True, 1.5) == "ok"
+    assert N._status(1.2, True, 1.5) == "unresolved" and N._status(0.5, True, 1.5) == "unresolved"
+
+
+def _free_flow(dip=3000.0, amp=1200.0, rpm=1450):
+    revs = [{"mean": 5000.0 - dip + d, "min": 5000.0 - dip + d - amp, "max": 5000.0 - dip + d + amp} for d in (-10, 10)]
+    inlet = [{"mean": 5000.0, "min": 4900, "max": 5100}] * 2
+    return {"name": "s50_ff", "reliable": True,
+            "results": {"rotating": {"impeller": {"rpm": rpm}},
+                        "free_flow": {"probes_p_Pa_by_revolution": {"eye": revs},
+                                      "pressure_by_revolution": {"inlet": {"static_Pa": inlet}},
+                                      "flow_m3h_by_revolution": [{"mean": 20.0}, {"mean": 20.0}]}}}
+
+
+def test_onset_from_cfdt():
+    r = N.onset_from_cfdt({"result": _free_flow(), "eye_probe": "eye", "inlet": "inlet"}, "p")
+    assert r["eye_dip"] == pytest.approx(3000) and r["pulse_amplitude"] == pytest.approx(1200)
+    assert r["rpm"] == 1450 and r["V_flow"] == pytest.approx(20 / 3600)
+    with pytest.raises(N.NpshError, match="probes_p_Pa_by_revolution"):
+        N.onset_from_cfdt({"result": _free_flow(), "eye_probe": "nope", "inlet": "inlet"}, "p")
 
 
 def test_study_keys():
@@ -82,21 +124,61 @@ def test_study_keys():
     assert net.inputs["pump.npsh_cfdt"]["parameters"] == ["npsh_required"]
     st["components"]["tank"]["medium"] = {"rho": 1000, "cp": 4000, "p_vapour": 3000}
     assert validate_study(st)["ok"]
+    st = copy.deepcopy(LIFT)                                               # an upper bound beside known values
+    st["components"]["pump"]["npsh3_below"] = [[0.008, 2.0]]
+    p = build(st).elems["pump"]["params"]
+    assert p["_npsh_curve"][1] == [0.006, 3.0, False] and p["_npsh_curve"][2] == [0.008, 2.0, True]
+    st["components"]["pump"]["npsh3_below"] = [[0.006, 2.0]]
+    assert "twice" in " ".join(validate_study(st)["errors"])
+    st["components"]["pump"]["npsh3_below"] = 2.0                          # a number with flows: ambiguous
+    assert "plain number" in " ".join(validate_study(st)["errors"])
+    del st["components"]["pump"]["npsh_required"]
+    assert build(st).elems["pump"]["params"]["_npsh_curve"] == [[0.0, 2.0, True]]
+    st = copy.deepcopy(LIFT)                                               # onset from a cfd-translator run
+    st["components"]["pump"]["onset_cfdt"] = {"result": _free_flow(rpm=2900), "eye_probe": "eye", "inlet": "inlet"}
+    st["components"]["pump"]["pulse_amplitude"] = 500                      # a given value wins
+    net = build(st)
+    p = net.elems["pump"]["params"]
+    assert not net.errors and p["eye_dip"] == pytest.approx(3000) and p["pulse_amplitude"] == 500
+    assert p["onset_N"] == pytest.approx(2900 * math.pi / 30)
+    assert net.inputs["pump.onset_cfdt"]["parameters"] == ["eye_dip", "onset_N", "onset_V_flow"]
 
 
 def test_suction_lift_warns_and_stays_reliable(tmp_path):
     """80 degC water lifted 3 m (tank level 1 m, pump 4 m above the port): NPSHa = (p_in + rho v^2/2 - p_vap) /
-    (rho g) = 1.143 m against 1.1 x 2.39 m required."""
-    out = run_study("lift", LIFT, tmp_path, solver="ref")
+    (rho g) = 1.143 m against NPSH3 2.39 m: 'below'. Onset: p_in - dip - amplitude against p_vap and p_ambient."""
+    st = copy.deepcopy(LIFT)
+    st["components"]["pump"].update({"eye_dip": 3000, "pulse_amplitude": 1500})
+    out = run_study("lift", st, tmp_path, solver="ref")
     assert out["ok"] and out["reliable"]
     b = out["npsh"]["pump"]
     rho, A = 995.586, math.pi / 4 * 0.04 ** 2
     v = out["outputs"]["m"]["final"] / (rho * A)
     expect = (b["p_in_at_min_Pa"] + rho * v * v / 2 - N.psat_water(b["T_in_at_min_K"])) / (rho * 9.80665)
-    assert b["NPSHa_min_m"] == pytest.approx(expect, rel=1e-12) and b["short"]
+    assert b["NPSHa_min_m"] == pytest.approx(expect, rel=1e-12) and b["short"] and b["status"] == "below"
+    V = b["V_flow_at_ratio_min_m3h"] / 3600                                 # linear between 0.002 and 0.006 m3/s
+    assert b["NPSH3_at_ratio_min_m"] == pytest.approx(1.5 + (V - 0.002) / 0.004 * 1.5, rel=1e-12)
     assert b["T_in_at_min_K"] == pytest.approx(353.15 - 9.80665 * 4.0 / 4184, abs=1e-6)   # the static pipe's rise
-    assert any("would cavitate" in w for w in out["warnings"])
-    st = copy.deepcopy(LIFT)
-    st["components"]["pump"]["npsh_required"] = 0.5                         # enough: no warning
-    out = run_study("ok", st, tmp_path / "ok", solver="ref")
-    assert not out["npsh"]["pump"]["short"] and not any("cavitate" in w for w in out["warnings"])
+    w = " ".join(out["warnings"])
+    assert "below NPSH3" in w and "7.2 m3/h" in w and "(V/V_max)^2" in w
+    on = b["onset"]
+    assert on["p_eye_min_Pa"] == pytest.approx(b["p_in_at_min_Pa"] - 4500, rel=1e-12)
+    assert not on["cavitation_onset"] and on["air_release"] and "air release" in w
+    assert on["air_margin_min_Pa"] == pytest.approx(b["p_in_at_min_Pa"] - 4500 - 101325, rel=1e-12)
+    st["components"]["pump"]["eye_dip"] = 6000                             # now below p_vap too
+    st["components"]["pump"]["air_saturation_pressure"] = 4e4               # degassed: no air release
+    out = run_study("v", st, tmp_path / "v", solver="ref")
+    on = out["npsh"]["pump"]["onset"]
+    assert on["cavitation_onset"] and not on["air_release"] and "cavitation onset" in " ".join(out["warnings"])
+    for given, status in ((1.0, "approaching"), (0.5, "ok")):               # 1.14 / 1.0 < 1.5; 1.14 / 0.5 > 1.5
+        st = copy.deepcopy(LIFT)
+        st["components"]["pump"]["npsh_required"] = given
+        b = run_study(status, st, tmp_path / status, solver="ref")["npsh"]["pump"]
+        assert b["status"] == status and b["short"] == (status != "ok") and "onset" not in b
+    st = copy.deepcopy(LIFT)                                                # an upper bound only: unresolved
+    del st["components"]["pump"]["npsh_required"]
+    st["components"]["pump"]["npsh3_below"] = [[20 / 3600, 2.0]]
+    out = run_study("ub", st, tmp_path / "ub", solver="ref")
+    b = out["npsh"]["pump"]
+    assert b["status"] == "unresolved" and b["NPSH3_is_upper_bound"] and not b["short"]
+    assert "only known to be below 2 m" in " ".join(out["warnings"]) and out["reliable"]

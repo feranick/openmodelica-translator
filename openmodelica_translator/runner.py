@@ -1,5 +1,5 @@
 """runner.py — one study end to end: validate, translate, build (or reuse), run, read, check, write the result.
-Version: 2026.11.19.25
+Version: 2026.11.19.28
 
 run_study(name, study, folder, solver, timeout, cancel) -> the result dict, also written atomically to
 <folder>/<name>.json. solver: "omc" (OpenModelica) or "ref" (the reference implementation only: linear
@@ -640,8 +640,9 @@ def _npsh_paths(tr) -> list:
 
 
 def _npsh(out, tr, t, series):
-    """The pumps' NPSH (FL16): out['npsh'][pump] and a warning when it falls below npsh_margin x required; not a
-    check (the run's reliability does not change: cavitation is a finding, not a numerical error)."""
+    """The pumps' NPSH (FL16, FL17): out['npsh'][pump] with its status against NPSH3 ('below', 'approaching' under
+    npsh_margin x, 'unresolved' against an upper bound, 'ok') and the eye's onset, warnings for each; not a check (the
+    run's reliability does not change: cavitation and air release are findings, not numerical errors)."""
     if tr.net is None:
         return
     from .npsh import evaluate, pumps

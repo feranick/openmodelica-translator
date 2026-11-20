@@ -1,6 +1,6 @@
 """network.py — a study's components, values and connections, resolved: the common ground of validation, the
 Modelica generator and the reference implementation.
-Version: 2026.11.19.27
+Version: 2026.11.19.28
 
 build(study) -> Net, with net.errors (each says the fix) and net.warnings. It
   - resolves kinds (or "msl" class paths) and parameter values to SI (units.to_si), with defaults;
@@ -338,7 +338,7 @@ def build(study: dict) -> Net:
         k = C.KINDS[kname]
         cfdt_kind = (k.get("fluid") or {}).get("cfdt")
         known = set(k["params"]) | set(k["inits"]) | {"kind", "msl", "comment"} | ({"cfdt"} if cfdt_kind else set()) | \
-            ({"npsh_cfdt"} if kname == "fl_pump" else set())
+            ({"npsh_cfdt", "onset_cfdt"} if kname == "fl_pump" else set())
         unknown = sorted(set(spec) - known)
         if unknown:
             net.errors.append(f"{w}: unknown keys {unknown} for {kname} (parameters: {sorted(k['params'])}; "
@@ -347,12 +347,18 @@ def build(study: dict) -> Net:
         cfdt_scale = None
         if cfdt_kind and "cfdt" in spec:
             spec, cfdt_scale = _from_cfdt(cfdt_kind, spec, w, net, name)
-        npsh_from = None
+        npsh_from = onset_from = None
         if kname == "fl_pump" and "npsh_cfdt" in spec:
             spec, npsh_from = _npsh_from_cfdt(spec, w, net, name)
+        if kname == "fl_pump" and "onset_cfdt" in spec:
+            spec, onset_from = _onset_from_cfdt(spec, w, net, name)
         params = resolve_params(kname, spec, w, net, name)
         if npsh_from:
             params["_npsh_from"] = npsh_from
+        if onset_from:
+            params["_onset_from"] = onset_from
+        if kname == "fl_pump":
+            _npsh_curve(params, w, net)
         if k.get("parts") is not None:
             inits_given = {i: spec[i] for i in k["inits"] if i in spec}
             net.comps[name] = {"kind": kname, "params": params, "given": set(spec) & set(k["params"]),
@@ -401,9 +407,48 @@ def build(study: dict) -> Net:
     return net
 
 
+def _npsh_curve(params, where, net):
+    """params['_npsh_curve'] = [[V, NPSH3, upper bound?], ...] from npsh_required and npsh3_below (FL17)."""
+    from .npsh import NpshError, merge_curve
+    known, below = params.get("npsh_required"), params.get("npsh3_below")
+    if not known and not below:
+        return
+    plain = [x for x in (known, below) if x and len(x) == 1 and x[0][0] == 0.0]
+    if plain and known and below:
+        net.errors.append(f"{where}: npsh_required and npsh3_below together need flows ([[V_flow, m], ...]): a plain "
+                          f"number applies at every flow")
+        return
+    try:
+        params["_npsh_curve"] = merge_curve(known, below)
+    except NpshError as exc:
+        net.errors.append(f"{where}: {exc}")
+
+
+def _onset_from_cfdt(spec, where, net, name):
+    """The "onset_cfdt" key of fl_pump (FL17): eye_dip, pulse_amplitude, onset_N, onset_V_flow from a
+    cfd-translator free-flow run; given values win."""
+    from .npsh import NpshError, onset_from_cfdt
+    spec = dict(spec)
+    raw = spec.pop("onset_cfdt")
+    try:
+        r = onset_from_cfdt(raw, f"{where}.onset_cfdt")
+    except NpshError as exc:
+        net.errors.append(str(exc))
+        return spec, None
+    vals = {"eye_dip": r["eye_dip"], "pulse_amplitude": r["pulse_amplitude"], "onset_N": r["rpm"] * 2 * math.pi / 60}
+    if r["V_flow"]:
+        vals["onset_V_flow"] = r["V_flow"]
+    taken = [k for k in vals if k not in spec]
+    net.inputs[f"{name}.onset_cfdt"] = dict(r["record"], parameters=taken)
+    for k in taken:
+        spec[k] = vals[k]
+    return spec, f"cfd-translator free_flow ({r['record']['result']})" if taken else None
+
+
 def _npsh_from_cfdt(spec, where, net, name):
-    """The "npsh_cfdt" key of fl_pump (FL16): npsh_required from cfd-translator cavitation sweeps (NPSH3 per flow,
-    moved to N_nominal); a given npsh_required wins. Returns (spec, where npsh_required came from)."""
+    """The "npsh_cfdt" key of fl_pump (FL16, FL17): npsh_required (NPSH3 per flow) and npsh3_below (sweeps without a
+    3 % drop: their lowest NPSH, an upper bound) from cfd-translator cavitation sweeps, moved to N_nominal; a given
+    npsh_required or npsh3_below wins over its part. Returns (spec, where the values came from)."""
     from .npsh import NpshError, from_cfdt
     spec = dict(spec)
     raw = spec.pop("npsh_cfdt")
@@ -420,12 +465,12 @@ def _npsh_from_cfdt(spec, where, net, name):
     except NpshError as exc:
         net.errors.append(str(exc))
         return spec, None
-    rec = dict(r["record"], parameters=[] if "npsh_required" in spec else ["npsh_required"])
-    net.inputs[f"{name}.npsh_cfdt"] = rec
-    if "npsh_required" in spec:
-        return spec, None
-    spec["npsh_required"] = r["curve"]
-    return spec, f"cfd-translator NPSH3 ({len(r['curve'])} sweep(s))"
+    taken = [k for k, v in (("npsh_required", r["known"]), ("npsh3_below", r["below"])) if v and k not in spec]
+    net.inputs[f"{name}.npsh_cfdt"] = dict(r["record"], parameters=taken)
+    for k in taken:
+        spec[k] = r["known"] if k == "npsh_required" else r["below"]
+    n = len(r["record"]["sweeps"])
+    return spec, f"cfd-translator NPSH3 ({n} sweep(s), {len(r['below'])} an upper bound)" if taken else None
 
 
 def _from_cfdt(how, spec, where, net, name):

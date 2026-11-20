@@ -1,5 +1,5 @@
 """catalog.py — the curated MSL 4.0.0 components: kinds, ports, parameters (SI), variables, initial values.
-Version: 2026.11.19.27
+Version: 2026.11.19.28
 
 Every name below was checked against the MSL 4.0.0 sources (tag v4.0.0): class paths, port names, parameter
 names and defaults. A kind is either elementary (one MSL class) or composite (parts that are elementary kinds,
@@ -1138,12 +1138,32 @@ PUMP = {"curve": P("1", type="table", structural=False, msl=False,
 PUMP_VARS = {"m_flow": "kg/s", "V_flow": "m3/s", "head": "m", "dp": "Pa", "W": "W", "eta": "1", "w": "rad/s"}
 PUMP_PATHS = {"dp": "dp_pump", "W": "W_total", "w": [(1.0 / W_RPM, "N")]}
 NPSH = {"npsh_required": P("m", None, type="npsh", msl=False,
-                           doc="required NPSH (m): a number, or [[V_flow (m3/s), NPSHr (m)], ...] at N_nominal (NPSHr ~ "
-                               "N^2 at other speeds); with it each run reports the pump's NPSH margin (FL16)"),
-        "npsh_margin": P("1", 1.1, gt=0, msl=False,
-                         doc="NPSH available must be at least npsh_margin x required (ANSI/HI 9.6.1: 1.1-2.0)"),
+                           doc="NPSH3 (3 % head drop, m): a number (every flow), or [[V_flow (m3/s), NPSH3 (m)], ...] "
+                               "at N_nominal; with it each run reports the pump's NPSH ratio and status (FL16, FL17)"),
+        "npsh3_below": P("m", None, type="npsh", msl=False,
+                         doc="NPSH3 known only as an upper bound ('below 2 m at 20 m3/h'): a number or [[V_flow, m], "
+                             "...] at N_nominal; with npsh_required at other flows; a ratio against it is a lower bound"),
+        "npsh_flow_exponent": P("1", 2.0, gt=0, msl=False,
+                                doc="NPSH3 above the highest flow given: x (V/V_max)^npsh_flow_exponent (linear between "
+                                    "the flows given, held below the lowest; speeds: x (N/N_nominal)^2)"),
+        "npsh_margin": P("1", 1.5, gt=1, msl=False,
+                         doc="'approaching' below npsh_margin x NPSH3 ('below' under 1 x): inception comes well before "
+                             "the 3 % drop (ANSI/HI 9.6.1 margins 1.1-2.0)"),
         "inlet_diameter": P("m", None, gt=0, msl=False,
-                            doc="suction port diameter: adds the velocity head v^2/2g to NPSH available")}
+                            doc="suction port diameter: adds the velocity head v^2/2g to NPSH available"),
+        "eye_dip": P("Pa", None, min=0, msl=False,
+                     doc="the impeller eye's mean static pressure below the inlet's (cfd-translator free_flow); with "
+                         "pulse_amplitude the eye's lowest pressure p_in - dip - amplitude is compared with the "
+                         "vapour pressure (cavitation onset) and the air-saturation pressure (air release)"),
+        "pulse_amplitude": P("Pa", None, min=0, msl=False,
+                             doc="the eye's pressure pulsation amplitude (half peak-to-peak) at onset_N"),
+        "onset_N": P("rad/s", None, gt=0, msl=False,
+                     doc="the speed eye_dip and pulse_amplitude were found at (default N_nominal); both ~ N^2"),
+        "onset_V_flow": P("m3/s", None, gt=0, msl=False,
+                          doc="the flow they were found at: a warning when the run leaves it by more than 10 %"),
+        "air_saturation_pressure": P("Pa", None, gt=0, msl=False,
+                                     doc="the pressure the liquid's dissolved air is saturated at (absolute; default "
+                                         "the system's p_ambient: a liquid in contact with air at the free surface)")}
 kind("fl_pump", MF + "Machines.PrescribedPump", {**FAB_M, "w_in": "in"},
      {**FMED, **PUMP, **NPSH, "N": P("rad/s", None, gt=0, msl=False, doc="constant speed (default N_nominal)")},
      PUMP_VARS, var_paths=PUMP_PATHS, cond_ports={"w_in": None}, domain="mfluid",
@@ -1152,7 +1172,9 @@ kind("fl_pump", MF + "Machines.PrescribedPump", {**FAB_M, "w_in": "in"},
      fluid={"build": _pump, "pump": True, "speed_in": ("w_in", "N_in", W_RPM), "cfdt": "pump"},
      doc="a centrifugal pump at a prescribed speed (constant N, or the input w_in [rad/s]); affinity laws off the "
          "nominal speed; \"cfdt\": [cfd-translator pump results] gives curve, N_nominal, power, rho_power; "
-         "\"npsh_cfdt\": [cfd-translator cavitation sweep results] gives npsh_required (NPSH3 per flow)")
+         "\"npsh_cfdt\": [cfd-translator cavitation sweep results] gives npsh_required (NPSH3 per flow) and npsh3_below "
+         "(sweeps without a 3 % drop: below their lowest NPSH); \"onset_cfdt\": {result: <cfd-translator free_flow "
+         "result>, eye_probe, inlet} gives eye_dip, pulse_amplitude, onset_N and onset_V_flow")
 kind("fl_pump_shaft", MF + "Machines.Pump", {**FAB_M, "shaft": "flange_r"}, {**FMED, **PUMP},
      PUMP_VARS, var_paths=PUMP_PATHS, domain="mfluid", mods={"N_nominal": lambda p: p["N_nominal"] * W_RPM},
      fluid={"build": _pump, "pump": True, "cfdt": "pump"},

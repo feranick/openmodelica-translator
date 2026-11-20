@@ -1,5 +1,5 @@
 """format.py — the study format (study_format) and the static checks (validate, validate_study).
-Version: 2026.11.19.27
+Version: 2026.11.19.28
 
 validate_study(study) -> {ok, errors, warnings}: nothing runs (no omc). It resolves the network (network.build),
 checks outputs, analysis, derived quantities, sweep, expect, run (against the OMCT_MAX_* caps) and images, then
@@ -182,9 +182,15 @@ FLUID_TOPIC = {
         "scaled to the circuit's density (and viscosity with mu). Given values win; unreliable results are refused; "
         "result.inputs.<comp>.cfdt records the points and the fit.",
         "Pumps (fl_pump, liquids): every run reports npsh.<pump> (NPSH available from the inlet's p and T, IF97 "
-        "or MSL's vapour-pressure tables; with npsh_required or npsh_cfdt [cfd-translator cavitation sweeps: NPSH3 "
-        "per flow] also the ratio to the required and short: a warning below npsh_margin x required, 1.1 by default; "
-        "the run stays reliable). inlet_diameter adds the velocity head.",
+        "or MSL's vapour-pressure tables; inlet_diameter adds the velocity head). Against NPSH3 (npsh_required: known "
+        "values; npsh3_below: upper bounds, 'below 2 m at 20 m3/h'; npsh_cfdt: both from cfd-translator cavitation "
+        "sweeps): linear between the flows given, held below the lowest, x (V/V_max)^npsh_flow_exponent above, "
+        "x (N/N_nominal)^2 at other speeds; status 'below' (NPSHa/NPSH3 < 1), 'approaching' (< npsh_margin, 1.5), "
+        "'unresolved' (against an upper bound: the ratio is a lower bound), 'ok'; a warning names the flows the data "
+        "apply to. Onset: eye_dip and pulse_amplitude (Pa, at onset_N; or onset_cfdt {result: a cfd-translator "
+        "free_flow result, eye_probe, inlet}) give the eye's lowest pressure p_in - dip - amplitude (~ N^2), compared "
+        "with the vapour pressure (cavitation onset) and air_saturation_pressure (air release; default p_ambient). "
+        "Findings, not errors: the run stays reliable.",
         "Outputs: comp.var (vars below), comp.port_a.p / .m_flow (into the component), sensors' signal outputs. "
         "Checks: reference (constant-density liquids: boundaries, sources, pipes, dynamic pipes (heat_transfer "
         "constant or local), volumes, fittings, valves, pumps, tanks, temperatures with thermal parts on the heat "

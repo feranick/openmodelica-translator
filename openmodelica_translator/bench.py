@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with closed-form answers: is the toolchain right?
-Version: 2026.11.19.27
+Version: 2026.11.19.28
 
 Each case is a study plus checks [(result path, expected, tolerance, why)]; tolerances are relative unless
 written {"abs": x}. Chains (chain_feat_modal, chain_b3dt_mass, chain_b3dt_inertia) run the other translator first and only when named; they are skipped
@@ -1284,13 +1284,16 @@ def _fl_gas_pipe():
 
 
 def _fl_npsh_lift():
-    """FL16: 80 degC water lifted 3 m to a pump (tank level 1 m, the pump 4 m above the tank's port): NPSH available
-    = (p_in + rho v^2/2 - p_vap(T_in)) / (rho g) = 1.143 m (the reference; by hand from its p_in, v and IF97's p_vap)
-    against 1.1 x 2.39 m required: the run warns that the pump would cavitate and stays reliable."""
+    """FL16, FL17: 80 degC water lifted 3 m to a pump (tank level 1 m, the pump 4 m above the tank's port): NPSH
+    available = (p_in + rho v^2/2 - p_vap(T_in)) / (rho g) = 1.143 m (the reference; by hand from its p_in, v and
+    IF97's p_vap) against NPSH3 2.39 m at 15.8 m3/h (linear between the curve's flows): ratio 0.477, status 'below',
+    warned, reliable. Onset: p_in - eye_dip 3 kPa - pulse_amplitude 1.5 kPa = 47.99 kPa, 0.6 kPa above p_vap (no
+    cavitation onset) and 53.3 kPa below p_ambient (air release)."""
     st = {"components": {"tank": {"kind": "fl_tank", "height": 3, "crossArea": 2.0, "level_start": 1, "T_start": 353.15},
                          "pipe": {"kind": "fl_pipe", "length": 6, "diameter": 0.04, "height_ab": 4.0},
                          "pump": {"kind": "fl_pump", "curve": [[0, 25], [0.004, 22], [0.008, 12]], "N_nominal": "2900 rpm",
-                                  "npsh_required": [[0.002, 1.5], [0.006, 3.0], [0.01, 5.0]], "inlet_diameter": 0.04},
+                                  "npsh_required": [[0.002, 1.5], [0.006, 3.0], [0.01, 5.0]], "inlet_diameter": 0.04,
+                                  "eye_dip": 3000, "pulse_amplitude": 1500},
                          "v": {"kind": "fl_valve", "Kv": 15, "dp_nominal": 1e5, "m_flow_nominal": 4},
                          "b": {"kind": "fl_boundary", "p": 1.5e5, "T": 353.15}},
           "connect": [["tank.port", "pipe.port_a"], ["pipe.port_b", "pump.port_a"], ["pump.port_b", "v.port_a"],
@@ -1298,9 +1301,13 @@ def _fl_npsh_lift():
           "outputs": {"m": "pump.m_flow", "p": "pump.port_a.p"},
           "analysis": {"kind": "transient", "stop_time": 60, "intervals": 6, "tolerance": 1e-8}}
     return st, [("npsh.pump.NPSHa_min_m", 1.1427307251012755, 1e-4, "NPSH available (the reference's)"),
-                ("npsh.pump.short", 1, {"abs": 0.5}, "below 1.1 x NPSH required: warned"),
+                ("npsh.pump.short", 1, {"abs": 0.5}, "below NPSH3: warned"),
+                ("npsh.pump.ratio_min", 0.47728200078016436, 1e-4, "NPSHa / NPSH3 (status 'below')"),
                 ("npsh.pump.T_in_at_min_K", 353.15 - 9.80665 * 4.0 / 4184, {"abs": 1e-5},
-                 "the inlet T: the tank's less g height_ab / cp (StaticPipe)")]
+                 "the inlet T: the tank's less g height_ab / cp (StaticPipe)"),
+                ("npsh.pump.onset.air_margin_min_Pa", 52493.23150138828 - 4500 - 101325, 1e-4,
+                 "p_in - dip - amplitude - p_ambient: air release"),
+                ("npsh.pump.onset.cavitation_onset", 0, {"abs": 0.5}, "0.6 kPa above the vapour pressure")]
 
 
 FLUID_CASES = {"fl_drain_torricelli": _fl_drain, "fl_pipe_laminar": _fl_laminar, "fl_pump_system_curve": _fl_pump_system,
