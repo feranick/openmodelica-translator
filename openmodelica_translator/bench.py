@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with closed-form answers: is the toolchain right?
-Version: 2026.11.19.20
+Version: 2026.11.19.21
 
 Each case is a study plus checks [(result path, expected, tolerance, why)]; tolerances are relative unless
 written {"abs": x}. Chains (chain_feat_modal, chain_b3dt_mass, chain_b3dt_inertia) run the other translator first and only when named; they are skipped
@@ -1083,14 +1083,15 @@ def _fl_thermal_reference():
 def _fl_pump_into_tank():
     """A pump with a volume and a check valve straight into a tank (FL10: OpenModelica 1.27.2 failed to initialise
     this while the pump volume preferred p as a state), judged against the reference: the tank fills, the pump's
-    work warms the water."""
+    work warms the water. Tolerance 1e-8: at 1e-6 OpenModelica's tank T was 1.4e-4 off (carbonio, .20); at 1e-8
+    2.4e-6."""
     st = {"components": {"src": {"kind": "fl_boundary", "p": 101325.0, "T": 300.0, "medium": LIQ},
                          "pump": {"kind": "fl_pump", "curve": [[0, 20], [0.005, 15], [0.01, 0]], "N_nominal": "1450 rpm",
                                   "V": 0.002, "checkValve": True, "T_start": 300.0},
                          "tank": {"kind": "fl_tank", "height": 12, "crossArea": 0.5, "level_start": 1, "T_start": 290.0}},
           "connect": [["src.port", "pump.port_a"], ["pump.port_b", "tank.port"]],
           "outputs": {"m": "pump.m_flow", "level": "tank.level", "T": "tank.T"},
-          "analysis": {"kind": "transient", "stop_time": 300, "intervals": 60}}
+          "analysis": {"kind": "transient", "stop_time": 300, "intervals": 60, "tolerance": 1e-8}}
     return st, [("checks.reference.covered", 1, {"abs": 0.5}, "the reference covers it"),
                 ("checks.reference.max_error_rel", 0.0, {"abs": 1e-4}, "OpenModelica = the reference"),
                 ("checks.fluid_energy.ok", 1, {"abs": 0.5}, "energy balance")]

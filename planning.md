@@ -1029,3 +1029,5 @@ Re(sqrt(2) X e^(j gamma)) with gamma the reference angle of the connector:
 - Event-driven stops (`crossing` that ends the run), frequency sweeps by simulation for nonlinear systems.
 - The reference for the cases still not covered (radiation, two-way electro-thermal coupling, power_w ≠ 1 losses,
   piecewise-linear elements with machines).
+
+**Carbonio with .20 (bench_20261119_214014_50b86e): 20 of 21 fl_* pass, reliable.** FL10 works there: fl_pump_into_tank runs (the pump volume straight into a tank failed to initialise before), fl_heated_loop passes (a ClosedVolume pump and a DynamicPipe on a closed liquid loop; mass and energy balances ok). The miss: fl_pump_into_tank's benchmark check max_error_rel 1.445e-4 > 1e-4 (tank T only; m and level 1.3e-13; omct's own allowance for T 3.54e-4, so checks.reference ok and reliable true). Rerun at tolerance 1e-8 (run_pit_tol8): T 2.36e-6 against the reference, fluid_energy 1.7e-8, mass exact. **2026.11.19.21**: the benchmark runs at tolerance 1e-8, like fl_drain_torricelli and fl_two_tanks.
