@@ -1,5 +1,5 @@
 """bench.py — benchmark studies with closed-form answers: is the toolchain right?
-Version: 2026.11.19.15
+Version: 2026.11.19.16
 
 Each case is a study plus checks [(result path, expected, tolerance, why)]; tolerances are relative unless
 written {"abs": x}. Chains (chain_feat_modal, chain_b3dt_mass, chain_b3dt_inertia) run the other translator first and only when named; they are skipped
@@ -948,13 +948,83 @@ def _fl_fit_kv():
     return st, [("fit.params.v.Kv.value", 12.0, 1e-6, "Kv = m / (27.7e-6 sqrt(rho dp))")]
 
 
+def _fl_check_valve():
+    """Check valves (FL7): a valve with checkValve forward (m = 27.7e-6 Kv sqrt(rho dp)) and backward (m = 0: MSL's
+    regRoot2 with k2 = 0); a pump with checkValve against a head above and below its shutoff head (20 m):
+    closed, m = 0 and head = the outlet's; open, H(V) = 20 - 2e5 V^2 = the outlet's head."""
+    rg = LIQ["rho"] * G
+    st = {"components": {"a": {"kind": "fl_boundary", "p": 2e5, "medium": LIQ},
+                         "v": {"kind": "fl_valve", "Kv": 10.0, "dp_nominal": 1e5, "m_flow_nominal": 3.0,
+                               "checkValve": True},
+                         "b": {"kind": "fl_boundary", "p": 1e5},
+                         "src": {"kind": "fl_boundary", "p": 1e5, "medium": LIQ},
+                         "pump": {"kind": "fl_pump", "curve": [[0, 20], [0.005, 15], [0.01, 0]],
+                                  "N_nominal": "1450 rpm", "checkValve": True, "V": 0.001},
+                         "out": {"kind": "fl_boundary", "p": 1e5 + 25 * rg}},
+          "connect": [["a.port", "v.port_a"], ["v.port_b", "b.port"], ["src.port", "pump.port_a"],
+                      ["pump.port_b", "out.port"]],
+          "outputs": {"m_valve": "v.m_flow", "m_pump": "pump.m_flow", "head": "pump.head"},
+          "analysis": {"kind": "transient", "stop_time": 1, "intervals": 10},
+          "sweep": {"params": {"b.p": [1e5, 3e5], "out.p": [1e5 + 25 * rg, 1e5 + 10 * rg]}, "mode": "zip",
+                    "report": ["outputs.m_valve.final", "outputs.m_pump.final", "outputs.head.final"]}}
+    Vo = math.sqrt((20 - 10) / 2e5)
+    return st, [("sweep.table.0.values.outputs.m_valve.final", 27.7e-6 * 10 * math.sqrt(LIQ["rho"] * 1e5), 1e-6,
+                 "check valve forward: as without it"),
+                ("sweep.table.1.values.outputs.m_valve.final", 0.0, {"abs": 1e-9}, "check valve backward: closed"),
+                ("sweep.table.0.values.outputs.m_pump.final", 0.0, {"abs": 1e-9},
+                 "pump check valve: 25 m above a 20 m shutoff head, closed"),
+                ("sweep.table.0.values.outputs.head.final", 25.0, 1e-6, "its head is the outlet's"),
+                ("sweep.table.1.values.outputs.m_pump.final", LIQ["rho"] * Vo, 1e-6, "open: 20 - 2e5 V^2 = 10 m")]
+
+
+def _fl_tank_port_drain():
+    """A tank draining through a port with losses (FL7: use_portsData, zeta_out 0.5): rho g h = (1.5 - r^2)
+    m^2 / (2 rho A_p^2), r = A_p/A, so sqrt(h) falls linearly at A_p/(2A) sqrt(2 g / (1.5 - r^2))."""
+    A, d, h0, T = 0.5, 0.03, 2.0, 200.0
+    Ap = math.pi * d * d / 4
+    c = Ap / (2 * A) * math.sqrt(2 * G / (1.5 - (Ap / A) ** 2))
+    st = {"components": {"tank": {"kind": "fl_tank", "height": 3, "crossArea": A, "level_start": h0, "medium": LIQ,
+                                  "port_diameter": d},
+                         "out": {"kind": "fl_boundary"}},
+          "connect": [["tank.port", "out.port"]],
+          "outputs": {"level": "tank.level", "m": "out.port.m_flow"},
+          "analysis": {"kind": "transient", "stop_time": T, "intervals": 200, "tolerance": 1e-8}}
+    h = (math.sqrt(h0) - c * T) ** 2
+    return st, [("outputs.level.final", h, 1e-6, "sqrt(h) falls linearly with the port loss (zeta_out 0.5)"),
+                ("outputs.m.initial", LIQ["rho"] * Ap * math.sqrt(2 * G * h0 / (1.5 - (Ap / A) ** 2)), 1e-6,
+                 "m = rho A_p sqrt(2 g h0 / (1.5 - r^2))"),
+                ("checks.mass.error_rel", 0.0, {"abs": 1e-5}, "mass balance")]
+
+
+def _fl_loop_reference():
+    """A closed loop judged against the reference (FL7): an open tank with port losses (port_diameter, 3 ports)
+    feeds two pumps in parallel (the second at a lower speed), a pipe and a valve back into the tank. (Pumps with
+    check valves need a volume, which a closed liquid loop cannot have in OpenModelica 1.27.2: fl_check_valve
+    runs them in open circuits.)"""
+    pump = {"kind": "fl_pump", "curve": [[0, 20], [0.005, 15], [0.01, 0]], "N_nominal": "1500 rpm"}
+    st = {"components": {"tank": {"kind": "fl_tank", "height": 5, "crossArea": 2, "level_start": 1,
+                                  "port_diameter": 0.05},
+                         "pump": pump, "pump2": dict(pump, N="1300 rpm"),
+                         "pipe": {"kind": "fl_pipe", "length": 20, "diameter": 0.05},
+                         "v": {"kind": "fl_valve", "Kv": 20, "dp_nominal": 1e5, "m_flow_nominal": 5, "opening": 0.8}},
+          "connect": [["tank.port", "pump.port_a"], ["tank.port", "pump2.port_a"], ["pump.port_b", "pipe.port_a"],
+                      ["pump2.port_b", "pipe.port_a"], ["pipe.port_b", "v.port_a"], ["v.port_b", "tank.port"]],
+          "outputs": {"m": "pump.m_flow", "m2": "pump2.m_flow", "head": "pump.head", "dp": "pipe.dp",
+                      "p_in": "tank.port[1].p", "level": "tank.level"},
+          "analysis": {"kind": "transient", "stop_time": 10, "intervals": 20}}
+    return st, [("checks.reference.covered", 1, {"abs": 0.5}, "the Fluid reference covers it"),
+                ("checks.reference.max_error_rel", 0.0, {"abs": 1e-4}, "OpenModelica = the reference"),
+                ("checks.mass.error_rel", 0.0, {"abs": 1e-5}, "mass balance")]
+
+
 FLUID_CASES = {"fl_drain_torricelli": _fl_drain, "fl_pipe_laminar": _fl_laminar, "fl_pump_system_curve": _fl_pump_system,
                "fl_valve_kv": _fl_valve, "fl_heated_pipe": _fl_heated_pipe, "fl_air_fill": _fl_air_fill,
                "fl_pipe_turbulent": _fl_turbulent, "fl_two_tanks": _fl_two_tanks, "fl_network_reference": _fl_network,
                "fl_cfdt_pump": _fl_cfdt_pump, "fl_cfdt_resistance": _fl_cfdt_resistance,
-               "fl_sweep_opening": _fl_sweep_opening, "fl_fit_kv": _fl_fit_kv}
+               "fl_sweep_opening": _fl_sweep_opening, "fl_fit_kv": _fl_fit_kv, "fl_check_valve": _fl_check_valve,
+               "fl_tank_port_drain": _fl_tank_port_drain, "fl_loop_reference": _fl_loop_reference}
 # not in the Fluid reference (fluidref.covered): a dynamic pipe, a gas; judged against the reference itself
-FLUID_OMC_ONLY = {"fl_heated_pipe", "fl_air_fill", "fl_network_reference"}
+FLUID_OMC_ONLY = {"fl_heated_pipe", "fl_air_fill", "fl_network_reference", "fl_loop_reference"}
 
 
 def omc_only() -> set:

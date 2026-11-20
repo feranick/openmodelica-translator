@@ -1,5 +1,5 @@
 """catalog.py — the curated MSL 4.0.0 components: kinds, ports, parameters (SI), variables, initial values.
-Version: 2026.11.19.14
+Version: 2026.11.19.16
 
 Every name below was checked against the MSL 4.0.0 sources (tag v4.0.0): class paths, port names, parameter
 names and defaults. A kind is either elementary (one MSL class) or composite (parts that are elementary kinds,
@@ -1071,6 +1071,13 @@ kind("fl_valve_linear", MF + "Valves.ValveLinear", {**FAB_M, "opening": "in"},
      doc="m_flow = m_flow_nominal opening dp / dp_nominal")
 
 
+def _pump_start(p, v):
+    """m_flow_start text for a pump: the medium's (or rho_power's) density x a flow x nParallel."""
+    med = p.get("medium")
+    rho = p.get("rho_power") or (med["rho"] if isinstance(med, dict) else 1000.0)
+    return repr(float(rho * v * (p.get("nParallel") or 1)))
+
+
 def _pump(p, e):
     pts = p["curve"]
     n = len(pts)
@@ -1092,10 +1099,16 @@ def _pump(p, e):
             # MSL's homotopy for the power divides by V_flow_single_init = m_flow_start / rho_nominal / nParallel:
             # 0 by default (system.m_flow_start), so initialisation fails with a division by zero (carbonio
             # 2026-11-19, run_fl5_power_probe1). A start at the power curve's middle flow.
-            med = p.get("medium")
-            rho = p.get("rho_power") or (med["rho"] if isinstance(med, dict) else 1000.0)
-            v = pw[1][0] if pw[1][0] > 0 else max(r[0] for r in pw)
-            mods["m_flow_start"] = repr(float(rho * v * p.get("nParallel", 1)))
+            mods["m_flow_start"] = _pump_start(p, pw[1][0] if pw[1][0] > 0 else max(r[0] for r in pw))
+    if float(p.get("V") or 0) > 0:
+        # a pump volume stores energy (the system's energyDynamics; MSL's pump default is SteadyState): with
+        # SteadyState and no flow (a closed check valve) its enthalpy has no equation and OpenModelica divides by
+        # the zero flow (carbonio 2026-11-19, run_fl7_probe2-5); with V > 0 MSL's initial homotopy failed from
+        # m_flow_start 0 (run_fl7_probe3), so a start at the curve's middle flow unless given
+        mods["energyDynamics"] = "system.energyDynamics"
+        if p.get("m_flow_start") is None and "m_flow_start" not in mods:
+            v = pts[len(pts) // 2][0]
+            mods["m_flow_start"] = _pump_start(p, v if v > 0 else max(r[0] for r in pts))
     if p.get("rho_power") is not None:
         mods["rho_nominal"] = repr(float(p["rho_power"]))
     if p.get("_w_in"):
@@ -1110,7 +1123,8 @@ PUMP = {"curve": P("1", type="table", structural=False, msl=False,
         "eta": P("1", 0.8, gt=0, max=1, msl=False, doc="constant efficiency (power = rho g V head / eta)"),
         "nParallel": P("1", 1, type="int", structural=True, min=1),
         "V": P("m3", 0.0, min=0, structural=True, doc="volume inside (0: none)"),
-        "checkValve": P("1", False, type="bool", structural=True),
+        "checkValve": P("1", False, type="bool", structural=True,
+                        doc="no reverse flow (needs V > 0: a closed pump keeps its enthalpy only in a volume)"),
         "m_flow_start": P("kg/s", None, doc="start guess of the flow"), "T_start": P("K", None, gt=0, abs_T=True),
         "power": P("1", None, type="table", structural=False, msl=False,
                    doc="shaft power [[V_flow (m3/s), W (W)], ...] at N_nominal: a quadratic by least squares (MSL "

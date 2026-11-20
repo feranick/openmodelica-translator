@@ -1,5 +1,5 @@
 """test_fluidref.py — the reference for Modelica.Fluid liquids (V5 FL4): MSL's functions, coverage, the network.
-Version: 2026.11.19.13
+Version: 2026.11.19.16
 """
 import copy
 import math
@@ -88,8 +88,6 @@ def test_translate_uses_the_fluid_reference_when_covered():
 @pytest.mark.parametrize("change,why", [
     ({"tank": {"kind": "fl_tank", "height": 3, "crossArea": 0.5, "level_start": 2, "medium": "glycol47"}},
      "constant-density"),
-    ({"tank": {"kind": "fl_tank", "height": 3, "crossArea": 0.5, "level_start": 2, "port_diameter": 0.03}},
-     "port losses"),
     ({"out": {"kind": "fl_volume", "V": 1.0}}, "not in the Fluid reference"),
 ])
 def test_not_covered_says_why(change, why):
@@ -184,5 +182,57 @@ def test_covered_studies_skip_the_cross_solver_run():
     assert cross_checked({**DRAIN, "cross_check": True})
     assert not cross_checked({**DRAIN, "cross_check": False})
     st = copy.deepcopy(DRAIN)
-    st["components"]["tank"]["port_diameter"] = 0.03          # port losses: not covered
+    st["components"]["tank"]["medium"] = "glycol47"           # T-dependent: not covered
     assert cross_checked(st)
+
+
+# ---- FL7: check valves, tank port losses, multi-port outputs ------------------------------------------------------
+def test_reg_square2_and_reg_step():
+    for k1, k2 in ((1.0, 1.0), (0.04, 1.5), (2.0, 0.5)):
+        assert F.reg_square2(2.0, 1.0, k1, k2) == pytest.approx(4 * k1)
+        assert F.reg_square2(-2.0, 1.0, k1, k2) == pytest.approx(-4 * k2)
+        for x in (1.0, -1.0):
+            assert F.reg_square2(x - 1e-9, 1.0, k1, k2) == pytest.approx(F.reg_square2(x + 1e-9, 1.0, k1, k2), rel=1e-6)
+        ys = [F.reg_square2(x, 1.0, k1, k2) for x in np.linspace(-1.5, 1.5, 301)]
+        assert np.all(np.diff(ys) > 0)
+    assert F.reg_step(1.0, 3.0, 5.0, 0.1) == 3.0 and F.reg_step(-1.0, 3.0, 5.0, 0.1) == 5.0
+    assert F.reg_step(0.0, 3.0, 5.0, 0.1) == 4.0
+
+
+def test_check_valve_relation_is_zero_backward():
+    assert F.reg_root2(-0.5, 1.0, 1.0, 0.0, True, 0.0) == 0.0
+    assert F.reg_root2(-2.0, 1.0, 1.0, 0.0, True, 0.0) == 0.0
+    assert F.reg_root2(4.0, 1.0, 1.0, 0.0, True, 0.0) == pytest.approx(2.0)
+    assert 0 < F.reg_root2(0.5, 1.0, 1.0, 0.0, True, 0.0) < math.sqrt(0.5)
+
+
+def test_pump_check_valve_needs_a_volume_and_gets_dynamic_energy():
+    st = {"components": {"src": {"kind": "fl_boundary", "medium": LIQ},
+                         "pump": {"kind": "fl_pump", "curve": [[0, 20], [0.01, 0]], "N_nominal": 150, "checkValve": True},
+                         "out": {"kind": "fl_boundary"}},
+          "connect": [["src.port", "pump.port_a"], ["pump.port_b", "out.port"]], "outputs": {"m": "pump.m_flow"},
+          "analysis": {"kind": "transient", "stop_time": 1}}
+    assert "needs a volume V > 0" in " ".join(validate_study(st)["errors"])
+    st["components"]["pump"]["V"] = 0.001
+    assert validate_study(st)["ok"]
+    line = next(x for x in translate(st).text.splitlines() if "PrescribedPump" in x)
+    assert "energyDynamics=system.energyDynamics" in line and "m_flow_start=" in line
+    assert getattr(translate(st).ref, "fluid", False)
+    from openmodelica_translator.runner import fluid_mass_terms
+    assert "pump.m" in fluid_mass_terms(translate(st))[1]
+
+
+def test_multi_port_outputs():
+    st = copy.deepcopy(DRAIN)
+    st["components"]["out2"] = {"kind": "fl_boundary"}
+    st["components"]["o2"] = {"kind": "fl_orifice", "diameter": 0.02, "zeta": 1.0}
+    st["connect"] += [["tank.port", "o2.port_a"], ["o2.port_b", "out2.port"]]
+    st["outputs"] = {"total": "tank.port.m_flow", "first": "tank.port[1].m_flow", "p_out": "out.port.p"}
+    tr = translate(st)
+    assert tr.outputs["total"][0] == [(1.0, "tank.ports[1].m_flow"), (1.0, "tank.ports[2].m_flow")]
+    assert tr.outputs["first"][0] == [(1.0, "tank.ports[1].m_flow")]
+    assert tr.outputs["p_out"][0] == [(1.0, "out.ports[1].p")]
+    st["outputs"] = {"p": "tank.port.p"}
+    assert "say which" in " ".join(validate_study(st)["errors"])
+    st["outputs"] = {"p": "tank.port[3].p"}
+    assert "2 connection(s)" in " ".join(validate_study(st)["errors"])

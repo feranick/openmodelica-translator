@@ -50,7 +50,7 @@ def test_loop_is_valid_and_translates():
     assert tr.overrides["pump.N_nominal"] == pytest.approx(1500.0)          # rad/s in the study, rev/min in MSL
     assert tr.outputs["dp"] == ([(1.0, "pipe.port_a.p"), (-1.0, "pipe.port_b.p")], "Pa")
     assert "?" in tr.structure and "omct_pump_head_curve[3] = {?, ?, ?}" in tr.structure  # values not in the key
-    assert not tr.ref.exact and "Modelica.Fluid" in tr.ref.not_exact[0]
+    assert tr.ref.exact and getattr(tr.ref, "fluid", False)        # tank port losses are in the reference (FL7)
 
 
 def test_medium_given_once_spreads():
@@ -168,7 +168,8 @@ def test_cross_solver_and_mass_balance_for_fluid_studies():
 
     from openmodelica_translator.format import cross_checked, has_fluid
     from openmodelica_translator.runner import _fluid_mass, fluid_mass_terms
-    assert has_fluid(LOOP) and cross_checked(LOOP)
+    glycol = loop(tank={**LOOP["components"]["tank"], "medium": "glycol47"})      # not in the reference
+    assert has_fluid(LOOP) and cross_checked(glycol) and not cross_checked(LOOP)
     assert not cross_checked({**LOOP, "cross_check": False})
     assert validate_study({**LOOP, "cross_check": False})["ok"]
     st = {"components": {"tank": {"kind": "fl_tank", "height": 3, "crossArea": 0.5, "level_start": 2},
@@ -201,3 +202,11 @@ def test_cross_solver_and_mass_balance_for_fluid_studies():
 def test_msl_notes_are_not_warnings():
     from openmodelica_translator.runner import OM_NOTES
     assert any("delta_head_init" in x for x in OM_NOTES)
+
+
+def test_pump_volume_on_a_closed_liquid_loop_is_refused():
+    """carbonio run_fl7_probe6: structurally singular, as fl_volume there (a check valve needs V > 0)."""
+    st = loop(pump=dict(PUMP, V=0.001, checkValve=True))
+    assert "a pump with a volume (V > 0, which checkValve needs)" in errors(st)
+    st = loop(pump=dict(PUMP, V=0.001))
+    assert "a pump with a volume (V > 0)" in errors(st)

@@ -1,6 +1,6 @@
 """network.py — a study's components, values and connections, resolved: the common ground of validation, the
 Modelica generator and the reference implementation.
-Version: 2026.11.19.10
+Version: 2026.11.19.16
 
 build(study) -> Net, with net.errors (each says the fix) and net.warnings. It
   - resolves kinds (or "msl" class paths) and parameter values to SI (units.to_si), with defaults;
@@ -120,6 +120,29 @@ class Net:
                 and parts[3] in ("v", "i"):
             ep = self.elem_port(comp, parts[1])
             return [(1.0, self.mpath(ep) + "." + parts[2] + "." + parts[3])], C.PORT_TYPES["pin"]["units"][parts[3]]
+        mm = re.fullmatch(r"(\w+)(?:\[(\d+)\])?", parts[1]) if len(parts) == 3 else None
+        if mm and mm.group(1) in k.get("multi", {}) and comp in self.elems:
+            # a port taking any number of connections (Modelica.Fluid's ports[nPorts]): 'X.port[k].var', or
+            # 'X.port.var': m_flow / H_flow summed over the connections, p / h of the only one
+            base, idx = mm.group(1), mm.group(2)
+            pt = C.PORT_TYPES[pts[base]]
+            n = self.elems[comp].get("multi_n", {}).get(base, 0)
+            var = parts[2]
+            if var not in (pt["potential"], pt["flow"], *pt.get("extra", ())):
+                raise KeyError(f"'{ref}': a {pts[base]} port has {pt['potential']}, {pt['flow']}"
+                               f"{', ' + ', '.join(pt.get('extra', ())) if pt.get('extra') else ''}")
+            if idx is not None:
+                if not 1 <= int(idx) <= n:
+                    raise KeyError(f"'{ref}': {comp}.{base} has {n} connection(s): {base}[1] .. {base}[{n}]")
+                return [(1.0, self.mpath(f"{comp}.{base}[{idx}]") + "." + var)], pt["units"][var]
+            if n == 0:
+                raise KeyError(f"'{ref}': {comp}.{base} is not connected")
+            if var in (pt["flow"], "H_flow"):
+                return [(1.0, self.mpath(f"{comp}.{base}[{j}]") + "." + var) for j in range(1, n + 1)], \
+                    pt["units"][var]
+            if n > 1:
+                raise KeyError(f"'{ref}': {comp}.{base} has {n} connections: say which ({base}[1] .. {base}[{n}])")
+            return [(1.0, self.mpath(f"{comp}.{base}[1]") + "." + var)], pt["units"][var]
         if len(parts) == 3 and parts[1] in pts and pts[parts[1]] not in ("in", "out"):
             pt = C.PORT_TYPES[pts[parts[1]]]
             if parts[2] in (pt["potential"], pt["flow"], *pt.get("extra", ())):
@@ -852,6 +875,11 @@ def _fluid_sets(net, members):
             given = [x for x in ("Kv", "Cv", "Av") if d["params"].get(x) is not None]
             if len(given) > 1:
                 net.errors.append(f"components.{e}: size it by one of Kv, Cv, Av ({', '.join(given)} given)")
+        if d["kind"] in ("fl_pump", "fl_pump_shaft") and d["params"].get("checkValve") \
+                and not float(d["params"].get("V") or 0) > 0:
+            net.errors.append(f"components.{e}: a pump with checkValve needs a volume V > 0 (e.g. 0.001 m3): with "
+                              f"V = 0 and the valve closed its enthalpy has no equation (OpenModelica stops with a "
+                              f"division by the zero flow)")
         given_c = net.comps.get(d["comp"], {}).get("given") or set()
         if d["kind"] in ("fl_pump", "fl_pump_shaft") and "eta" in given_c and "power" in given_c:
             net.errors.append(f"components.{e}: give eta (constant) or power (a curve), not both")
@@ -936,9 +964,18 @@ def _closed_loops(net, elems, label):
             by_node.setdefault(nid, []).append(ep)
     for x in elems:
         d = net.elems[x]
-        if d["kind"] not in FL_VOLUMES:
+        pump_volume = d["kind"] in ("fl_pump", "fl_pump_shaft") and float(d["params"].get("V") or 0) > 0
+        if d["kind"] not in FL_VOLUMES and not pump_volume:
             continue
         cyc = any(edges[i][2] == x for i in on_cycle)
+        if pump_volume:
+            if cyc:      # carbonio 2026-11-19, run_fl7_probe6: structurally singular, as the other volumes
+                net.errors.append(
+                    f"components.{d['comp']}: a pump with a volume (V > 0{', which checkValve needs' if d['params'].get('checkValve') else ''}) "
+                    f"on a closed loop of a constant-density liquid does not build in OpenModelica 1.27.2 (structurally "
+                    f"singular; probed 2026-11-19): use V = 0 without checkValve there, or open the circuit with "
+                    f"fl_boundary")
+            continue
         if d["kind"] == "fl_dynamic_pipe":
             if not cyc:
                 d["params"]["_structure"] = "av_vb"

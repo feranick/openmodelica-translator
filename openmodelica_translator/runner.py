@@ -1,5 +1,5 @@
 """runner.py — one study end to end: validate, translate, build (or reuse), run, read, check, write the result.
-Version: 2026.11.19.13
+Version: 2026.11.19.16
 
 run_study(name, study, folder, solver, timeout, cancel) -> the result dict, also written atomically to
 <folder>/<name>.json. solver: "omc" (OpenModelica) or "ref" (the reference implementation only: linear
@@ -511,7 +511,7 @@ def fluid_mass_terms(tr):
         elif k == "fl_dynamic_pipe":
             store += [f"{e}.ms[{i}]" for i in range(1, int(d["params"]["nNodes"]) + 1)]
         elif k in ("fl_pump", "fl_pump_shaft") and float(d["params"].get("V") or 0) > 0:
-            return None
+            store.append(f"{e}.m")                  # PartialLumpedVolume's m (FL7)
     return (flows, store) if flows or store else None
 
 
@@ -539,7 +539,7 @@ def _fluid_mass(out, tr, r, tol=1e-6):
     least 10 x the solver tolerance (FL3, 2026-11-19)."""
     t = fluid_mass_terms(tr)
     if t is None:
-        out["checks"]["mass"] = {"ok": True, "covered": False, "why": "a storage omct does not count (a pump's volume)"}
+        out["checks"]["mass"] = {"ok": True, "covered": False, "why": "no Modelica.Fluid boundaries or storages"}
         return
     flows, store = t
     try:

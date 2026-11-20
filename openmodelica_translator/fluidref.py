@@ -1,14 +1,14 @@
 """fluidref.py — the reference implementation for Modelica.Fluid liquid networks (V5 FL4).
-Version: 2026.11.19.14
+Version: 2026.11.19.16
 
 An independent solver of the same equations MSL 4.0.0 writes for constant-density liquids, ported from the MSL
 sources (tag v4.0.0) rather than reused: what OpenModelica must reproduce. Covered (covered(net)):
 
   media       water (ConstantPropertyLiquidWater) and custom liquids {rho, cp, eta, lambda}
   kinds       fl_boundary, fl_mass_flow, fl_pipe (friction detailed or nominal_laminar),
-              fl_resistance (a > 0), fl_orifice, fl_valve (no check valve), fl_valve_linear, fl_pump (constant speed,
-              no check valve, no volume), fl_tank (no port losses; system dynamics fixed_initial), fl_pressure,
-              fl_temperature, fl_mass_flow_sensor, fl_volume_flow_sensor, fl_relative_pressure, fl_system
+              fl_resistance (a > 0), fl_orifice, fl_valve (check valve too), fl_valve_linear, fl_pump (constant
+              speed, check valve too, a volume too), fl_tank (port losses too; system dynamics fixed_initial),
+              fl_pressure, fl_temperature, fl_mass_flow_sensor, fl_volume_flow_sensor, fl_relative_pressure, fl_system
   not         anything outside Modelica.Fluid, dynamic pipes and volumes, gases, inputs that change the flows (p_in,
               m_flow_in, opening, w_in; T_in and heat ports are fine), temperatures
 
@@ -29,6 +29,11 @@ MSL relations ported (Modelica.Fluid 4.0.0, tag v4.0.0; planning.md V5 FL4):
              leakageOpening only feeds the filter); Av = 27.7e-6 Kv, 24e-6 Cv, Av, or the op point
              m_nom / (rc(1) sqrt(rho) regRoot(dp_nom, dp_small)); rc linear, quadratic, equal percentage
   linear     m = opening m_nom / dp_nom dp
+  check      valve: m = rc Av sqrt(rho) regRoot2(dp, dp_small, 1, 0, use_yd0, 0); pump (NoHomotopy): MSL's s,
+             head = (N/N0)^2 H(s/rho N0/N) for s > 0, (N/N0)^2 H(0) - s (1 m per kg/s) else, m = nParallel max(s, 0)
+  tank ports with port_diameter (use_portsData, VesselPortsData zeta_out 0.5, zeta_in 1.04): ports[i].p =
+             p_static + 0.5/A_p^2 regSquare2(m, m_flow_small, (zeta_in - 1 + A_p^2/A^2)/rho pen,
+             (zeta_out + 1 - A_p^2/A^2)/rho/pen), pen = regStep(level - 0.1 D, 1, 1e-3, 0.1 D)
   pump       p_b - p_a = rho g (N/N0)^2 H(V N0 / N); H linearFlow, quadraticFlow, polynomialFlow (linear outside the
              points); W = dp V / eta, or with a power curve (FL5) MSL's quadraticPower:
              W = (N/N0)^3 (rho/rho_nominal) P(V N0 / N), eta = dp V / W
@@ -68,7 +73,7 @@ def _poly3_d0(x, x1, y1, y1d, y0d):
     return xx * (a1 + xx * (a2 + xx * a3))
 
 
-def _reg_root2_utility(x, x1, k1, k2):
+def _reg_root2_utility(x, x1, k1, k2, use_yd0=False, yd0=1.0):
     sk1, sk2 = (math.sqrt(k1) if k1 > 0 else 0.0), (math.sqrt(k2) if k2 > 0 else 0.0)
     if k2 > 0:
         x2 = -x1 * (k2 / k1)
@@ -82,8 +87,11 @@ def _reg_root2_utility(x, x1, k1, k2):
     y2 = -sk2 * math.sqrt(abs(x2))
     y1d = sk1 / math.sqrt(x1) / 2
     y2d = sk2 / math.sqrt(abs(x2)) / 2
-    w = x2 / x1
-    y0d = ((3 * y2 - x2 * y2d) / w - (3 * y1 - x1 * y1d) * w) / (2 * x1 * (1 - w))
+    if use_yd0:
+        y0d = yd0
+    else:
+        w = x2 / x1
+        y0d = ((3 * y2 - x2 * y2d) / w - (3 * y1 - x1 * y1d) * w) / (2 * x1 * (1 - w))
     w1 = sk1 * math.sqrt(8.75 / x1)
     w2 = sk2 * math.sqrt(8.75 / abs(x2))
     y0d = min(y0d, 0.9 * min(w1, w2))
@@ -92,15 +100,51 @@ def _reg_root2_utility(x, x1, k1, k2):
     return y1 * _poly3_d0(x / x1, x2 / x1, y2 / y1, y2d * x1 / y1, y0d * x1 / y1)
 
 
-def reg_root2(x, x_small, k1, k2):
-    """Utilities.regRoot2 (use_yd0 = false)."""
+def reg_root2(x, x_small, k1, k2, use_yd0=False, yd0=1.0):
+    """Utilities.regRoot2."""
     if x >= x_small:
         return math.sqrt(k1) * math.sqrt(x)
     if x <= -x_small:
         return -math.sqrt(k2) * math.sqrt(abs(x))
     if k1 >= k2:
-        return _reg_root2_utility(x, x_small, k1, k2)
-    return -_reg_root2_utility(-x, x_small, k2, k1)
+        return _reg_root2_utility(x, x_small, k1, k2, use_yd0, yd0)
+    return -_reg_root2_utility(-x, x_small, k2, k1, use_yd0, yd0)
+
+
+def _reg_square2_utility(x, x1, k1, k2):
+    x2 = -x1
+    if x <= x2:
+        return -k2 * x * x
+    y1, y2 = k1 * x1 * x1, -k2 * x2 * x2
+    y1d, y2d = k1 * 2 * x1, -k2 * 2 * x2
+    w = x2 / x1
+    y0d = ((3 * y2 - x2 * y2d) / w - (3 * y1 - x1 * y1d) * w) / (2 * x1 * (1 - w))
+    ww = 0.9 * min(math.sqrt(5) * k1 * x1, math.sqrt(5) * k2 * abs(x2))
+    if ww < y0d:
+        y0d = ww
+    return _poly3_d0(x, x1, y1, y1d, y0d) if x >= 0 else _poly3_d0(x, x2, y2, y2d, y0d)
+
+
+def reg_square2(x, x_small, k1, k2):
+    """Utilities.regSquare2 (use_yd0 = false): k1 x|x| for x >= 0, k2 x|x| below, cubic within x_small."""
+    if x >= x_small:
+        return k1 * x * x
+    if x <= -x_small:
+        return -k2 * x * x
+    if k1 >= k2:
+        return _reg_square2_utility(x, x_small, k1, k2)
+    return -_reg_square2_utility(-x, x_small, k2, k1)
+
+
+def reg_step(x, y1, y2, x_small=1e-5):
+    """Utilities.regStep."""
+    if x > x_small:
+        return y1
+    if x < -x_small:
+        return y2
+    if x_small > 0:
+        return (x / x_small) * ((x / x_small) ** 2 - 3) * (y2 - y1) / 4 + (y1 + y2) / 2
+    return (y1 + y2) / 2
 
 
 def smooth_power(x, deltax, pw):
@@ -283,13 +327,7 @@ def covered(net) -> tuple[bool, str]:
                 return False, f"{c}: friction {p.get('friction')} (detailed and nominal_laminar only)"
         if k == "fl_resistance" and not float(p.get("a") or 0) > 0:
             return False, f"{c}: a = 0"
-        if k in ("fl_valve", "fl_pump") and p.get("checkValve"):
-            return False, f"{c}: check valve"
-        if k == "fl_pump" and float(p.get("V") or 0) > 0:
-            return False, f"{c}: a pump with a volume"
         if k == "fl_tank":
-            if p.get("port_diameter") is not None:
-                return False, f"{c}: port losses (port_diameter)"
             if sysp.get("dynamics", "fixed_initial") != "fixed_initial":
                 return False, f"{c}: system dynamics {sysp.get('dynamics')} (tank levels from fixed_initial only)"
     if sysp and not sysp.get("allowFlowReversal", True):
@@ -356,12 +394,25 @@ class FluidRef:
                 rho, _ = _medium(p)
                 ti = len(self.tanks)
                 ports = [node(f"{e}.port[{j}]") for j in range(1, nports + 1)]
-                self.tanks.append({"e": e, "A": float(p["crossArea"]), "rho": rho, "nodes": ports,
-                                   "h0": max(float(p["level_start"]), EPS)})
+                tk = {"e": e, "A": float(p["crossArea"]), "rho": rho, "nodes": ports, "loss": [],
+                      "h0": max(float(p["level_start"]), EPS), "ports": [net.node_of[f"{e}.port[{j}]"]
+                                                                         for j in range(1, nports + 1)]}
+                self.tanks.append(tk)
+                D = p.get("port_diameter")
                 for j, n_ in enumerate(ports, 1):
-                    self._fix(n_, ("tank", ti))
-                    self.fixed_ports.append((e, j, net.node_of[f"{e}.port[{j}]"]))
-                self.tanks[-1]["ports"] = [net.node_of[f"{e}.port[{j}]"] for j in range(1, nports + 1)]
+                    if D is None:          # use_portsData false: ports[i].p = vessel_ps_static[i]
+                        self._fix(n_, ("tank", ti))
+                        self.fixed_ports.append((e, j, net.node_of[f"{e}.port[{j}]"]))
+                        continue
+                    # use_portsData: a loss between the port and the static pressure (an element of its own,
+                    # m = ports[j].m_flow into the tank, from the port's node to a node at the static pressure)
+                    st = ("tank_static", e, j)
+                    self.nodes.setdefault(st, len(self.nodes))
+                    self._fix(st, ("tank", ti))
+                    tk["loss"].append((j, len(self.flows)))
+                    self.flows.append({"e": e, "k": "tank_port", "p": p, "rho": rho, "mu": None, "ti": ti,
+                                       "D": float(D), "a": n_, "b": st, "a0": net.node_of[f"{e}.port[{j}]"],
+                                       "b0": st, "j": j})
             elif k == "fl_mass_flow":
                 if nports:
                     self.sources.append((node(f"{e}.port[1]"), float(p["m_flow"]), e,
@@ -390,6 +441,14 @@ class FluidRef:
     def breaks(self, t0, t1, ends=False):
         return []
 
+    def _m_of(self, x):
+        """Mass flows from the unknowns: a pump with a check valve solves for MSL's s (m = nParallel max(s, 0))."""
+        m = np.array(x, float)
+        for i, f in enumerate(self.flows):
+            if f["k"] == "fl_pump" and f["p"].get("checkValve"):
+                m[i] = float(f["p"]["nParallel"]) * max(x[i], 0.0)
+        return m
+
     # ---- one instant ----------------------------------------------------------------------------------------------
     def _p_fixed(self, n, levels):
         how = self.fixed[n]
@@ -402,6 +461,14 @@ class FluidRef:
         """Residual of one component: kg/s where MSL writes m_flow = f(dp), Pa/1e5 where it writes a pressure."""
         k, p, rho = f["k"], f["p"], f["rho"]
         dp = pa - pb
+        if k == "tank_port":       # PartialLumpedVessel, use_portsData (VesselPortsData zeta_out 0.5, zeta_in 1.04)
+            D = f["D"]
+            Ap, Av = math.pi / 4 * D * D, float(p["crossArea"])
+            level = self._levels[f["ti"]]
+            pen = reg_step(level - 0.1 * D, 1.0, 1e-3, 0.1 * D)
+            k_in = (1.04 - 1 + Ap ** 2 / Av ** 2) / rho * pen
+            k_out = (0.5 + 1 - Ap ** 2 / Av ** 2) / rho / pen
+            return (dp - 0.5 / Ap ** 2 * reg_square2(m, self.m_small, k_in, k_out)) / 1e5
         if k in ZERO_DP:
             return dp / 1e5
         if k == "fl_pipe":
@@ -437,15 +504,24 @@ class FluidRef:
             else:                                          # CvTypes.OpPoint at opening_nominal 1
                 Av = float(p["m_flow_nominal"]) / (valve_char(ch, 1.0, rg) * math.sqrt(rho) *
                                                   reg_root(float(p["dp_nominal"]), self.dp_small))
+            if p.get("checkValve"):
+                return m - rc * Av * math.sqrt(rho) * reg_root2(dp, self.dp_small, 1.0, 0.0, True, 0.0)
             return m - rc * Av * reg_root2(dp, self.dp_small, rho, rho)
         if k == "fl_valve_linear":
             return m - float(p["opening"]) * float(p["m_flow_nominal"]) / float(p["dp_nominal"]) * dp
         if k == "fl_pump":
             n0 = float(p["N_nominal"])
             n = float(p["N"]) if p.get("N") is not None else n0
-            vs = m / rho / float(p["nParallel"])
             pts = p["curve"]
-            head = (n / n0) ** 2 * pump_curve(vs * n0 / n, [r[0] for r in pts], [r[1] for r in pts])
+            V, H = [r[0] for r in pts], [r[1] for r in pts]
+            if p.get("checkValve"):          # m here is MSL's s (NoHomotopy): closed for s <= 0
+                if m > 0:
+                    head = (n / n0) ** 2 * pump_curve(m / rho * n0 / n, V, H)
+                else:
+                    head = (n / n0) ** 2 * pump_curve(0.0, V, H) - m
+            else:
+                vs = m / rho / float(p["nParallel"])
+                head = (n / n0) ** 2 * pump_curve(vs * n0 / n, V, H)
             return ((pb - pa) - rho * self.g * head) / 1e5
         raise FluidRefError(f"no relation for {k}")
 
@@ -456,17 +532,20 @@ class FluidRef:
         def pressures(x):
             return {n: (x[nf + fi[n]] * 1e5 if n in fi else self._p_fixed(n, levels)) for n in self.nodes}
 
+        self._levels = levels
+
         def res(x):
             P = pressures(x)
             r = np.empty(nf + len(fi))
             for i, f in enumerate(self.flows):
                 r[i] = self._relation(f, x[i], P[f["a"]], P[f["b"]])
+            mf = self._m_of(x[:nf])
             bal = np.zeros(len(fi))
             for i, f in enumerate(self.flows):
                 if f["a"] in fi:
-                    bal[fi[f["a"]]] -= x[i]
+                    bal[fi[f["a"]]] -= mf[i]
                 if f["b"] in fi:
-                    bal[fi[f["b"]]] += x[i]
+                    bal[fi[f["b"]]] += mf[i]
             for n, m, _, _ in self.sources:
                 if n in fi:
                     bal[fi[n]] += m
@@ -489,7 +568,8 @@ class FluidRef:
         if best[1] > 1e-8:
             raise FluidRefError(f"the hydraulics did not converge (residual {best[1]:.3g})")
         self._x = best[0]
-        return best[0][:nf], pressures(best[0])
+        self._s = best[0][:nf]
+        return self._m_of(best[0][:nf]), pressures(best[0])
 
     def _q_orig(self, m, sources=True):
         """{network node: the flow the components put into it}: flow elements (-m at port_a, +m at port_b) and,
@@ -515,7 +595,8 @@ class FluidRef:
 
     def _tank_inflows(self, m, P):
         ff = self._fixed_flows(m)
-        return np.array([sum(ff[(tk["e"], j)] for j in range(1, len(tk["ports"]) + 1)) for tk in self.tanks])
+        return np.array([sum(ff[(tk["e"], j)] for j in range(1, len(tk["ports"]) + 1) if (tk["e"], j) in ff) +
+                         sum(m[i] for _, i in tk["loss"]) for tk in self.tanks])
 
     # ---- over time --------------------------------------------------------------------------------------------------
     def simulate(self, t_eval, t0=None) -> dict:
@@ -567,6 +648,9 @@ class FluidRef:
             a, b = f["a"], f["b"]
             mm = ser(lambda m, P, i=i: m[i])
             pa, pb = ser(lambda m, P, a=a: P[a]), ser(lambda m, P, b=b: P[b])
+            if k == "tank_port":
+                out.update({f"{e}.ports[{f['j']}].m_flow": mm, f"{e}.ports[{f['j']}].p": pa})
+                continue
             out.update({f"{e}.port_a.m_flow": mm, f"{e}.port_b.m_flow": -mm, f"{e}.port_a.p": pa,
                         f"{e}.port_b.p": pb})
             if k in ("fl_resistance", "fl_orifice", "fl_valve", "fl_valve_linear", "fl_pipe"):
@@ -592,6 +676,7 @@ class FluidRef:
                 else:
                     eta = np.full(t.size, float(p["eta"]))
                     W = dpp * (mm / rho) / eta
+                out[f"{e}.m"] = np.full(t.size, rho * float(p.get("V") or 0.0))    # constant density
                 out.update({f"{e}.m_flow": mm, f"{e}.V_flow": mm / rho, f"{e}.dp_pump": dpp,
                             f"{e}.head": dpp / (rho * g), f"{e}.eta": eta,
                             f"{e}.W_total": W, f"{e}.N": np.full(t.size, n * C.W_RPM)})
